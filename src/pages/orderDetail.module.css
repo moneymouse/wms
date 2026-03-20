@@ -1,0 +1,14 @@
+.editable-cell-value-wrap {
+    padding: 5px 12px;
+    cursor: pointer;
+}
+
+.editable-cell-value-wrap:hover {
+    padding: 4px;
+    border: 1px solid #d9d9d9;
+    border-radius: 2px;
+}
+
+.my-text-button:hover {
+    background-color: transparent !important;
+}
