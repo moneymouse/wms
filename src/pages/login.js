@@ -96,7 +96,6 @@ const LoginForm = ({ messageApi }) => {
                 name="username"
                 rules={[
                     { required: true, message: '请输入您的手机号！' },
-                    { pattern: /^1[3-9]\d{9}$/, message: '请输入正确的手机号格式！' }
                 ]}
             >
                 <Input
@@ -119,7 +118,7 @@ const LoginForm = ({ messageApi }) => {
                 <Form.Item name="remember" valuePropName="checked" noStyle>
                     <Checkbox>7天内自动登录</Checkbox>
                 </Form.Item>
-                <a className="forgot-link" href="#">
+                <a className="forgot-link" href="/forget_password">
                     忘记密码？
                 </a>
             </div>
@@ -193,8 +192,7 @@ const RegisterForm = ({ messageApi, onSuccess }) => {
             <Form.Item
                 name="phone"
                 rules={[
-                    { required: true, message: '请输入您的手机号！' },
-                    { pattern: /^1[3-9]\d{9}$/, message: '请输入正确的手机号格式！' }
+                    { required: true, message: '请输入您的用户名或手机号！' },
                 ]}
             >
                 <Input

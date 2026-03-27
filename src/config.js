@@ -3,9 +3,7 @@
 
 const urlConfig = {
     // 开发模式 - 通过Nginx代理 (推荐)
-    "development": "http://localhost:8080/api",
-    // 开发模式 - 直连Flask服务器 (备用)
-    "development_direct": "http://127.0.0.1:5000/api",
+    "development": "http://localhost:5001/api",
     // 生产模式 - 相对路径
     "production": "/api"
 }

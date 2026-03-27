@@ -9,6 +9,7 @@ import {
     Popconfirm,
     Popover,
     Space,
+    Select,
     Table,
     Timeline,
     Typography
@@ -130,13 +131,137 @@ export default function () {
 
     //description data状态管理
     const [descriptionData, setDescriptionData] = useState({});
+    const [jwtPayload, setJwtPayload] = useState({});
+    const [salesman, setSalesman] = useState(null);
+    const [salesmanOptions, setSalesmanOptions] = useState([]);
+    const [salesmanEditorValue, setSalesmanEditorValue] = useState(undefined);
+    const [salesmanLoading, setSalesmanLoading] = useState(false);
+    const [salesmanSaving, setSalesmanSaving] = useState(false);
+    const [salesmanUsersLoading, setSalesmanUsersLoading] = useState(false);
 
     useEffect(() => {
+        const jwt = localStorage.getItem('jwt');
+        if (jwt) {
+            try {
+                const parts = jwt.split('.');
+                if (parts.length === 3) {
+                    setJwtPayload(JSON.parse(atob(parts[1])));
+                }
+            } catch (e) {
+                console.error('解析 JWT 时出错:', e);
+            }
+        }
+
         (async () => {
             const { data } = await (await fetch(`${endpoint}/orders/${order_id}`, { headers: getSafeHeader() })).json();
             setDescriptionData(data);
+            setSalesman(data?.salesman || null);
+            setSalesmanEditorValue(data?.salesman?.id ?? data?.salesman_id ?? undefined);
+        })()
+
+        (async () => {
+            setSalesmanLoading(true);
+            try {
+                const res = await (await fetch(`${endpoint}/orders/${order_id}/salesman`, { headers: getSafeHeader() })).json();
+                if (res.code === 200) {
+                    setSalesman(res.data || null);
+                    setSalesmanEditorValue(res.data?.id ?? undefined);
+                    setDescriptionData(prev => ({ ...prev, salesman: res.data || null, salesman_id: res.data?.id ?? null }));
+                }
+            } finally {
+                setSalesmanLoading(false);
+            }
         })()
     }, []);
+
+    useEffect(() => {
+        if (jwtPayload?.role !== 'admin') return;
+        (async () => {
+            setSalesmanUsersLoading(true);
+            try {
+                const res = await (await fetch(`${endpoint}/users`, { headers: getSafeHeader() })).json();
+                if (res.code === 200 && Array.isArray(res.data)) {
+                    setSalesmanOptions(
+                        res.data.map((user) => ({
+                            value: user.id,
+                            label: `${user.name || '-'} (${user.phone || '-'})${user.role ? ` - ${user.role}` : ''}`
+                        }))
+                    );
+                }
+            } finally {
+                setSalesmanUsersLoading(false);
+            }
+        })();
+    }, [jwtPayload]);
+
+    const currentUserId = jwtPayload?.user_id ?? jwtPayload?.id ?? jwtPayload?.uid;
+    const canEditSalesman = jwtPayload?.role === 'admin'
+        || (currentUserId !== undefined && salesman?.id !== undefined && Number(currentUserId) === Number(salesman.id));
+
+    const handleSaveSalesman = async (userId) => {
+        if (!canEditSalesman) {
+            messageX.error('你没有权限修改业务员');
+            return;
+        }
+        if (userId === undefined) {
+            messageX.warning('请选择业务员');
+            return;
+        }
+        const parsedUserId = Number(userId);
+        if (Number.isNaN(parsedUserId)) {
+            messageX.error('业务员ID无效');
+            return;
+        }
+        setSalesmanSaving(true);
+        try {
+            const res = await (await fetch(`${endpoint}/orders/${order_id}/salesman`, {
+                method: 'PUT',
+                headers: {
+                    ...getSafeHeader(),
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ user_id: parsedUserId })
+            })).json();
+            if (res.code === 200) {
+                setSalesman(res.data || null);
+                setSalesmanEditorValue(res.data?.id ?? undefined);
+                setDescriptionData(prev => ({ ...prev, salesman: res.data || null, salesman_id: res.data?.id ?? null }));
+                messageX.success('业务员更新成功');
+                return;
+            }
+            messageX.error(res.msg || '业务员更新失败');
+        } finally {
+            setSalesmanSaving(false);
+        }
+    };
+
+    const handleRemoveSalesman = async () => {
+        if (!canEditSalesman) {
+            messageX.error('你没有权限修改业务员');
+            return;
+        }
+        setSalesmanSaving(true);
+        try {
+            const res = await (await fetch(`${endpoint}/orders/${order_id}/salesman`, {
+                method: 'PUT',
+                headers: {
+                    ...getSafeHeader(),
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ user_id: null })
+            })).json();
+            if (res.code === 200) {
+                setSalesman(null);
+                setSalesmanEditorValue(undefined);
+                setDescriptionData(prev => ({ ...prev, salesman: null, salesman_id: null }));
+                messageX.success('业务员已移除');
+                return;
+            }
+            messageX.error(res.msg || '移除业务员失败');
+        } finally {
+            setSalesmanSaving(false);
+        }
+    };
 
     //纸箱表格
     const [form] = Form.useForm();
@@ -555,6 +680,36 @@ export default function () {
                         </Descriptions.Item>
                     )
                 })}
+                <Descriptions.Item label="业务员">
+                    <Space wrap>
+                        <Typography.Text copyable={!!salesman?.name}>
+                            {salesman ? `${salesman.name || '-'}${salesman.phone ? ` / ${salesman.phone}` : ''}` : '未分配'}
+                        </Typography.Text>
+                        {canEditSalesman && (
+                            salesmanOptions.length > 0 ? (
+                                <Select
+                                    style={{ width: 260 }}
+                                    placeholder="选择业务员"
+                                    loading={salesmanUsersLoading || salesmanLoading}
+                                    value={salesmanEditorValue}
+                                    onChange={(value) => setSalesmanEditorValue(value)}
+                                    options={salesmanOptions}
+                                />
+                            ) : (
+                                <InputNumber
+                                    min={1}
+                                    placeholder="输入业务员ID"
+                                    value={salesmanEditorValue}
+                                    onChange={(value) => setSalesmanEditorValue(value)}
+                                />
+                            )
+                        )}
+                        {canEditSalesman && <Button type="primary" loading={salesmanSaving}
+                            onClick={() => handleSaveSalesman(salesmanEditorValue)}>保存业务员</Button>}
+                        {canEditSalesman && <Button danger loading={salesmanSaving}
+                            onClick={handleRemoveSalesman}>移除业务员</Button>}
+                    </Space>
+                </Descriptions.Item>
             </Descriptions>
             <Typography.Title level={4} style={{ marginBottom: '2rem' }}>包裹详情/Cargo Detail</Typography.Title>
             <Typography.Title level={5}>添加包装箱</Typography.Title>

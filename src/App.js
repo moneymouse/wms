@@ -1,30 +1,34 @@
-import React, {useState, useEffect} from 'react';
+import React, { useState, useEffect } from 'react';
 import {
     MenuFoldOutlined,
     MenuUnfoldOutlined,
     PlusSquareOutlined,
     UnorderedListOutlined,
     UploadOutlined,
+    UserSwitchOutlined
 } from '@ant-design/icons';
-import {Button, Layout, Menu, theme} from 'antd';
-import {Outlet, useLocation, useNavigate} from "react-router-dom";
-import {LogIcon} from "./pages/logs";
+import { Button, Layout, Menu, theme } from 'antd';
+import { Outlet, useLocation, useNavigate } from "react-router-dom";
+import { LogIcon } from "./pages/logs";
 
-const {Header, Sider, Content} = Layout;
+const { Header, Sider, Content } = Layout;
 
 function App() {
     const [collapsed, setCollapsed] = useState(true);
     const [isAdmin, setIsAdmin] = useState(false);
     const {
-        token: {colorBgContainer},
+        token: { colorBgContainer },
     } = theme.useToken();
 
-    const {pathname} = useLocation();
+    const { pathname } = useLocation();
     const navigate = useNavigate();
 
     useEffect(() => {
+        console.log(process.env)
+        if (process.env.NODE_ENV === 'development') return;
         // 从 localStorage 获取 JWT 并检查用户角色
         const jwt = localStorage.getItem('jwt');
+        if (!jwt) navigate("/login");
         try {
             // 分割 JWT 并获取负载部分（第二部分）
             const parts = jwt.split('.');
@@ -45,12 +49,12 @@ function App() {
     const menuItems = [
         {
             key: '',
-            icon: <PlusSquareOutlined/>,
+            icon: <PlusSquareOutlined />,
             label: '创建新订单',
         },
         {
             key: 'orders',
-            icon: <UnorderedListOutlined/>,
+            icon: <UnorderedListOutlined />,
             label: '订单列表',
         },
         {
@@ -66,6 +70,10 @@ function App() {
             key: 'logs',
             label: '操作日志',
             icon: <LogIcon />,
+        }, {
+            key: 'admin',
+            label: '用户申请',
+            icon: <UserSwitchOutlined />,
         });
     }
 
@@ -74,10 +82,10 @@ function App() {
             <Sider trigger={null} collapsible collapsed={collapsed} style={{
                 height: '100vh'
             }}>
-                <Header style={{padding: 0}}>
+                <Header style={{ padding: 0 }}>
                     <Button
                         type="link"
-                        icon={collapsed ? <MenuUnfoldOutlined/> : <MenuFoldOutlined/>}
+                        icon={collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
                         onClick={() => setCollapsed(!collapsed)}
                         style={{
                             fontSize: '12px',
@@ -92,7 +100,7 @@ function App() {
                     theme="dark"
                     mode="inline"
                     selectedKeys={[pathname.split('/')[1]]}
-                    onClick={({key}) => {
+                    onClick={({ key }) => {
                         navigate(key);
                     }}
                     items={menuItems}
@@ -111,7 +119,7 @@ function App() {
                         overflowY: 'auto'
                     }}
                 >
-                    <Outlet/>
+                    <Outlet />
                 </Content>
             </Layout>
         </Layout>
