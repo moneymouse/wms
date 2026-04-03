@@ -10,12 +10,13 @@ import {
 import { Button, Layout, Menu, theme } from 'antd';
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import { LogIcon } from "./pages/logs";
+import { menuPermissions, routePermissions, hasPermission, getLandingPage } from "./common/roleConfig";
 
 const { Header, Sider, Content } = Layout;
 
 function App() {
     const [collapsed, setCollapsed] = useState(true);
-    const [isAdmin, setIsAdmin] = useState(false);
+    const [userRole, setUserRole] = useState(null);
     const {
         token: { colorBgContainer },
     } = theme.useToken();
@@ -25,7 +26,7 @@ function App() {
 
     useEffect(() => {
         console.log(process.env)
-        if (process.env.NODE_ENV === 'development') return;
+        // if (process.env.NODE_ENV === 'development') return;
         // 从 localStorage 获取 JWT 并检查用户角色
         const jwt = localStorage.getItem('jwt');
         if (!jwt) navigate("/login");
@@ -35,18 +36,34 @@ function App() {
             if (parts.length === 3) {
                 // 解码 base64 编码的负载
                 const payload = JSON.parse(atob(parts[1]));
-                // 检查用户角色是否为 admin
-                setIsAdmin(payload.role === 'admin');
+                const role = payload.role;
+                // 设置用户角色
+                setUserRole(role);
+
+                // 检查当前路由权限，无权限则重定向到着陆页
+                const currentPath = pathname === '' ? '/' : pathname;
+                const routeKey = Object.keys(routePermissions).find(key => {
+                    if (key.includes(':')) {
+                        // 处理动态路由如 /orders/:order_id
+                        const pattern = key.replace(/:[^/]+/g, '[^/]+');
+                        return new RegExp(`^${pattern}$`).test(currentPath);
+                    }
+                    return key === currentPath;
+                });
+
+                if (routeKey && !hasPermission(role, routePermissions[routeKey])) {
+                    navigate(getLandingPage(role));
+                }
             }
         } catch (e) {
             console.error('解析 JWT 时出错:', e);
-            setIsAdmin(false);
+            setUserRole(null);
             navigate("/login")
         }
-    }, []);
+    }, [pathname]);
 
     // 根据用户角色构建菜单项
-    const menuItems = [
+    const allMenuItems = [
         {
             key: '',
             icon: <PlusSquareOutlined />,
@@ -61,21 +78,23 @@ function App() {
             key: 'upload',
             icon: <UploadOutlined />,
             label: '上传明细'
-        }
-    ];
-
-    // 如果用户是管理员，添加操作日志菜单项
-    if (isAdmin) {
-        menuItems.push({
+        },
+        {
             key: 'logs',
             label: '操作日志',
             icon: <LogIcon />,
-        }, {
+        },
+        {
             key: 'admin',
             label: '用户申请',
             icon: <UserSwitchOutlined />,
-        });
-    }
+        }
+    ];
+
+    // 根据用户角色过滤菜单项
+    const menuItems = allMenuItems.filter(item =>
+        menuPermissions[item.key] && hasPermission(userRole, menuPermissions[item.key])
+    );
 
     return (
         <Layout>

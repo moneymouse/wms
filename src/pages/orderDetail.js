@@ -122,7 +122,7 @@ const EditableCell = (props) => {
     );
 };
 
-export default function () {
+export default function OrderDetail() {
     // const _orderProperty = [...orderProperty];
     const { order_id } = useParams()
 
@@ -138,6 +138,7 @@ export default function () {
     const [salesmanLoading, setSalesmanLoading] = useState(false);
     const [salesmanSaving, setSalesmanSaving] = useState(false);
     const [salesmanUsersLoading, setSalesmanUsersLoading] = useState(false);
+    const [salesmanEditing, setSalesmanEditing] = useState(false);
 
     useEffect(() => {
         const jwt = localStorage.getItem('jwt');
@@ -157,7 +158,7 @@ export default function () {
             setDescriptionData(data);
             setSalesman(data?.salesman || null);
             setSalesmanEditorValue(data?.salesman?.id ?? data?.salesman_id ?? undefined);
-        })()
+        })();
 
         (async () => {
             setSalesmanLoading(true);
@@ -171,20 +172,19 @@ export default function () {
             } finally {
                 setSalesmanLoading(false);
             }
-        })()
+        })();
     }, []);
 
     useEffect(() => {
-        if (jwtPayload?.role !== 'admin') return;
         (async () => {
             setSalesmanUsersLoading(true);
             try {
-                const res = await (await fetch(`${endpoint}/users`, { headers: getSafeHeader() })).json();
+                const res = await (await fetch(`${endpoint}/users/list`, { headers: getSafeHeader() })).json();
                 if (res.code === 200 && Array.isArray(res.data)) {
                     setSalesmanOptions(
                         res.data.map((user) => ({
                             value: user.id,
-                            label: `${user.name || '-'} (${user.phone || '-'})${user.role ? ` - ${user.role}` : ''}`
+                            label: `${user.name || '-'} (${user.phone || '-'})`
                         }))
                     );
                 }
@@ -226,6 +226,7 @@ export default function () {
                 setSalesman(res.data || null);
                 setSalesmanEditorValue(res.data?.id ?? undefined);
                 setDescriptionData(prev => ({ ...prev, salesman: res.data || null, salesman_id: res.data?.id ?? null }));
+                setSalesmanEditing(false);
                 messageX.success('业务员更新成功');
                 return;
             }
@@ -254,6 +255,7 @@ export default function () {
                 setSalesman(null);
                 setSalesmanEditorValue(undefined);
                 setDescriptionData(prev => ({ ...prev, salesman: null, salesman_id: null }));
+                setSalesmanEditing(false);
                 messageX.success('业务员已移除');
                 return;
             }
@@ -617,6 +619,61 @@ export default function () {
         <>
             {messageComponent}
             <Typography.Title level={4} style={{ marginBottom: '2rem' }}>订单详情/Order Detail</Typography.Title>
+            <Space style={{ marginBottom: '1rem' }} align="center" wrap size="small">
+                <Typography.Text strong>业务员：</Typography.Text>
+                {!salesmanEditing ? (
+                    <Input
+                        readOnly
+                        style={{ width: 240, height: 32 }}
+                        value={salesman ? `${salesman.name || '-'}${salesman.phone ? ` / ${salesman.phone}` : ''}` : '未分配'}
+                    />
+                ) : (
+                    salesmanOptions.length > 0 ? (
+                        <Select
+                            style={{ width: 240 }}
+                            size="middle"
+                            placeholder="选择业务员"
+                            loading={salesmanUsersLoading || salesmanLoading}
+                            value={salesmanEditorValue}
+                            onChange={(value) => setSalesmanEditorValue(value)}
+                            options={salesmanOptions}
+                        />
+                    ) : (
+                        <InputNumber
+                            min={1}
+                            placeholder="输入业务员ID"
+                            style={{ width: 240, height: 32 }}
+                            value={salesmanEditorValue}
+                            onChange={(value) => setSalesmanEditorValue(value)}
+                        />
+                    )
+                )}
+                {canEditSalesman && !salesmanEditing && (
+                    <Button
+                        size="middle"
+                        onClick={() => {
+                            setSalesmanEditorValue(salesman?.id ?? undefined);
+                            setSalesmanEditing(true);
+                        }}
+                    >
+                        编辑
+                    </Button>
+                )}
+                {canEditSalesman && salesmanEditing && (
+                    <Button size="middle" type="primary" loading={salesmanSaving}
+                        onClick={() => handleSaveSalesman(salesmanEditorValue)}>保存</Button>
+                )}
+                {canEditSalesman && salesmanEditing && (
+                    <Button size="middle" onClick={() => {
+                        setSalesmanEditorValue(salesman?.id ?? undefined);
+                        setSalesmanEditing(false);
+                    }}>取消</Button>
+                )}
+                {canEditSalesman && salesmanEditing && (
+                    <Button size="middle" danger loading={salesmanSaving}
+                        onClick={handleRemoveSalesman}>移除</Button>
+                )}
+            </Space>
             <Descriptions style={{ marginBottom: '2rem' }} bordered>
                 {orderProperty.map((v, k) => {
                     const handleDescriptionDataChange = async (val) => {
@@ -680,36 +737,6 @@ export default function () {
                         </Descriptions.Item>
                     )
                 })}
-                <Descriptions.Item label="业务员">
-                    <Space wrap>
-                        <Typography.Text copyable={!!salesman?.name}>
-                            {salesman ? `${salesman.name || '-'}${salesman.phone ? ` / ${salesman.phone}` : ''}` : '未分配'}
-                        </Typography.Text>
-                        {canEditSalesman && (
-                            salesmanOptions.length > 0 ? (
-                                <Select
-                                    style={{ width: 260 }}
-                                    placeholder="选择业务员"
-                                    loading={salesmanUsersLoading || salesmanLoading}
-                                    value={salesmanEditorValue}
-                                    onChange={(value) => setSalesmanEditorValue(value)}
-                                    options={salesmanOptions}
-                                />
-                            ) : (
-                                <InputNumber
-                                    min={1}
-                                    placeholder="输入业务员ID"
-                                    value={salesmanEditorValue}
-                                    onChange={(value) => setSalesmanEditorValue(value)}
-                                />
-                            )
-                        )}
-                        {canEditSalesman && <Button type="primary" loading={salesmanSaving}
-                            onClick={() => handleSaveSalesman(salesmanEditorValue)}>保存业务员</Button>}
-                        {canEditSalesman && <Button danger loading={salesmanSaving}
-                            onClick={handleRemoveSalesman}>移除业务员</Button>}
-                    </Space>
-                </Descriptions.Item>
             </Descriptions>
             <Typography.Title level={4} style={{ marginBottom: '2rem' }}>包裹详情/Cargo Detail</Typography.Title>
             <Typography.Title level={5}>添加包装箱</Typography.Title>

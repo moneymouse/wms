@@ -4,6 +4,7 @@ import { User, Lock, Mail, Building2, KeyRound, Phone } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { endpoint } from '../config.js';
 import getSafeHeader from '../common/safeHeader.js';
+import { getLandingPage } from '../common/roleConfig.js';
 
 const { Title, Text } = Typography;
 
@@ -61,9 +62,20 @@ const LoginForm = ({ messageApi }) => {
                     duration: 2
                 });
 
-                // 延迟跳转到主页
+                // 解析 JWT 获取角色，跳转到对应着陆页
+                let landingPage = '/orders';
+                try {
+                    const parts = result.token.split('.');
+                    if (parts.length === 3) {
+                        const payload = JSON.parse(atob(parts[1]));
+                        landingPage = getLandingPage(payload.role);
+                    }
+                } catch (e) {
+                    console.error('解析角色失败:', e);
+                }
+
                 setTimeout(() => {
-                    navigate('/');
+                    navigate(landingPage);
                 }, 1000);
             } else {
                 // 登录失败
