@@ -5,7 +5,8 @@ import {
     PlusSquareOutlined,
     UnorderedListOutlined,
     UploadOutlined,
-    UserSwitchOutlined
+    UserSwitchOutlined,
+    TeamOutlined
 } from '@ant-design/icons';
 import { Button, Layout, Menu, theme } from 'antd';
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
@@ -78,6 +79,11 @@ function App() {
             key: 'upload',
             icon: <UploadOutlined />,
             label: '上传明细'
+        },
+        {
+            key: 'customers',
+            icon: <TeamOutlined />,
+            label: '客户管理',
         },
         {
             key: 'logs',

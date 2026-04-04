@@ -140,6 +140,13 @@ export default function OrderDetail() {
     const [salesmanUsersLoading, setSalesmanUsersLoading] = useState(false);
     const [salesmanEditing, setSalesmanEditing] = useState(false);
 
+    // 客户联系信息状态
+    const [customerContact, setCustomerContact] = useState({ phone: '', wechat: '' });
+    const [customerContactLoading, setCustomerContactLoading] = useState(false);
+
+    // 检查是否有查看客户联系信息的权限
+    const canViewCustomerContact = ['admin', 'store_manager', 'salesperson'].includes(jwtPayload?.role);
+
     useEffect(() => {
         const jwt = localStorage.getItem('jwt');
         if (jwt) {
@@ -193,6 +200,29 @@ export default function OrderDetail() {
             }
         })();
     }, [jwtPayload]);
+
+    // 获取客户联系信息
+    useEffect(() => {
+        if (canViewCustomerContact && descriptionData.customer_ids) {
+            (async () => {
+
+                setCustomerContactLoading(true);
+                try {
+                    const res = await (await fetch(`${endpoint}/customer_detail/${descriptionData.customer_ids[0]}`, { headers: getSafeHeader() })).json();
+                    if (res.code === 200 && res.data) {
+                        setCustomerContact({
+                            phone: res.data.phone || '',
+                            wechat: res.data.wechat || ''
+                        });
+                    }
+                } catch (e) {
+                    console.error('获取客户联系信息失败:', e);
+                } finally {
+                    setCustomerContactLoading(false);
+                }
+            })();
+        }
+    }, [canViewCustomerContact, descriptionData.customer_ids]);
 
     const currentUserId = jwtPayload?.user_id ?? jwtPayload?.id ?? jwtPayload?.uid;
     const canEditSalesman = jwtPayload?.role === 'admin'
@@ -737,6 +767,24 @@ export default function OrderDetail() {
                         </Descriptions.Item>
                     )
                 })}
+                {canViewCustomerContact && (
+                    <>
+                        <Descriptions.Item label="客户手机号">
+                            {customerContactLoading ? '加载中...' : (
+                                <Typography.Text copyable={!!customerContact.phone}>
+                                    {customerContact.phone || '-'}
+                                </Typography.Text>
+                            )}
+                        </Descriptions.Item>
+                        <Descriptions.Item label="客户微信">
+                            {customerContactLoading ? '加载中...' : (
+                                <Typography.Text copyable={!!customerContact.wechat}>
+                                    {customerContact.wechat || '-'}
+                                </Typography.Text>
+                            )}
+                        </Descriptions.Item>
+                    </>
+                )}
             </Descriptions>
             <Typography.Title level={4} style={{ marginBottom: '2rem' }}>包裹详情/Cargo Detail</Typography.Title>
             <Typography.Title level={5}>添加包装箱</Typography.Title>
