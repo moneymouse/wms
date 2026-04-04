@@ -1,0 +1,21 @@
+# Testing framework
+pytest>=7.4.0
+pytest-flask>=1.2.0
+pytest-mock>=3.11.1
+pytest-cov>=4.1.0
+
+# Test data generation
+factory-boy>=3.3.0
+faker>=19.6.2
+
+# HTTP testing
+responses>=0.23.3
+
+# Time mocking
+freezegun>=1.2.2
+
+# Assertion helpers
+assertpy>=1.1
+
+# Test utilities
+pydantic>=2.3.0
