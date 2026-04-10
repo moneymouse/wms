@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Table, Button, Space, message, Card, Tag, Modal, Select, Input, Typography } from 'antd';
-import { CheckOutlined, CloseOutlined, UserOutlined } from '@ant-design/icons';
+import { CheckOutlined, CloseOutlined, UserOutlined, KeyOutlined } from '@ant-design/icons';
 import { endpoint } from '../config';
 import getSafeHeader from '../common/safeHeader';
 import { useNavigate } from 'react-router-dom';
@@ -10,7 +10,8 @@ const ROLE_OPTIONS = [
     { value: 'store_manager', label: '店长' },
     { value: 'salesperson', label: '业务员' },
     { value: 'clerk', label: '文员' },
-    { value: 'finance', label: '财务' }
+    { value: 'finance', label: '财务' },
+    { value: 'worker', label: '操作人员' }
 ];
 
 const AdminPage = () => {
@@ -25,6 +26,15 @@ const AdminPage = () => {
     const [usersLoading, setUsersLoading] = useState(false);
     const [users, setUsers] = useState([]);
     const [editingRoleUser, setEditingRoleUser] = useState({});
+    // 密码重置相关状态
+    const [passwordRequests, setPasswordRequests] = useState([]);
+    const [passwordRequestsLoading, setPasswordRequestsLoading] = useState(false);
+    const [rejectPasswordModalVisible, setRejectPasswordModalVisible] = useState(false);
+    const [currentPasswordRequest, setCurrentPasswordRequest] = useState(null);
+    const [passwordRejectRemark, setPasswordRejectRemark] = useState('');
+    const [resetPasswordModalVisible, setResetPasswordModalVisible] = useState(false);
+    const [resetPasswordUser, setResetPasswordUser] = useState(null);
+    const [newPassword, setNewPassword] = useState('');
     const navigate = useNavigate();
 
     // 获取待审核用户列表
@@ -58,6 +68,7 @@ const AdminPage = () => {
     useEffect(() => {
         fetchApplications();
         fetchUsers();
+        fetchPasswordRequests();
     }, []);
 
     // 打开审核通过对话框
@@ -185,6 +196,121 @@ const AdminPage = () => {
         }
     };
 
+    // ==================== 密码重置相关函数 ====================
+
+    const fetchPasswordRequests = async () => {
+        setPasswordRequestsLoading(true);
+        try {
+            const response = await fetch(`${endpoint}/auth/password/requests`, {
+                headers: getSafeHeader()
+            });
+            const result = await response.json();
+            if (result.code === 200) {
+                setPasswordRequests(result.data || []);
+            }
+        } catch (error) {
+            console.error('Fetch password requests error:', error);
+        } finally {
+            setPasswordRequestsLoading(false);
+        }
+    };
+
+    const handleApprovePasswordRequest = async (requestId) => {
+        setSubmitting(true);
+        try {
+            const response = await fetch(`${endpoint}/auth/password/approve/${requestId}`, {
+                method: 'POST',
+                headers: {
+                    ...getSafeHeader(),
+                    'Content-Type': 'application/json'
+                }
+            });
+            const result = await response.json();
+            if (result.code === 200) {
+                message.success('密码重置申请已通过');
+                fetchPasswordRequests();
+            } else {
+                message.error(result.msg || '操作失败');
+            }
+        } catch (error) {
+            console.error('Approve password request error:', error);
+            message.error('操作异常');
+        } finally {
+            setSubmitting(false);
+        }
+    };
+
+    const showRejectPasswordModal = (record) => {
+        setCurrentPasswordRequest(record);
+        setPasswordRejectRemark('');
+        setRejectPasswordModalVisible(true);
+    };
+
+    const handleRejectPasswordRequest = async () => {
+        if (!currentPasswordRequest) return;
+        setSubmitting(true);
+        try {
+            const response = await fetch(`${endpoint}/auth/password/reject/${currentPasswordRequest.id}`, {
+                method: 'POST',
+                headers: {
+                    ...getSafeHeader(),
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ remark: passwordRejectRemark })
+            });
+            const result = await response.json();
+            if (result.code === 200) {
+                message.success('密码重置申请已拒绝');
+                setRejectPasswordModalVisible(false);
+                fetchPasswordRequests();
+            } else {
+                message.error(result.msg || '操作失败');
+            }
+        } catch (error) {
+            console.error('Reject password request error:', error);
+            message.error('操作异常');
+        } finally {
+            setSubmitting(false);
+        }
+    };
+
+    const showResetPasswordModal = (record) => {
+        setResetPasswordUser(record);
+        setNewPassword('');
+        setResetPasswordModalVisible(true);
+    };
+
+    const handleResetPassword = async () => {
+        if (!resetPasswordUser) return;
+        if (!newPassword || newPassword.length < 6) {
+            message.warning('密码长度不能少于6位');
+            return;
+        }
+        setSubmitting(true);
+        try {
+            const response = await fetch(`${endpoint}/users/${resetPasswordUser.id}/reset-password`, {
+                method: 'POST',
+                headers: {
+                    ...getSafeHeader(),
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ new_password: newPassword })
+            });
+            const result = await response.json();
+            if (result.code === 200) {
+                message.success(`用户 ${resetPasswordUser.name} 的密码已重置`);
+                setResetPasswordModalVisible(false);
+            } else {
+                message.error(result.msg || '重置失败');
+            }
+        } catch (error) {
+            console.error('Reset password error:', error);
+            message.error('操作异常');
+        } finally {
+            setSubmitting(false);
+        }
+    };
+
     const columns = [
         {
             title: '姓名',
@@ -284,7 +410,7 @@ const AdminPage = () => {
                     <Select
                         allowClear
                         placeholder="选择角色（清空=移除）"
-                        style={{ width: 220 }}
+                        style={{ width: 180 }}
                         value={Object.prototype.hasOwnProperty.call(editingRoleUser, record.id)
                             ? editingRoleUser[record.id] ?? undefined
                             : record.role ?? undefined}
@@ -296,9 +422,56 @@ const AdminPage = () => {
                     <Button type="primary" loading={submitting} onClick={() => handleUpdateRole(record)}>
                         保存
                     </Button>
+                    <Button icon={<KeyOutlined />} onClick={() => showResetPasswordModal(record)}>
+                        重置密码
+                    </Button>
                 </Space>
             )
         }
+    ];
+
+    const passwordRequestColumns = [
+        {
+            title: '用户姓名',
+            dataIndex: 'user_name',
+            key: 'user_name',
+            render: (text) => <Space><UserOutlined />{text}</Space>
+        },
+        {
+            title: '手机号',
+            dataIndex: 'user_phone',
+            key: 'user_phone',
+        },
+        {
+            title: '申请时间',
+            dataIndex: 'create_date',
+            key: 'create_date',
+        },
+        {
+            title: '操作',
+            key: 'action',
+            render: (_, record) => (
+                <Space size="middle">
+                    <Button
+                        type="primary"
+                        size="small"
+                        icon={<CheckOutlined />}
+                        onClick={() => handleApprovePasswordRequest(record.id)}
+                        loading={submitting}
+                    >
+                        通过
+                    </Button>
+                    <Button
+                        danger
+                        size="small"
+                        icon={<CloseOutlined />}
+                        onClick={() => showRejectPasswordModal(record)}
+                    >
+                        拒绝
+                    </Button>
+                </Space>
+            ),
+        },
     ];
 
     return (
@@ -320,6 +493,17 @@ const AdminPage = () => {
                     rowKey="id"
                     loading={usersLoading}
                     pagination={{ pageSize: 10 }}
+                />
+            </Card>
+
+            <Card title="密码重置申请">
+                <Table
+                    columns={passwordRequestColumns}
+                    dataSource={passwordRequests}
+                    rowKey="id"
+                    loading={passwordRequestsLoading}
+                    pagination={{ pageSize: 10 }}
+                    locale={{ emptyText: '暂无密码重置申请' }}
                 />
             </Card>
 
@@ -364,6 +548,50 @@ const AdminPage = () => {
                         placeholder="请输入拒绝原因"
                         rows={3}
                         style={{ marginTop: 8 }}
+                    />
+                </div>
+            </Modal>
+
+            {/* 拒绝密码重置申请对话框 */}
+            <Modal
+                title="拒绝密码重置申请"
+                open={rejectPasswordModalVisible}
+                onOk={handleRejectPasswordRequest}
+                onCancel={() => setRejectPasswordModalVisible(false)}
+                confirmLoading={submitting}
+                okText="确认拒绝"
+                cancelText="取消"
+            >
+                <p>确定拒绝用户 <strong>{currentPasswordRequest?.user_name}</strong> 的密码重置申请吗？</p>
+                <div style={{ marginTop: 16 }}>
+                    <span>拒绝原因（选填）：</span>
+                    <Input.TextArea
+                        value={passwordRejectRemark}
+                        onChange={(e) => setPasswordRejectRemark(e.target.value)}
+                        placeholder="请输入拒绝原因"
+                        rows={3}
+                        style={{ marginTop: 8 }}
+                    />
+                </div>
+            </Modal>
+
+            {/* 重置密码对话框 */}
+            <Modal
+                title="重置用户密码"
+                open={resetPasswordModalVisible}
+                onOk={handleResetPassword}
+                onCancel={() => setResetPasswordModalVisible(false)}
+                confirmLoading={submitting}
+                okText="确认重置"
+                cancelText="取消"
+            >
+                <p>为用户 <strong>{resetPasswordUser?.name}</strong>（{resetPasswordUser?.phone}）设置新密码：</p>
+                <div style={{ marginTop: 16 }}>
+                    <Input.Password
+                        value={newPassword}
+                        onChange={(e) => setNewPassword(e.target.value)}
+                        placeholder="请输入新密码（至少6位）"
+                        style={{ width: '100%' }}
                     />
                 </div>
             </Modal>

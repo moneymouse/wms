@@ -366,7 +366,7 @@ export default function NewOrder() {
                 <Row gutter={16}>
                     <Col span={7}>
                         <Item label={'国家/Destination Country'} name={'country'} rules={[{ required: true }]}>
-                            <Select showSearch placeholder={'中国/China, CN'} options={options.country} />
+                            <Select showSearch placeholder={'中国/China, CN'} options={countryList} />
                         </Item>
                     </Col>
 

@@ -25,6 +25,8 @@ import Transportation from "../components/transportation";
 import ExportButton from "../components/ExportButton";
 import trackStatus from "../common/trackStatus";
 import GoodInput from "../components/GoodName";
+import BoxAssignmentModal from "../components/BoxAssignmentModal";
+import { InboxOutlined } from "@ant-design/icons";
 
 const passHash = '18667b982b1c774d3c096422e457906afb227cfc7f956d3f4fc1f9bc07b98862';
 
@@ -144,8 +146,13 @@ export default function OrderDetail() {
     const [customerContact, setCustomerContact] = useState({ phone: '', wechat: '' });
     const [customerContactLoading, setCustomerContactLoading] = useState(false);
 
+    // 箱子分配模态框状态
+    const [boxAssignmentVisible, setBoxAssignmentVisible] = useState(false);
+
     // 检查是否有查看客户联系信息的权限
     const canViewCustomerContact = ['admin', 'store_manager', 'salesperson'].includes(jwtPayload?.role);
+    // 检查是否有分配箱子的权限
+    const canAssignBoxes = ['admin', 'store_manager', 'salesperson'].includes(jwtPayload?.role);
 
     useEffect(() => {
         const jwt = localStorage.getItem('jwt');
@@ -791,12 +798,35 @@ export default function OrderDetail() {
             <Space size='small' style={{ marginBottom: '2rem' }} align={'center'}>
                 <InputNumber value={count} onChange={setCount} />
                 <Button type={'primary'} onClick={handleAdd}>添加</Button>
+                {canAssignBoxes && (
+                    <Button
+                        type={'default'}
+                        icon={<InboxOutlined />}
+                        onClick={() => setBoxAssignmentVisible(true)}
+                    >
+                        从装箱单分配
+                    </Button>
+                )}
                 <ExportButton selectedKeys={[descriptionData.uid]} onSuccess={() => setSelectedKeys([])}
                     selectedCargos={selectedKeys} data={[{ ...descriptionData, key: descriptionData.uid }]} />
                 <Button onClick={handleQueryLogistics}>查询进度</Button>
                 {selectedKeys.length > 0 &&
                     <Button type={'primary'} danger onClick={() => handleDeleteCargo(selectedKeys, true)}>删除</Button>}
             </Space>
+
+            {/* 箱子分配模态框 */}
+            <BoxAssignmentModal
+                visible={boxAssignmentVisible}
+                onClose={() => setBoxAssignmentVisible(false)}
+                customerId={descriptionData.customer_ids?.[0]}
+                customerName={descriptionData.customer_name}
+                orderUid={descriptionData.uid}
+                onSuccess={(result) => {
+                    message.success(`成功分配 ${result.success?.length || 0} 个箱子`);
+                    // 可选：刷新页面或更新数据
+                }}
+            />
+
             <Form form={form} component={false}>
                 <Table components={{ body: { cell: EditableCell } }} pagination={{ onChange: cancel }} dataSource={cargoData}
                     columns={mergedColumns}

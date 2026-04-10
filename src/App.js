@@ -6,27 +6,58 @@ import {
     UnorderedListOutlined,
     UploadOutlined,
     UserSwitchOutlined,
-    TeamOutlined
+    TeamOutlined,
+    InboxOutlined,
+    ContainerOutlined,
+    UserOutlined,
+    LogoutOutlined,
+    SettingOutlined,
+    MenuOutlined,
+    SolutionOutlined,
+    GiftOutlined,
+    AccountBookOutlined
 } from '@ant-design/icons';
-import { Button, Layout, Menu, theme } from 'antd';
+import { Avatar, Button, Layout, Menu, Space, theme, Tooltip, Drawer, Grid } from 'antd';
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import { LogIcon } from "./pages/logs";
 import { menuPermissions, routePermissions, hasPermission, getLandingPage } from "./common/roleConfig";
 
 const { Header, Sider, Content } = Layout;
+const { useBreakpoint } = Grid;
 
 function App() {
+    const screens = useBreakpoint();
+    const isMobile = screens.md === false;
+    const [drawerVisible, setDrawerVisible] = useState(false);
+
     const [collapsed, setCollapsed] = useState(true);
     const [userRole, setUserRole] = useState(null);
+    const [username, setUsername] = useState('');
     const {
         token: { colorBgContainer },
     } = theme.useToken();
 
     const { pathname } = useLocation();
     const navigate = useNavigate();
+    const roleLabelMap = {
+        admin: '管理员',
+        store_manager: '店长',
+        salesperson: '业务员',
+        clerk: '文员',
+        finance: '财务',
+        worker: '操作人员'
+    };
+
+    const getSelectedMenuKey = () => {
+        const currentPath = pathname.replace(/^\//, '');
+        if (currentPath === '') return '';
+        if (currentPath.startsWith('orders/')) return 'orders';
+        if (currentPath.startsWith('packing-list/')) return 'packing-list/new';
+        return currentPath;
+    };
 
     useEffect(() => {
-        console.log(process.env)
+        // console.log(process.env)
         // if (process.env.NODE_ENV === 'development') return;
         // 从 localStorage 获取 JWT 并检查用户角色
         const jwt = localStorage.getItem('jwt');
@@ -40,6 +71,7 @@ function App() {
                 const role = payload.role;
                 // 设置用户角色
                 setUserRole(role);
+                setUsername(payload.name || payload.username || payload.phone || '');
 
                 // 检查当前路由权限，无权限则重定向到着陆页
                 const currentPath = pathname === '' ? '/' : pathname;
@@ -59,9 +91,17 @@ function App() {
         } catch (e) {
             console.error('解析 JWT 时出错:', e);
             setUserRole(null);
+            setUsername('');
             navigate("/login")
         }
     }, [pathname]);
+
+    const handleLogout = () => {
+        localStorage.removeItem('jwt');
+        setUserRole(null);
+        setUsername('');
+        navigate('/login');
+    };
 
     // 根据用户角色构建菜单项
     const allMenuItems = [
@@ -86,6 +126,31 @@ function App() {
             label: '客户管理',
         },
         {
+            key: 'packing-list/new',
+            icon: <InboxOutlined />,
+            label: '创建装箱单',
+        },
+        {
+            key: 'packing-lists',
+            icon: <ContainerOutlined />,
+            label: '装箱单列表',
+        },
+        {
+            key: 'work-details',
+            icon: <SolutionOutlined />,
+            label: '工作详情',
+        },
+        {
+            key: 'bonus-estimate',
+            icon: <GiftOutlined />,
+            label: '预计奖金',
+        },
+        {
+            key: 'finance',
+            icon: <AccountBookOutlined />,
+            label: '财务',
+        },
+        {
             key: 'logs',
             label: '操作日志',
             icon: <LogIcon />,
@@ -94,6 +159,11 @@ function App() {
             key: 'admin',
             label: '用户申请',
             icon: <UserSwitchOutlined />,
+        },
+        {
+            key: 'settings',
+            label: '设置',
+            icon: <SettingOutlined />,
         }
     ];
 
@@ -102,11 +172,9 @@ function App() {
         menuPermissions[item.key] && hasPermission(userRole, menuPermissions[item.key])
     );
 
-    return (
-        <Layout>
-            <Sider trigger={null} collapsible collapsed={collapsed} style={{
-                height: '100vh'
-            }}>
+    const siderContent = (
+        <>
+            {!isMobile && (
                 <Header style={{ padding: 0 }}>
                     <Button
                         type="link"
@@ -121,26 +189,141 @@ function App() {
                         }}
                     />
                 </Header>
-                <Menu
-                    theme="dark"
-                    mode="inline"
-                    selectedKeys={[pathname.split('/')[1]]}
-                    onClick={({ key }) => {
-                        navigate(key);
+            )}
+            <Menu
+                theme="dark"
+                mode="inline"
+                selectedKeys={[getSelectedMenuKey()]}
+                onClick={({ key }) => {
+                    navigate(key);
+                    if (isMobile) setDrawerVisible(false);
+                }}
+                style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}
+                items={menuItems}
+            />
+            <div
+                style={{
+                    padding: (!isMobile && collapsed) ? '16px 8px' : '16px',
+                    borderTop: '1px solid rgba(255,255,255,0.08)',
+                    display: 'flex',
+                    flexDirection: (!isMobile && collapsed) ? 'column' : 'row',
+                    alignItems: 'center',
+                    justifyContent: (!isMobile && collapsed) ? 'center' : 'space-between',
+                    gap: (!isMobile && collapsed) ? '16px' : '12px',
+                    color: 'rgba(255,255,255,0.85)',
+                    transition: 'all 0.3s',
+                    background: '#001529'
+                }}
+            >
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', overflow: 'hidden' }}>
+                    <Avatar size={32} icon={<UserOutlined />} style={{ flexShrink: 0, backgroundColor: 'rgba(255,255,255,0.15)' }} />
+                    {(isMobile || !collapsed) && (
+                        <div style={{ lineHeight: 1.4, overflow: 'hidden', whiteSpace: 'nowrap' }}>
+                            <div style={{ fontSize: 14, fontWeight: 500, textOverflow: 'ellipsis', overflow: 'hidden' }}>{username || '未知用户'}</div>
+                            <div style={{ fontSize: 12, opacity: 0.65 }}>
+                                {roleLabelMap[userRole] || userRole || '未登录'}
+                            </div>
+                        </div>
+                    )}
+                </div>
+                <Tooltip title="退出登录" placement={(!isMobile && collapsed) ? "right" : "top"}>
+                    <Button
+                        type="text"
+                        icon={<LogoutOutlined />}
+                        onClick={handleLogout}
+                        style={{
+                            color: 'rgba(255,255,255,0.65)',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            width: 32,
+                            height: 32,
+                            padding: 0,
+                            flexShrink: 0,
+                            borderRadius: '6px'
+                        }}
+                        onMouseEnter={(e) => {
+                            e.currentTarget.style.color = '#ff4d4f';
+                            e.currentTarget.style.backgroundColor = 'rgba(255,77,79,0.15)';
+                        }}
+                        onMouseLeave={(e) => {
+                            e.currentTarget.style.color = 'rgba(255,255,255,0.65)';
+                            e.currentTarget.style.backgroundColor = 'transparent';
+                        }}
+                    />
+                </Tooltip>
+            </div>
+        </>
+    );
+
+    return (
+        <Layout>
+            {!isMobile ? (
+                <Sider
+                    trigger={null}
+                    collapsible
+                    collapsed={collapsed}
+                    breakpoint="lg"
+                    onBreakpoint={(broken) => {
+                        setCollapsed(broken);
                     }}
-                    items={menuItems}
-                />
-            </Sider>
+                    collapsedWidth={80}
+                    style={{
+                        height: '100vh',
+                        position: 'sticky',
+                        top: 0,
+                        left: 0,
+                        zIndex: 100,
+                        display: 'flex',
+                        flexDirection: 'column'
+                    }}
+                >
+                    {siderContent}
+                </Sider>
+            ) : (
+                <Drawer
+                    styles={{ body: { padding: 0, display: 'flex', flexDirection: 'column', backgroundColor: '#001529' } }}
+                    placement="left"
+                    closable={false}
+                    onClose={() => setDrawerVisible(false)}
+                    open={drawerVisible}
+                    width={250}
+                >
+                    {siderContent}
+                </Drawer>
+            )}
             <Layout style={{
                 overflowY: 'auto',
                 maxHeight: '100vh'
             }}>
+                {isMobile && (
+                    <Header style={{
+                        padding: '0 16px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        background: '#001529',
+                        position: 'sticky',
+                        top: 0,
+                        zIndex: 100
+                    }}>
+                        <Button
+                            type="text"
+                            icon={<MenuOutlined style={{ color: 'white', fontSize: '18px' }} />}
+                            onClick={() => setDrawerVisible(true)}
+                            style={{ padding: 0, width: 40, height: 40, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                        />
+                        <div style={{ color: 'white', marginLeft: 16, fontSize: '18px', fontWeight: 500 }}>
+                            WMS 管理系统
+                        </div>
+                    </Header>
+                )}
                 <Content
                     style={{
-                        margin: '24px 16px',
-                        padding: '0 24px',
+                        margin: isMobile ? '16px' : '24px 16px',
+                        padding: isMobile ? '16px' : '0 24px',
                         minHeight: '100vh',
                         background: colorBgContainer,
+                        overflowX: 'hidden',
                         overflowY: 'auto'
                     }}
                 >

@@ -4,7 +4,8 @@ export const ROLES = {
     STORE_MANAGER: 'store_manager',
     SALESPERSON: 'salesperson',
     CLERK: 'clerk',
-    FINANCE: 'finance'
+    FINANCE: 'finance',
+    WORKER: 'worker'
 };
 
 // 菜单配置：key -> 可见角色列表
@@ -13,8 +14,14 @@ export const menuPermissions = {
     'orders': [ROLES.ADMIN, ROLES.STORE_MANAGER, ROLES.SALESPERSON, ROLES.CLERK, ROLES.FINANCE], // 订单列表
     'upload': [ROLES.ADMIN, ROLES.STORE_MANAGER, ROLES.CLERK], // 上传明细
     'customers': [ROLES.ADMIN, ROLES.STORE_MANAGER], // 客户管理
+    'packing-list/new': [ROLES.ADMIN, ROLES.STORE_MANAGER, ROLES.SALESPERSON, ROLES.WORKER], // 创建装箱单
+    'packing-lists': [ROLES.ADMIN, ROLES.STORE_MANAGER, ROLES.SALESPERSON, ROLES.WORKER, ROLES.CLERK, ROLES.FINANCE], // 装箱单列表
+    'work-details': [ROLES.ADMIN, ROLES.FINANCE, ROLES.WORKER], // 工作详情
+    'bonus-estimate': [ROLES.ADMIN, ROLES.FINANCE, ROLES.WORKER], // 预计奖金
+    'finance': [ROLES.ADMIN, ROLES.FINANCE], // 财务配置与汇总
     'logs': [ROLES.ADMIN], // 操作日志
     'admin': [ROLES.ADMIN], // 用户申请
+    'settings': [ROLES.ADMIN, ROLES.STORE_MANAGER, ROLES.SALESPERSON, ROLES.CLERK, ROLES.FINANCE, ROLES.WORKER], // 设置（所有角色）
 };
 
 // 路由权限配置
@@ -24,8 +31,14 @@ export const routePermissions = {
     '/orders/:order_id': [ROLES.ADMIN, ROLES.STORE_MANAGER, ROLES.SALESPERSON, ROLES.CLERK, ROLES.FINANCE],
     '/upload': [ROLES.ADMIN, ROLES.STORE_MANAGER, ROLES.CLERK],
     '/customers': [ROLES.ADMIN, ROLES.STORE_MANAGER],
+    '/packing-list/new': [ROLES.ADMIN, ROLES.STORE_MANAGER, ROLES.SALESPERSON, ROLES.WORKER],
+    '/packing-lists': [ROLES.ADMIN, ROLES.STORE_MANAGER, ROLES.SALESPERSON, ROLES.WORKER, ROLES.CLERK, ROLES.FINANCE],
+    '/work-details': [ROLES.ADMIN, ROLES.FINANCE, ROLES.WORKER],
+    '/bonus-estimate': [ROLES.ADMIN, ROLES.FINANCE, ROLES.WORKER],
+    '/finance': [ROLES.ADMIN, ROLES.FINANCE],
     '/logs': [ROLES.ADMIN],
     '/admin': [ROLES.ADMIN],
+    '/settings': [ROLES.ADMIN, ROLES.STORE_MANAGER, ROLES.SALESPERSON, ROLES.CLERK, ROLES.FINANCE, ROLES.WORKER], // 设置
 };
 
 // 权限检查函数
@@ -39,7 +52,8 @@ export const landingPages = {
     [ROLES.STORE_MANAGER]: '/',
     [ROLES.SALESPERSON]: '/',
     [ROLES.CLERK]: '/orders',
-    [ROLES.FINANCE]: '/orders',
+    [ROLES.FINANCE]: '/finance',
+    [ROLES.WORKER]: '/work-details',
 };
 
 // 获取角色着陆页
