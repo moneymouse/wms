@@ -125,31 +125,31 @@ function App() {
             icon: <TeamOutlined />,
             label: '客户管理',
         },
-        {
-            key: 'packing-list/new',
-            icon: <InboxOutlined />,
-            label: '创建装箱单',
-        },
-        {
-            key: 'packing-lists',
-            icon: <ContainerOutlined />,
-            label: '装箱单列表',
-        },
-        {
-            key: 'work-details',
-            icon: <SolutionOutlined />,
-            label: '工作详情',
-        },
-        {
-            key: 'bonus-estimate',
-            icon: <GiftOutlined />,
-            label: '预计奖金',
-        },
-        {
-            key: 'finance',
-            icon: <AccountBookOutlined />,
-            label: '财务',
-        },
+        // {
+        //     key: 'packing-list/new',
+        //     icon: <InboxOutlined />,
+        //     label: '创建装箱单',
+        // },
+        // {
+        //     key: 'packing-lists',
+        //     icon: <ContainerOutlined />,
+        //     label: '装箱单列表',
+        // },
+        // {
+        //     key: 'work-details',
+        //     icon: <SolutionOutlined />,
+        //     label: '工作详情',
+        // },
+        // {
+        //     key: 'bonus-estimate',
+        //     icon: <GiftOutlined />,
+        //     label: '预计奖金',
+        // },
+        // {
+        //     key: 'finance',
+        //     icon: <AccountBookOutlined />,
+        //     label: '财务',
+        // },
         {
             key: 'logs',
             label: '操作日志',
