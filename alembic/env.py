@@ -18,6 +18,12 @@ from data.database import Base
 from data.DB import OrderTable, CargoTable  # noqa: F401
 from data.user.User import UserTable  # noqa: F401
 from data.customer.Customer import CustomerTable, ReceiverTable  # noqa: F401
+from data.packing.PackingList import (  # noqa: F401
+    PackingListTable,
+    BoxTable,
+    BoxWorkerTable,
+)
+from data.finance.BonusRate import BonusRateTable  # noqa: F401
 
 # this is the Alembic Config object
 config = context.config

@@ -264,9 +264,7 @@ class TestCustomerController(APITestMixin, BaseControllerTest):
             # Mock send_file 返回真正的 Response
             from flask import Response
 
-            with patch(
-                "controllers.customer_controller.send_file"
-            ) as mock_send_file:
+            with patch("controllers.customer_controller.send_file") as mock_send_file:
                 mock_send_file.return_value = Response(
                     b"fake excel content",
                     status=200,
@@ -306,9 +304,7 @@ class TestCustomerController(APITestMixin, BaseControllerTest):
 
             from flask import Response
 
-            with patch(
-                "controllers.customer_controller.send_file"
-            ) as mock_send_file:
+            with patch("controllers.customer_controller.send_file") as mock_send_file:
                 mock_send_file.return_value = Response(
                     b"fake excel content",
                     status=200,
@@ -339,9 +335,7 @@ class TestCustomerController(APITestMixin, BaseControllerTest):
 
             from flask import Response
 
-            with patch(
-                "controllers.customer_controller.send_file"
-            ) as mock_send_file:
+            with patch("controllers.customer_controller.send_file") as mock_send_file:
                 mock_send_file.return_value = Response(
                     b"fake excel content",
                     status=200,
@@ -384,9 +378,7 @@ class TestCustomerController(APITestMixin, BaseControllerTest):
 
             from flask import Response
 
-            with patch(
-                "controllers.customer_controller.send_file"
-            ) as mock_send_file:
+            with patch("controllers.customer_controller.send_file") as mock_send_file:
                 mock_send_file.return_value = Response(
                     b"fake excel content",
                     status=200,

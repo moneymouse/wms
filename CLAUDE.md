@@ -21,7 +21,7 @@
 - **excels/** - Excel文件存储目录
 - **log/** - 日志文件存储目录
 - **doc/** - 项目文档目录
-- **migrations/** - 数据库迁移脚本
+- **migrations/** - 手工SQL迁移参考脚本（不作为自动迁移执行入口）
 - **static/** - 静态文件资源
 - **templates/** - 模板文件
 
@@ -39,7 +39,17 @@
 3. 运行测试：`python run_tests.py`
 
 ## 数据库迁移
-本项目采用alembic管理数据库版本，当数据库结构发生更新后，需要使用`docker compose exec web alembic revision --autogenerate -m "add new column"`命令进行版本更新。
+本项目采用 **Alembic** 管理数据库版本，自动迁移入口为 `alembic/` 目录（由 `alembic.ini` 的 `script_location = alembic` 指定）。
+
+当数据库结构发生更新后，请在项目根目录执行：
+
+`docker-compose -f docker-compose.dev.yml run --rm backend alembic revision --autogenerate -m "your commit message"`
+
+生成版本后建议执行：
+
+`docker-compose -f docker-compose.dev.yml run --rm backend alembic upgrade head`
+
+说明：`migrations/` 目录下的 `*.sql` 文件用于人工执行或对照参考，当前项目启动流程不会自动执行该目录下SQL。
 
 ## 接口变更
 由于需要跟前端对接，每次接口更新后，将更新写入到[doc/API-v*.*.md](doc/)中。
@@ -49,3 +59,6 @@
 
 ## Tips
 你每次执行任务之前都说一句: "Hi, Master."会让我心情更好哦！
+
+## For local information
+load @CLAUDE.local.md

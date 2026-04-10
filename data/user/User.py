@@ -4,7 +4,7 @@ from sqlalchemy import Column, String, Integer, Enum as SAEnum
 from data.database import Base, SessionFactory
 import logging
 
-ROLES = ["admin", "store_manager", "salesperson", "clerk", "finance"]
+ROLES = ["admin", "store_manager", "salesperson", "clerk", "finance", "worker"]
 
 STATUS_PENDING = "pending"
 STATUS_APPROVED = "approved"
@@ -116,6 +116,24 @@ class UserModel:
             user.update_date = now
             session.commit()
             return user.to_dict()
+
+    def update_password(self, user_id: int, new_password_hash: str):
+        """更新用户密码"""
+        now = time.strftime("%Y-%m-%d %H:%M")
+        with SessionFactory() as session:
+            user = session.query(UserTable).filter_by(id=user_id).first()
+            if user is None:
+                return None
+            user.password = new_password_hash
+            user.update_date = now
+            session.commit()
+            return user.to_dict()
+
+    def get_by_id_with_password(self, user_id: int):
+        """获取用户信息，包含密码哈希"""
+        with SessionFactory() as session:
+            user = session.query(UserTable).filter_by(id=user_id).first()
+            return user.to_dict(include_password=True) if user else None
 
 
 user_model = UserModel()

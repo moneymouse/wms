@@ -43,6 +43,11 @@ if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
     exit 1
 fi
 
+if $FLASK_ENV -eq "development"; then
+    echo "Dev mode, quit"
+    exit 1
+fi
+
 # ---------------------------------------------------------------------------
 # Run Alembic migrations
 # ---------------------------------------------------------------------------
@@ -93,36 +98,7 @@ echo "Migrations complete!"
 # ---------------------------------------------------------------------------
 if [ -n "$ADMIN_PHONE" ] && [ -n "$ADMIN_PASSWORD" ]; then
     echo "Checking for initial admin user..."
-    python -c "
-import os
-import time
-from data.database import SessionFactory
-from data.user.User import UserTable
-from Auth import hash_password
-
-phone = os.environ.get('ADMIN_PHONE', 'admin')
-password = os.environ.get('ADMIN_PASSWORD', 'admin123')
-name = os.environ.get('ADMIN_NAME', 'Administrator')
-
-with SessionFactory() as session:
-    existing = session.query(UserTable).filter_by(phone=phone).first()
-    if existing:
-        print(f'Admin user ({phone}) already exists, skipping creation.')
-    else:
-        now = time.strftime('%Y-%m-%d %H:%M')
-        admin = UserTable(
-            phone=phone,
-            name=name,
-            password=hash_password(password),
-            role='admin',
-            status='approved',
-            create_date=now,
-            update_date=now,
-        )
-        session.add(admin)
-        session.commit()
-        print(f'Created admin user: {phone}')
-"
+    python -m scripts.init_admin
 fi
 
 # ---------------------------------------------------------------------------

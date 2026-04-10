@@ -10,6 +10,8 @@ from controllers.order_controller import order_bp
 from controllers.cargo_controller import cargo_bp
 from controllers.customer_controller import customer_bp
 from controllers.log_controller import log_bp
+from controllers.packing_controller import packing_bp
+from controllers.work_finance_controller import work_finance_bp
 from services.auth_service import init_admin_user
 
 # ---------------------------------------------------------------------------
@@ -39,6 +41,8 @@ app.register_blueprint(order_bp)
 app.register_blueprint(cargo_bp)
 app.register_blueprint(customer_bp)
 app.register_blueprint(log_bp)
+app.register_blueprint(packing_bp)
+app.register_blueprint(work_finance_bp)
 
 
 # ---------------------------------------------------------------------------

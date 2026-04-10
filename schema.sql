@@ -158,3 +158,97 @@ CREATE TABLE IF NOT EXISTS users (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE INDEX IF NOT EXISTS idx_users_status ON users (status);
+
+-- -----------------------------------------------------------------------------
+-- packing_lists (装箱单)
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS packing_lists (
+    uid             VARCHAR(32)     NOT NULL,
+    list_number     VARCHAR(64)     NOT NULL,  -- 唛头：用户输入，重复时自动追加日期后缀
+    customer_id     INT             DEFAULT NULL,
+    photos          TEXT,                       -- JSON数组存储照片路径
+    creator_id      INT             NOT NULL,   -- 创建人
+    status          VARCHAR(32)     DEFAULT 'draft',  -- draft / completed
+    create_date     VARCHAR(32),
+    update_date     VARCHAR(32),
+    archive         TINYINT(1)      NOT NULL DEFAULT 0,
+    PRIMARY KEY (uid),
+    UNIQUE KEY uq_packing_lists_number (list_number),
+    CONSTRAINT fk_pl_customer
+        FOREIGN KEY (customer_id) REFERENCES customers (id)
+        ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT fk_pl_creator
+        FOREIGN KEY (creator_id) REFERENCES users (id)
+        ON DELETE RESTRICT ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE INDEX IF NOT EXISTS idx_pl_customer ON packing_lists (customer_id);
+CREATE INDEX IF NOT EXISTS idx_pl_creator ON packing_lists (creator_id);
+CREATE INDEX IF NOT EXISTS idx_pl_status ON packing_lists (status);
+
+-- -----------------------------------------------------------------------------
+-- boxes (箱子)
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS boxes (
+    uid                 VARCHAR(32)     NOT NULL,
+    packing_list_uid    VARCHAR(32)     NOT NULL,
+    item_name           VARCHAR(256),           -- 品名
+    box_number          INT             NOT NULL DEFAULT 1,  -- 箱号（每个装箱单内递增）
+    piece_count         INT             NOT NULL DEFAULT 1,  -- 件数
+    weight              FLOAT           DEFAULT NULL,  -- 重量(kg)，NULL表示未称重
+    target_order_uid    VARCHAR(32)     DEFAULT NULL,  -- 分配到的订单
+    status              VARCHAR(32)     DEFAULT 'pending',  -- pending / assigned
+    create_date         VARCHAR(32),
+    update_date         VARCHAR(32),
+    archive             TINYINT(1)      NOT NULL DEFAULT 0,
+    PRIMARY KEY (uid),
+    UNIQUE KEY uq_box_list_number (packing_list_uid, box_number),
+    CONSTRAINT fk_box_packing_list
+        FOREIGN KEY (packing_list_uid) REFERENCES packing_lists (uid)
+        ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT fk_box_order
+        FOREIGN KEY (target_order_uid) REFERENCES orders (uid)
+        ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE INDEX IF NOT EXISTS idx_box_packing_list ON boxes (packing_list_uid);
+CREATE INDEX IF NOT EXISTS idx_box_order ON boxes (target_order_uid);
+CREATE INDEX IF NOT EXISTS idx_box_status ON boxes (status);
+
+-- -----------------------------------------------------------------------------
+-- box_workers (箱子-工人关联表)
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS box_workers (
+    id              INT             NOT NULL AUTO_INCREMENT,
+    box_uid         VARCHAR(32)     NOT NULL,
+    worker_id       INT             NOT NULL,
+    create_date     VARCHAR(32),
+    PRIMARY KEY (id),
+    CONSTRAINT fk_bw_box
+        FOREIGN KEY (box_uid) REFERENCES boxes (uid)
+        ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT fk_bw_worker
+        FOREIGN KEY (worker_id) REFERENCES users (id)
+        ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE INDEX IF NOT EXISTS idx_bw_box ON box_workers (box_uid);
+CREATE INDEX IF NOT EXISTS idx_bw_worker ON box_workers (worker_id);
+
+-- -----------------------------------------------------------------------------
+-- bonus_rates (1~4人合打奖金基数)
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS bonus_rates (
+    team_size       INT             NOT NULL,
+    base_amount     FLOAT           NOT NULL DEFAULT 0,
+    updated_by      INT             DEFAULT NULL,
+    update_date     VARCHAR(32),
+    PRIMARY KEY (team_size),
+    CONSTRAINT fk_bonus_rate_user
+        FOREIGN KEY (updated_by) REFERENCES users (id)
+        ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+INSERT INTO bonus_rates (team_size, base_amount)
+VALUES (1, 0), (2, 0), (3, 0), (4, 0)
+ON DUPLICATE KEY UPDATE base_amount = VALUES(base_amount);

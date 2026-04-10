@@ -41,7 +41,9 @@ class TestLogController(BaseControllerTest, APITestMixin):
             },
         ]
 
-        with patch("controllers.log_controller.load_log", return_value=mock_logs) as mock_load_log:
+        with patch(
+            "controllers.log_controller.load_log", return_value=mock_logs
+        ) as mock_load_log:
             response = self.make_authenticated_request(
                 "GET", f"{self.base_url}/logs", admin_token
             )
@@ -59,7 +61,9 @@ class TestLogController(BaseControllerTest, APITestMixin):
         """测试管理员获取空日志"""
         mock_logs = []
 
-        with patch("controllers.log_controller.load_log", return_value=mock_logs) as mock_load_log:
+        with patch(
+            "controllers.log_controller.load_log", return_value=mock_logs
+        ) as mock_load_log:
             response = self.make_authenticated_request(
                 "GET", f"{self.base_url}/logs", admin_token
             )
@@ -82,7 +86,9 @@ class TestLogController(BaseControllerTest, APITestMixin):
                 }
             )
 
-        with patch("controllers.log_controller.load_log", return_value=mock_logs) as mock_load_log:
+        with patch(
+            "controllers.log_controller.load_log", return_value=mock_logs
+        ) as mock_load_log:
             response = self.make_authenticated_request(
                 "GET", f"{self.base_url}/logs", admin_token
             )
@@ -108,7 +114,9 @@ class TestLogController(BaseControllerTest, APITestMixin):
             },
         ]
 
-        with patch("controllers.log_controller.load_log", return_value=mock_logs) as mock_load_log:
+        with patch(
+            "controllers.log_controller.load_log", return_value=mock_logs
+        ) as mock_load_log:
             response = self.make_authenticated_request(
                 "GET", f"{self.base_url}/logs", admin_token
             )
@@ -204,7 +212,9 @@ class TestLogController(BaseControllerTest, APITestMixin):
             },
         ]
 
-        with patch("controllers.log_controller.load_log", return_value=mock_logs) as mock_load_log:
+        with patch(
+            "controllers.log_controller.load_log", return_value=mock_logs
+        ) as mock_load_log:
             response = self.make_authenticated_request(
                 "GET", f"{self.base_url}/logs", admin_token
             )
@@ -229,7 +239,9 @@ class TestLogController(BaseControllerTest, APITestMixin):
             }
         ]
 
-        with patch("controllers.log_controller.load_log", return_value=mock_logs) as mock_load_log:
+        with patch(
+            "controllers.log_controller.load_log", return_value=mock_logs
+        ) as mock_load_log:
             # 模拟多次并发请求
             responses = []
             for i in range(3):
