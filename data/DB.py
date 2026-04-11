@@ -99,10 +99,28 @@ class CargoTable(Base):
     date = Column(String(32))
     waybill_id = Column(String(256), default="")
     target_order_uid = Column(String(32), ForeignKey("orders.uid"))
+    # Unified box fields (merged from legacy boxes table)
+    packing_list_uid = Column(
+        String(32), ForeignKey("packing_lists.uid"), nullable=True
+    )
+    item_name = Column(String(256), nullable=True)
+    item_details = Column(Text, nullable=True)
+    remark = Column(String(512), nullable=True)
+    box_number = Column(Integer, nullable=True)
+    piece_count = Column(Integer, nullable=True)
+    bonus_item_id = Column(Integer, ForeignKey("bonus_items.id"), nullable=True)
+    bonus_assigned = Column(Boolean, default=False)
+    bonus_assigned_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    bonus_assigned_date = Column(String(32), nullable=True)
+    box_status = Column(String(32), default="pending")
     create_date = Column(String(32))
     update_date = Column(String(32))
 
     order = relationship("OrderTable", back_populates="cargos")
+    packing_list = relationship(
+        "PackingListTable", back_populates="boxes", lazy="select"
+    )
+    workers = relationship("BoxWorkerTable", back_populates="box", lazy="select")
 
 
 # ---------------------------------------------------------------------------
@@ -425,7 +443,41 @@ class OrderModel(MySQLModel):
 
 
 class CargoModel(MySQLModel):
-    pass
+    def update(self, uid: str, record: dict):
+        """Update cargo and keep legacy box fields synchronized for unified rows."""
+        s = SessionFactory()
+        try:
+            db_record = (
+                s.query(self.table_class).filter(self.table_class.uid == uid).first()
+            )
+            if db_record is None:
+                return
+
+            db_record.update_date = time.strftime("%Y-%m-%d %H:%M")
+            for k, v in record.items():
+                if k not in self._columns:
+                    continue
+                if v is None:
+                    continue
+                setattr(db_record, k, v)
+
+            # If this row is used as a box, keep equivalent fields aligned.
+            if db_record.packing_list_uid:
+                if "count" in record and record.get("count") is not None:
+                    db_record.piece_count = int(record.get("count"))
+                if "real_en_name" in record and record.get("real_en_name") is not None:
+                    db_record.item_name = record.get("real_en_name")
+                if "piece_count" in record and record.get("piece_count") is not None:
+                    db_record.count = int(record.get("piece_count"))
+                if "item_name" in record and record.get("item_name") is not None:
+                    db_record.real_en_name = record.get("item_name")
+
+            s.commit()
+        except Exception:
+            s.rollback()
+            raise
+        finally:
+            s.close()
 
 
 # ---------------------------------------------------------------------------

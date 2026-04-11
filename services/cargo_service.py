@@ -223,16 +223,27 @@ def apply_waybill_table(cargo_model, transfer_map: dict):
     即使 17track 注册失败，register_list 仍包含所有已更新的记录，
     error 不为 None 时调用方可检查 error.args[0] 获取 17track 错误详情。
     """
-    outbound_date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     register_list = []
     for cargo_uid, cargo in cargo_model.data_point.items():
         transfer_id = cargo.get("transfer_id")
         if transfer_id and transfer_map.get(str(transfer_id)):
             waybill_id = transfer_map[str(transfer_id)]
-            cargo_model.update(
-                cargo_uid,
-                {"waybill_id": waybill_id, "status": 1, "date": outbound_date},
-            )
+            update_payload = {"waybill_id": waybill_id}
+
+            # 装箱单箱子兼容旧系统：status=0 表示待出库。
+            if cargo.get("packing_list_uid"):
+                if cargo.get("target_order_uid") and int(cargo.get("status") or 0) != 1:
+                    update_payload["status"] = 0
+            else:
+                # 兼容旧货物流程：转单号上传即出库。
+                update_payload.update(
+                    {
+                        "status": 1,
+                        "date": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    }
+                )
+
+            cargo_model.update(cargo_uid, update_payload)
             register_list.append((cargo_uid, waybill_id))
     try:
         registerTrack(register_list)

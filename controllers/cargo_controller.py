@@ -86,9 +86,25 @@ def delete_cargo():
 @log(desc="Update cargo.", is_json=True)
 def update_cargo(uid):
     update_data = json.loads(request.data)
-    old_waybill = cargo_model.read(uid).get("waybill_id")
-    cargo_model.update(uid, update_data)
+    cargo_record = cargo_model.read(uid)
+    if cargo_record is None:
+        return jsonify({"code": 404, "msg": "cargo not found"}), 404
+
+    old_waybill = cargo_record.get("waybill_id")
+
     new_waybill = update_data.get("waybill_id")
+    if (
+        new_waybill
+        and str(new_waybill).strip()
+        and new_waybill != old_waybill
+        and cargo_record.get("packing_list_uid")
+        and cargo_record.get("target_order_uid")
+        and int(cargo_record.get("status") or 0) != 1
+    ):
+        # 兼容旧系统：0=待出库，录入转单号后保持待出库。
+        update_data["status"] = 0
+
+    cargo_model.update(uid, update_data)
     if new_waybill and new_waybill != old_waybill:
         background_register(uid, new_waybill)
     return jsonify({"code": 200, "msg": "success"})
@@ -99,7 +115,12 @@ def update_cargo(uid):
 @allow()
 @log(desc="Output cargo.")
 def output(uid):
-    cargo_model.update(uid, {"status": 1, "date": time.strftime("%Y-%m-%d %H:%M")})
+    payload = {"status": 1, "date": time.strftime("%Y-%m-%d %H:%M")}
+    cargo = cargo_model.read(uid)
+    if cargo is None:
+        return jsonify({"code": 404, "msg": "cargo not found"}), 404
+
+    cargo_model.update(uid, payload)
     cargo = cargo_model.read(uid, except_fields=["price", "status", "archive"])
     order = order_model.read(
         cargo["origin_id"].split("-")[0], _fields=["customer_name"]

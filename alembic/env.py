@@ -24,6 +24,7 @@ from data.packing.PackingList import (  # noqa: F401
     BoxWorkerTable,
 )
 from data.finance.BonusRate import BonusRateTable  # noqa: F401
+from data.finance.BonusItem import BonusItemTable  # noqa: F401
 
 # this is the Alembic Config object
 config = context.config

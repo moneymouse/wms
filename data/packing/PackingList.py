@@ -6,13 +6,19 @@ Packing List and Box ORM Models
 
 import random
 import time
+import json
 from datetime import datetime
 from typing import List, Optional
 
-from sqlalchemy import Column, Integer, String, Float, Boolean, Text, ForeignKey, func
+from sqlalchemy import Column, Integer, String, Boolean, Text, ForeignKey, func
 from sqlalchemy.orm import relationship
 
+from data.DB import CargoTable
 from data.database import Base, SessionFactory
+
+
+CARGO_STATUS_PENDING_OUTBOUND = 0
+CARGO_STATUS_OUTBOUND = 1
 
 
 # ---------------------------------------------------------------------------
@@ -40,34 +46,16 @@ class PackingListTable(Base):
     # Relationships
     customer = relationship("CustomerTable", lazy="select")
     creator = relationship("UserTable", lazy="select")
-    boxes = relationship("BoxTable", back_populates="packing_list", lazy="select")
-
-
-class BoxTable(Base):
-    """箱子表"""
-
-    __tablename__ = "boxes"
-
-    uid = Column(String(32), primary_key=True)
-    packing_list_uid = Column(
-        String(32), ForeignKey("packing_lists.uid"), nullable=False
+    boxes = relationship(
+        CargoTable,
+        back_populates="packing_list",
+        foreign_keys=[CargoTable.packing_list_uid],
+        lazy="select",
     )
-    item_name = Column(String(256))  # 品名
-    box_number = Column(Integer, nullable=False, default=1)  # 箱号（每个装箱单内递增）
-    piece_count = Column(Integer, nullable=False, default=1)  # 件数
-    weight = Column(Float, nullable=True)  # 重量(kg)，NULL表示未称重
-    target_order_uid = Column(
-        String(32), ForeignKey("orders.uid"), nullable=True
-    )  # 分配到的订单
-    status = Column(String(32), default="pending")  # pending / assigned
-    create_date = Column(String(32))
-    update_date = Column(String(32))
-    archive = Column(Boolean, default=False)
 
-    # Relationships
-    packing_list = relationship("PackingListTable", back_populates="boxes")
-    target_order = relationship("OrderTable", lazy="select")
-    workers = relationship("BoxWorkerTable", back_populates="box", lazy="select")
+
+# Backward-compatible symbol export: legacy BoxTable now points to unified cargos table.
+BoxTable = CargoTable
 
 
 class BoxWorkerTable(Base):
@@ -76,12 +64,12 @@ class BoxWorkerTable(Base):
     __tablename__ = "box_workers"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    box_uid = Column(String(32), ForeignKey("boxes.uid"), nullable=False)
+    box_uid = Column(String(32), ForeignKey("cargos.uid"), nullable=False)
     worker_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     create_date = Column(String(32))
 
     # Relationships
-    box = relationship("BoxTable", back_populates="workers")
+    box = relationship(CargoTable, back_populates="workers")
     worker = relationship("UserTable", lazy="select")
 
 
@@ -214,6 +202,27 @@ class PackingListModel:
                 if k in allowed_fields and v is not None:
                     setattr(record, k, v)
 
+            if "customer_id" in data:
+                raw_customer_id = data.get("customer_id")
+                if raw_customer_id in [None, "", 0, "0"]:
+                    record.customer_id = None
+                else:
+                    try:
+                        customer_id = int(raw_customer_id)
+                    except (TypeError, ValueError):
+                        raise ValueError("customer_id must be an integer")
+
+                    from data.customer.Customer import CustomerTable
+
+                    customer = (
+                        s.query(CustomerTable)
+                        .filter(CustomerTable.id == customer_id)
+                        .first()
+                    )
+                    if customer is None:
+                        raise ValueError(f"Customer {customer_id} not found")
+                    record.customer_id = customer_id
+
             record.update_date = time.strftime("%Y-%m-%d %H:%M")
             s.commit()
             return True
@@ -265,8 +274,17 @@ class PackingListModel:
             "uid": box.uid,
             "box_number": box.box_number,
             "item_name": box.item_name,
+            "item_details": json.loads(box.item_details) if box.item_details else [],
+            "remark": box.remark,
             "piece_count": box.piece_count,
             "weight": box.weight,
+            "bonus_item_id": box.bonus_item_id,
+            "bonus_assigned": bool(box.bonus_assigned),
+            "bonus_assigned_date": box.bonus_assigned_date,
+            "target_order_uid": box.target_order_uid,
+            "target_order_id": box.order.order_id if box.order else None,
+            "transfer_id": box.transfer_id,
+            "waybill_id": box.waybill_id,
             "status": box.status,
         }
 
@@ -279,12 +297,24 @@ class BoxModel:
     def __init__(self):
         self.table_class = BoxTable
 
+    def _build_box_tag(self, list_number: str, box_number: int) -> str:
+        mark = (list_number or "").strip()
+        if mark and box_number:
+            return f"{mark}_{box_number}"
+        if mark:
+            return mark
+        if box_number:
+            return f"BOX_{box_number}"
+        return "BOX"
+
     def create(
         self,
         packing_list_uid: str,
         item_name: str,
         piece_count: int,
         weight: float = None,
+        item_details: Optional[List[dict]] = None,
+        remark: Optional[str] = None,
     ) -> dict:
         """创建箱子"""
         uid = str(int(time.time() * 1000000)) + str(random.randint(10, 99))
@@ -306,14 +336,66 @@ class BoxModel:
             )
             next_box_number = (max_box_number or 0) + 1
 
+            normalized_details: List[dict] = []
+            if item_details:
+                for row in item_details:
+                    name = str((row or {}).get("item_name") or "").strip()
+                    raw_piece = (row or {}).get("piece_count")
+                    if not name:
+                        continue
+                    try:
+                        piece = int(raw_piece)
+                    except (TypeError, ValueError):
+                        raise ValueError("piece_count in item_details must be integer")
+                    if piece <= 0:
+                        raise ValueError(
+                            "piece_count in item_details must be greater than 0"
+                        )
+                    normalized_details.append({"item_name": name, "piece_count": piece})
+
+            if normalized_details:
+                final_item_name = "、".join(
+                    [row["item_name"] for row in normalized_details]
+                )
+                final_piece_count = sum(
+                    [row["piece_count"] for row in normalized_details]
+                )
+            else:
+                final_item_name = (item_name or "").strip()
+                try:
+                    final_piece_count = int(piece_count)
+                except (TypeError, ValueError):
+                    raise ValueError("piece_count must be integer")
+
+                if final_piece_count <= 0:
+                    raise ValueError("piece_count must be greater than 0")
+
+                if final_item_name:
+                    normalized_details = [
+                        {"item_name": final_item_name, "piece_count": final_piece_count}
+                    ]
+
             record = BoxTable(
                 uid=uid,
+                origin_id=f"BOX-{uid}",
+                transfer_id="",
+                tag=self._build_box_tag(packing_list.list_number, next_box_number),
+                count=final_piece_count,
+                real_en_name=final_item_name,
+                price=0.0,
+                status=0,
+                waybill_id="",
                 packing_list_uid=packing_list_uid,
-                item_name=item_name,
+                item_name=final_item_name,
+                item_details=(
+                    json.dumps(normalized_details, ensure_ascii=False)
+                    if normalized_details
+                    else None
+                ),
+                remark=(str(remark).strip() if remark is not None else None),
                 box_number=next_box_number,
-                piece_count=piece_count,
+                piece_count=final_piece_count,
                 weight=weight,
-                status="pending",
                 create_date=time.strftime("%Y-%m-%d %H:%M"),
             )
             s.add(record)
@@ -322,11 +404,13 @@ class BoxModel:
             return {
                 "uid": uid,
                 "packing_list_uid": packing_list_uid,
-                "item_name": item_name,
+                "item_name": final_item_name,
+                "item_details": normalized_details,
+                "remark": (str(remark).strip() if remark is not None else None),
                 "box_number": next_box_number,
-                "piece_count": piece_count,
+                "piece_count": final_piece_count,
                 "weight": weight,
-                "status": "pending",
+                "status": CARGO_STATUS_PENDING_OUTBOUND,
             }
         except Exception:
             s.rollback()
@@ -339,6 +423,7 @@ class BoxModel:
         s = SessionFactory()
         try:
             q = s.query(BoxTable).filter(BoxTable.archive == False)
+            q = q.filter(BoxTable.packing_list_uid.isnot(None))
 
             if uid:
                 record = q.filter(BoxTable.uid == uid).first()
@@ -358,11 +443,26 @@ class BoxModel:
             record = s.query(BoxTable).filter_by(uid=uid).first()
             if record is None:
                 return False
+            if record.packing_list_uid is None:
+                return False
 
-            allowed_fields = ["item_name", "weight", "piece_count"]
+            allowed_fields = [
+                "item_name",
+                "weight",
+                "piece_count",
+                "remark",
+                "item_details",
+            ]
             for k, v in data.items():
                 if k in allowed_fields:
+                    if k == "item_details" and v is not None and not isinstance(v, str):
+                        v = json.dumps(v, ensure_ascii=False)
                     setattr(record, k, v)
+
+            if "piece_count" in data and data.get("piece_count") is not None:
+                record.count = int(data.get("piece_count"))
+            if "item_name" in data and data.get("item_name") is not None:
+                record.real_en_name = data.get("item_name")
 
             record.update_date = time.strftime("%Y-%m-%d %H:%M")
             s.commit()
@@ -379,6 +479,8 @@ class BoxModel:
         try:
             record = s.query(BoxTable).filter_by(uid=uid).first()
             if record is None:
+                return False
+            if record.packing_list_uid is None:
                 return False
             record.archive = True
             record.update_date = time.strftime("%Y-%m-%d %H:%M")
@@ -400,6 +502,8 @@ class BoxModel:
             # 验证箱子存在
             box = s.query(BoxTable).filter_by(uid=box_uid).first()
             if box is None:
+                return False
+            if box.packing_list_uid is None:
                 return False
 
             # 清除现有工人关联
@@ -445,8 +549,12 @@ class BoxModel:
             box = s.query(BoxTable).filter_by(uid=box_uid).first()
             if box is None:
                 return False
+            if box.packing_list_uid is None:
+                return False
 
-            if box.status == "assigned":
+            if int(box.status or 0) == CARGO_STATUS_OUTBOUND:
+                raise ValueError(f"Box {box_uid} is already outbound")
+            if box.target_order_uid:
                 raise ValueError(f"Box {box_uid} is already assigned")
 
             # 验证订单存在
@@ -457,7 +565,12 @@ class BoxModel:
                 raise ValueError(f"Order {order_uid} not found")
 
             box.target_order_uid = order_uid
-            box.status = "assigned"
+            box.tag = self._build_box_tag(
+                box.packing_list.list_number if box.packing_list else "",
+                box.box_number or 0,
+            )
+            # 兼容旧系统：status=0 代表未出库。
+            box.status = CARGO_STATUS_PENDING_OUTBOUND
             box.update_date = time.strftime("%Y-%m-%d %H:%M")
             s.commit()
             return True
@@ -515,7 +628,7 @@ class BoxModel:
                 boxes = [
                     self._to_dict(b)
                     for b in pl.boxes
-                    if not b.archive and b.status == "pending"
+                    if not b.archive and not b.target_order_uid
                 ]
 
                 # 过滤有效箱子
@@ -536,6 +649,90 @@ class BoxModel:
         finally:
             s.close()
 
+    def batch_ship(self, packing_list_uid: str, box_uids: List[str]) -> dict:
+        """批量出货：仅允许已分配且已有转单号、且status=0的箱子出货。"""
+        results = {"success": [], "failed": []}
+        if not box_uids:
+            return results
+
+        s = SessionFactory()
+        try:
+            records = (
+                s.query(BoxTable)
+                .filter(
+                    BoxTable.archive == False,
+                    BoxTable.packing_list_uid == packing_list_uid,
+                    BoxTable.uid.in_(box_uids),
+                )
+                .all()
+            )
+            record_map = {r.uid: r for r in records}
+
+            now = time.strftime("%Y-%m-%d %H:%M")
+            for uid in box_uids:
+                box = record_map.get(uid)
+                if box is None:
+                    results["failed"].append({"uid": uid, "error": "Box not found"})
+                    continue
+
+                if int(box.status or 0) == CARGO_STATUS_OUTBOUND:
+                    results["failed"].append(
+                        {
+                            "uid": uid,
+                            "error": "Box is already outbound",
+                        }
+                    )
+                    continue
+
+                if not box.target_order_uid:
+                    results["failed"].append(
+                        {
+                            "uid": uid,
+                            "error": "Box is not assigned to order",
+                        }
+                    )
+                    continue
+
+                if not str(box.waybill_id or "").strip():
+                    results["failed"].append(
+                        {
+                            "uid": uid,
+                            "error": "Box has no waybill yet",
+                        }
+                    )
+                    continue
+
+                box.status = CARGO_STATUS_OUTBOUND
+                box.date = now
+                box.update_date = now
+                results["success"].append(uid)
+
+            s.commit()
+            return results
+        except Exception:
+            s.rollback()
+            raise
+        finally:
+            s.close()
+
+    def get_by_order_uid(self, order_uid: str) -> List[dict]:
+        """获取已分配到指定订单的箱子列表。"""
+        s = SessionFactory()
+        try:
+            records = (
+                s.query(BoxTable)
+                .filter(
+                    BoxTable.archive == False,
+                    BoxTable.packing_list_uid.isnot(None),
+                    BoxTable.target_order_uid == order_uid,
+                )
+                .order_by(BoxTable.create_date.desc(), BoxTable.box_number.asc())
+                .all()
+            )
+            return [self._to_dict(record) for record in records]
+        finally:
+            s.close()
+
     def _to_dict(self, record: BoxTable) -> dict:
         """转换为字典"""
         return {
@@ -547,9 +744,20 @@ class BoxModel:
             "mark": (record.packing_list.list_number if record.packing_list else None),
             "box_number": record.box_number,
             "item_name": record.item_name,
+            "item_details": (
+                json.loads(record.item_details) if record.item_details else []
+            ),
+            "remark": record.remark,
             "piece_count": record.piece_count,
             "weight": record.weight,
+            "bonus_item_id": record.bonus_item_id,
+            "bonus_assigned": bool(record.bonus_assigned),
+            "bonus_assigned_by": record.bonus_assigned_by,
+            "bonus_assigned_date": record.bonus_assigned_date,
             "target_order_uid": record.target_order_uid,
+            "target_order_id": record.order.order_id if record.order else None,
+            "transfer_id": record.transfer_id,
+            "waybill_id": record.waybill_id,
             "status": record.status,
             "create_date": record.create_date,
             "update_date": record.update_date,

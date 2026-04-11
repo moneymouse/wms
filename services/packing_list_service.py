@@ -176,9 +176,18 @@ def add_box(
     item_name: str,
     piece_count: int,
     weight: float = None,
+    item_details: Optional[List[dict]] = None,
+    remark: Optional[str] = None,
 ) -> dict:
     """添加箱子到装箱单"""
-    return box_model.create(packing_list_uid, item_name, piece_count, weight)
+    return box_model.create(
+        packing_list_uid,
+        item_name,
+        piece_count,
+        weight,
+        item_details=item_details,
+        remark=remark,
+    )
 
 
 def update_box(uid: str, data: dict) -> bool:
@@ -266,6 +275,16 @@ def batch_assign_boxes(box_uids: List[str], order_uid: str) -> dict:
         }
     """
     return box_model.batch_assign(box_uids, order_uid)
+
+
+def get_boxes_by_order(order_uid: str) -> List[dict]:
+    """获取已分配到指定订单的箱子。"""
+    return box_model.get_by_order_uid(order_uid)
+
+
+def ship_boxes(packing_list_uid: str, box_uids: List[str]) -> dict:
+    """批量出货：将待出库箱子更新为已出库。"""
+    return box_model.batch_ship(packing_list_uid, box_uids)
 
 
 # ---------------------------------------------------------------------------

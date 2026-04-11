@@ -43,7 +43,7 @@ if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
     exit 1
 fi
 
-if $FLASK_ENV -eq "development"; then
+if [ "${FLASK_ENV:-}" = "development" ]; then
     echo "Dev mode, quit"
     exit 1
 fi
@@ -51,10 +51,11 @@ fi
 # ---------------------------------------------------------------------------
 # Run Alembic migrations
 # ---------------------------------------------------------------------------
-echo "Running database migrations..."
+if [ "${RUN_MIGRATIONS:-false}" = "true" ]; then
+    echo "RUN_MIGRATIONS=true, running database migrations..."
 
-# Check if alembic_version table exists (indicates existing database)
-HAS_VERSION=$(python -c "
+    # Check if alembic_version table exists (indicates existing database)
+    HAS_VERSION=$(python -c "
 from sqlalchemy import create_engine, text, inspect
 import os
 try:
@@ -66,7 +67,7 @@ except:
     print('no')
 " 2>/dev/null)
 
-HAS_TABLES=$(python -c "
+    HAS_TABLES=$(python -c "
 from sqlalchemy import create_engine, text, inspect
 import os
 try:
@@ -80,18 +81,21 @@ except:
     print('no')
 " 2>/dev/null)
 
-if [ "$HAS_VERSION" = "no" ] && [ "$HAS_TABLES" = "yes" ]; then
-    echo "Existing database detected without Alembic version. Stamping as current..."
-    alembic stamp head
-elif [ "$HAS_VERSION" = "no" ] && [ "$HAS_TABLES" = "no" ]; then
-    echo "Fresh database detected. Running all migrations..."
-    alembic upgrade head
-else
-    echo "Running pending migrations..."
-    alembic upgrade head
-fi
+    if [ "$HAS_VERSION" = "no" ] && [ "$HAS_TABLES" = "yes" ]; then
+        echo "Existing database detected without Alembic version. Stamping as current..."
+        alembic stamp head
+    elif [ "$HAS_VERSION" = "no" ] && [ "$HAS_TABLES" = "no" ]; then
+        echo "Fresh database detected. Running all migrations..."
+        alembic upgrade head
+    else
+        echo "Running pending migrations..."
+        alembic upgrade head
+    fi
 
-echo "Migrations complete!"
+    echo "Migrations complete!"
+else
+    echo "RUN_MIGRATIONS=${RUN_MIGRATIONS:-false}, skipping database migrations."
+fi
 
 # ---------------------------------------------------------------------------
 # Create initial admin user if configured

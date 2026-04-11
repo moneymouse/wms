@@ -18,6 +18,8 @@ packing_bp = Blueprint("packing", __name__, url_prefix="/api")
 PACKING_CREATE_ROLES = ["admin", "store_manager", "salesperson", "worker"]
 # 允许分配箱子的角色
 BOX_ASSIGN_ROLES = ["admin", "store_manager", "salesperson"]
+# 允许出货的角色
+BOX_SHIP_ROLES = ["admin", "store_manager", "salesperson"]
 
 
 # ---------------------------------------------------------------------------
@@ -192,8 +194,24 @@ def update_packing_list(uid):
             "status": "completed"
         }
     """
-    data = request.get_json()
-    success = packing_list_service.update_packing_list(uid, data)
+    data = request.get_json() or {}
+
+    if "customer_id" in data:
+        payload = get_token_payload() or {}
+        role = payload.get("role")
+        if role not in ["admin", "store_manager"]:
+            return (
+                jsonify(
+                    {"code": 403, "msg": "Only admin/store_manager can change customer"}
+                ),
+                403,
+            )
+
+    try:
+        success = packing_list_service.update_packing_list(uid, data)
+    except ValueError as e:
+        return jsonify({"code": 400, "msg": str(e)}), 400
+
     if not success:
         return jsonify({"code": 404, "msg": "Packing list not found"}), 404
     return jsonify({"code": 200, "msg": "success"})
@@ -251,28 +269,44 @@ def add_box(list_uid):
                 "item_name": "电子产品",
                 "piece_count": 12,
                 "weight": 5.5,
-                "status": "pending"
+                "status": 0
             }
         }
     """
     data = request.get_json() or {}
     item_name = data.get("item_name", "")
     piece_count = data.get("piece_count")
+    item_details = data.get("item_details")
+    remark = data.get("remark")
     weight = data.get("weight")
 
-    if piece_count is None:
+    if item_details is not None and not isinstance(item_details, list):
+        return jsonify({"code": 400, "msg": "item_details must be a list"}), 400
+
+    if piece_count is None and not item_details:
         return jsonify({"code": 400, "msg": "piece_count is required"}), 400
 
-    try:
-        piece_count = int(piece_count)
-    except (TypeError, ValueError):
-        return jsonify({"code": 400, "msg": "piece_count must be an integer"}), 400
+    if piece_count is not None:
+        try:
+            piece_count = int(piece_count)
+        except (TypeError, ValueError):
+            return jsonify({"code": 400, "msg": "piece_count must be an integer"}), 400
 
-    if piece_count <= 0:
-        return jsonify({"code": 400, "msg": "piece_count must be greater than 0"}), 400
+        if piece_count <= 0:
+            return (
+                jsonify({"code": 400, "msg": "piece_count must be greater than 0"}),
+                400,
+            )
 
     try:
-        result = packing_list_service.add_box(list_uid, item_name, piece_count, weight)
+        result = packing_list_service.add_box(
+            list_uid,
+            item_name,
+            piece_count or 0,
+            weight,
+            item_details=item_details,
+            remark=remark,
+        )
         return jsonify({"code": 200, "data": result})
     except ValueError as e:
         return jsonify({"code": 404, "msg": str(e)}), 404
@@ -409,7 +443,7 @@ def get_unassigned_boxes(customer_id):
                             "uid": "...",
                             "item_name": "电子产品",
                             "weight": 5.5,
-                            "status": "pending"
+                            "status": 0
                         }
                     ]
                 }
@@ -481,6 +515,31 @@ def assign_boxes():
     return jsonify({"code": 200, "data": result})
 
 
+@packing_bp.post("/packing-list/<string:uid>/ship")
+@verify
+@allow(role=BOX_SHIP_ROLES)
+@log(desc="Ship selected boxes.", is_json=True)
+def ship_selected_boxes(uid):
+    """装箱单出货：仅允许将待出库箱子置为已出库。"""
+    data = request.get_json() or {}
+    box_uids = data.get("box_uids") or []
+
+    if not isinstance(box_uids, list) or len(box_uids) == 0:
+        return jsonify({"code": 400, "msg": "box_uids is required"}), 400
+
+    result = packing_list_service.ship_boxes(uid, box_uids)
+    return jsonify({"code": 200, "data": result})
+
+
+@packing_bp.get("/orders/<string:order_uid>/boxes")
+@verify
+@allow()
+def get_assigned_boxes_by_order(order_uid):
+    """获取指定订单下已分配的箱子列表。"""
+    result = packing_list_service.get_boxes_by_order(order_uid)
+    return jsonify({"code": 200, "data": result})
+
+
 # ---------------------------------------------------------------------------
 # Box Label (for printing)
 # ---------------------------------------------------------------------------
@@ -515,6 +574,8 @@ def get_box_label(uid):
         "list_number": box.get("list_number")
         or (packing_list["list_number"] if packing_list else ""),
         "item_name": box["item_name"],
+        "item_details": box.get("item_details", []),
+        "remark": box.get("remark"),
         "piece_count": box.get("piece_count", 0),
         "weight": box["weight"],
         "customer_name": packing_list["customer_name"] if packing_list else "",

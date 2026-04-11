@@ -60,17 +60,41 @@ CREATE TABLE IF NOT EXISTS cargos (
     date                VARCHAR(32),
     waybill_id          VARCHAR(256)    DEFAULT '',
     target_order_uid    VARCHAR(32),
+    -- unified box fields (legacy boxes merged into cargos)
+    packing_list_uid    VARCHAR(32)     DEFAULT NULL,
+    item_name           VARCHAR(256),
+    item_details        TEXT,
+    remark              VARCHAR(512),
+    box_number          INT             DEFAULT NULL,
+    piece_count         INT             DEFAULT NULL,
+    bonus_item_id       INT             DEFAULT NULL,
+    bonus_assigned      TINYINT(1)      NOT NULL DEFAULT 0,
+    bonus_assigned_by   INT             DEFAULT NULL,
+    bonus_assigned_date VARCHAR(32),
+    box_status          VARCHAR(32)     DEFAULT 'pending',
     create_date         VARCHAR(32),
     update_date         VARCHAR(32),
     PRIMARY KEY (uid),
     CONSTRAINT fk_cargo_order
         FOREIGN KEY (target_order_uid) REFERENCES orders (uid)
+        ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT fk_cargo_packing_list
+        FOREIGN KEY (packing_list_uid) REFERENCES packing_lists (uid)
+        ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT fk_cargo_bonus_item
+        FOREIGN KEY (bonus_item_id) REFERENCES bonus_items (id)
+        ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT fk_cargo_bonus_assigned_by
+        FOREIGN KEY (bonus_assigned_by) REFERENCES users (id)
         ON DELETE SET NULL ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE INDEX IF NOT EXISTS idx_cargos_order   ON cargos (target_order_uid);
 CREATE INDEX IF NOT EXISTS idx_cargos_transfer ON cargos (transfer_id);
 CREATE INDEX IF NOT EXISTS idx_cargos_waybill  ON cargos (waybill_id);
+CREATE INDEX IF NOT EXISTS idx_cargos_packing_list ON cargos (packing_list_uid);
+CREATE INDEX IF NOT EXISTS idx_cargos_box_status ON cargos (box_status);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_cargos_packing_box_number ON cargos (packing_list_uid, box_number);
 
 -- -----------------------------------------------------------------------------
 -- customers
@@ -187,35 +211,6 @@ CREATE INDEX IF NOT EXISTS idx_pl_creator ON packing_lists (creator_id);
 CREATE INDEX IF NOT EXISTS idx_pl_status ON packing_lists (status);
 
 -- -----------------------------------------------------------------------------
--- boxes (箱子)
--- -----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS boxes (
-    uid                 VARCHAR(32)     NOT NULL,
-    packing_list_uid    VARCHAR(32)     NOT NULL,
-    item_name           VARCHAR(256),           -- 品名
-    box_number          INT             NOT NULL DEFAULT 1,  -- 箱号（每个装箱单内递增）
-    piece_count         INT             NOT NULL DEFAULT 1,  -- 件数
-    weight              FLOAT           DEFAULT NULL,  -- 重量(kg)，NULL表示未称重
-    target_order_uid    VARCHAR(32)     DEFAULT NULL,  -- 分配到的订单
-    status              VARCHAR(32)     DEFAULT 'pending',  -- pending / assigned
-    create_date         VARCHAR(32),
-    update_date         VARCHAR(32),
-    archive             TINYINT(1)      NOT NULL DEFAULT 0,
-    PRIMARY KEY (uid),
-    UNIQUE KEY uq_box_list_number (packing_list_uid, box_number),
-    CONSTRAINT fk_box_packing_list
-        FOREIGN KEY (packing_list_uid) REFERENCES packing_lists (uid)
-        ON DELETE CASCADE ON UPDATE CASCADE,
-    CONSTRAINT fk_box_order
-        FOREIGN KEY (target_order_uid) REFERENCES orders (uid)
-        ON DELETE SET NULL ON UPDATE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
-CREATE INDEX IF NOT EXISTS idx_box_packing_list ON boxes (packing_list_uid);
-CREATE INDEX IF NOT EXISTS idx_box_order ON boxes (target_order_uid);
-CREATE INDEX IF NOT EXISTS idx_box_status ON boxes (status);
-
--- -----------------------------------------------------------------------------
 -- box_workers (箱子-工人关联表)
 -- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS box_workers (
@@ -225,7 +220,7 @@ CREATE TABLE IF NOT EXISTS box_workers (
     create_date     VARCHAR(32),
     PRIMARY KEY (id),
     CONSTRAINT fk_bw_box
-        FOREIGN KEY (box_uid) REFERENCES boxes (uid)
+        FOREIGN KEY (box_uid) REFERENCES cargos (uid)
         ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT fk_bw_worker
         FOREIGN KEY (worker_id) REFERENCES users (id)

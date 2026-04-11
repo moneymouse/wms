@@ -44,7 +44,12 @@ def create_order():
         try:
             customer = s.query(CustomerTable).filter_by(name=customer_name).first()
             if customer is None:
-                return jsonify({"code": 404, "msg": f"Customer '{customer_name}' not found"}), 404
+                return (
+                    jsonify(
+                        {"code": 404, "msg": f"Customer '{customer_name}' not found"}
+                    ),
+                    404,
+                )
             customer_id = customer.id
         finally:
             s.close()
@@ -68,7 +73,7 @@ def create_order():
 
     except RecordExist:
         return jsonify({"code": 500, "msg": "Record Existed"})
-    return jsonify({"code": 200, "msg": "success"})
+    return jsonify({"code": 200, "msg": "success", "uid": order_uid})
 
 
 # 获取订单列表（支持分页、搜索、排序）

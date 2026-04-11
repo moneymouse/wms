@@ -49,11 +49,40 @@ def get_work_details():
         return jsonify({"code": 400, "msg": str(exc)}), 400
 
 
+@work_finance_bp.get("/work/bonus")
+@verify
+@allow(role=WORK_DETAIL_ROLES)
+def get_worker_bonus():
+    """获取按天、按奖金分项统计的奖金数据。"""
+    payload = get_token_payload() or {}
+    role = payload.get("role")
+    current_user_id = payload.get("user_id")
+
+    month = request.args.get("month")
+    requested_worker_id = request.args.get("worker_id", type=int)
+
+    if role == "worker":
+        worker_id = current_user_id
+    else:
+        worker_id = requested_worker_id or current_user_id
+
+    if worker_id is None:
+        return jsonify({"code": 400, "msg": "worker_id is required"}), 400
+
+    try:
+        result = work_finance_service.get_worker_bonus_summary(
+            worker_id=worker_id, month=month
+        )
+        return jsonify({"code": 200, "data": result})
+    except ValueError as exc:
+        return jsonify({"code": 400, "msg": str(exc)}), 400
+
+
 @work_finance_bp.get("/work/bonus-estimate")
 @verify
 @allow(role=WORK_DETAIL_ROLES)
 def get_bonus_estimate():
-    """获取预计奖金，worker 仅可查看自己。"""
+    """兼容旧路由：返回新奖金统计结构。"""
     payload = get_token_payload() or {}
     role = payload.get("role")
     current_user_id = payload.get("user_id")
@@ -78,66 +107,118 @@ def get_bonus_estimate():
         return jsonify({"code": 400, "msg": str(exc)}), 400
 
 
-@work_finance_bp.get("/finance/bonus-rates")
+@work_finance_bp.get("/finance/bonus-items")
 @verify
 @allow(role=FINANCE_ROLES)
-def get_bonus_rates():
-    """获取 1~4 人合打奖金基数。"""
-    rates = work_finance_service.get_bonus_rates()
-    return jsonify({"code": 200, "data": rates})
+def get_bonus_items():
+    """获取奖金分项列表。"""
+    active_only = request.args.get("active_only", "true").lower() == "true"
+    items = work_finance_service.get_bonus_items(active_only=active_only)
+    return jsonify({"code": 200, "data": items})
 
 
-@work_finance_bp.put("/finance/bonus-rates")
+@work_finance_bp.post("/finance/bonus-items")
 @verify
 @allow(role=FINANCE_ROLES)
-def update_bonus_rates():
-    """更新奖金基数。"""
+def create_bonus_item():
+    """创建奖金分项。"""
     payload = get_token_payload() or {}
     operator_id = payload.get("user_id")
 
     body = request.get_json() or {}
-    rates_body = body.get("rates", body)
+    try:
+        item = work_finance_service.create_bonus_item(body, operator_id=operator_id)
+        return jsonify({"code": 200, "data": item, "msg": "bonus item created"})
+    except ValueError as exc:
+        return jsonify({"code": 400, "msg": str(exc)}), 400
 
-    rates = {}
-    for team_size in range(1, 5):
-        raw_value = rates_body.get(str(team_size), rates_body.get(team_size))
-        if raw_value is None:
-            return (
-                jsonify(
-                    {"code": 400, "msg": f"rate for team_size {team_size} is required"}
-                ),
-                400,
-            )
-        try:
-            value = float(raw_value)
-        except (TypeError, ValueError):
-            return (
-                jsonify(
-                    {
-                        "code": 400,
-                        "msg": f"rate for team_size {team_size} must be numeric",
-                    }
-                ),
-                400,
-            )
-        if value < 0:
-            return (
-                jsonify(
-                    {"code": 400, "msg": f"rate for team_size {team_size} must be >= 0"}
-                ),
-                400,
-            )
-        rates[team_size] = value
 
-    result = work_finance_service.set_bonus_rates(rates=rates, operator_id=operator_id)
-    return jsonify({"code": 200, "data": result, "msg": "bonus rates updated"})
+@work_finance_bp.put("/finance/bonus-items/<int:item_id>")
+@verify
+@allow(role=FINANCE_ROLES)
+def update_bonus_item(item_id: int):
+    """更新奖金分项。"""
+    payload = get_token_payload() or {}
+    operator_id = payload.get("user_id")
+
+    body = request.get_json() or {}
+    try:
+        item = work_finance_service.update_bonus_item(
+            item_id=item_id,
+            payload=body,
+            operator_id=operator_id,
+        )
+    except ValueError as exc:
+        return jsonify({"code": 400, "msg": str(exc)}), 400
+
+    if item is None:
+        return jsonify({"code": 404, "msg": "bonus item not found"}), 404
+
+    return jsonify({"code": 200, "data": item, "msg": "bonus item updated"})
+
+
+@work_finance_bp.delete("/finance/bonus-items/<int:item_id>")
+@verify
+@allow(role=FINANCE_ROLES)
+def delete_bonus_item(item_id: int):
+    """停用奖金分项（软删除）。"""
+    payload = get_token_payload() or {}
+    operator_id = payload.get("user_id")
+
+    item = work_finance_service.disable_bonus_item(
+        item_id=item_id, operator_id=operator_id
+    )
+    if item is None:
+        return jsonify({"code": 404, "msg": "bonus item not found"}), 404
+
+    return jsonify({"code": 200, "data": item, "msg": "bonus item disabled"})
+
+
+@work_finance_bp.get("/finance/bonus-allocation/pending-packing-lists")
+@verify
+@allow(role=FINANCE_ROLES)
+def get_pending_bonus_allocation_packing_lists():
+    """获取未分配奖金的装箱单列表。"""
+    month = request.args.get("month")
+    mark_search = request.args.get("q")
+
+    try:
+        result = work_finance_service.get_pending_bonus_allocation_packing_lists(
+            month=month,
+            mark_search=mark_search,
+        )
+        return jsonify({"code": 200, "data": result})
+    except ValueError as exc:
+        return jsonify({"code": 400, "msg": str(exc)}), 400
+
+
+@work_finance_bp.put("/finance/bonus-allocation/packing-list/<string:packing_list_uid>")
+@verify
+@allow(role=FINANCE_ROLES)
+def allocate_bonus_for_packing_list(packing_list_uid: str):
+    """提交某装箱单的奖金分配。"""
+    payload = get_token_payload() or {}
+    operator_id = payload.get("user_id")
+
+    body = request.get_json() or {}
+    assignments = body.get("assignments") or []
+
+    try:
+        result = work_finance_service.assign_bonus_for_packing_list(
+            packing_list_uid=packing_list_uid,
+            assignments=assignments,
+            operator_id=operator_id,
+        )
+        return jsonify({"code": 200, "data": result, "msg": "bonus allocated"})
+    except ValueError as exc:
+        return jsonify({"code": 400, "msg": str(exc)}), 400
 
 
 @work_finance_bp.get("/finance/worker-bonus-overview")
 @verify
 @allow(role=FINANCE_ROLES)
 def get_worker_bonus_overview():
-    """获取工人预计奖金汇总。"""
+    """获取工人奖金汇总。"""
     month = request.args.get("month")
     worker_id = request.args.get("worker_id", type=int)
 
