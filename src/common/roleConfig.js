@@ -17,7 +17,7 @@ export const menuPermissions = {
     'packing-list/new': [ROLES.ADMIN, ROLES.STORE_MANAGER, ROLES.SALESPERSON, ROLES.WORKER], // 创建装箱单
     'packing-lists': [ROLES.ADMIN, ROLES.STORE_MANAGER, ROLES.SALESPERSON, ROLES.WORKER, ROLES.CLERK, ROLES.FINANCE], // 装箱单列表
     'work-details': [ROLES.ADMIN, ROLES.FINANCE, ROLES.WORKER], // 工作详情
-    'bonus-estimate': [ROLES.ADMIN, ROLES.FINANCE, ROLES.WORKER], // 预计奖金
+    'bonus': [ROLES.ADMIN, ROLES.FINANCE, ROLES.WORKER], // 奖金
     'finance': [ROLES.ADMIN, ROLES.FINANCE], // 财务配置与汇总
     'logs': [ROLES.ADMIN], // 操作日志
     'admin': [ROLES.ADMIN], // 用户申请
@@ -34,6 +34,7 @@ export const routePermissions = {
     '/packing-list/new': [ROLES.ADMIN, ROLES.STORE_MANAGER, ROLES.SALESPERSON, ROLES.WORKER],
     '/packing-lists': [ROLES.ADMIN, ROLES.STORE_MANAGER, ROLES.SALESPERSON, ROLES.WORKER, ROLES.CLERK, ROLES.FINANCE],
     '/work-details': [ROLES.ADMIN, ROLES.FINANCE, ROLES.WORKER],
+    '/bonus': [ROLES.ADMIN, ROLES.FINANCE, ROLES.WORKER],
     '/bonus-estimate': [ROLES.ADMIN, ROLES.FINANCE, ROLES.WORKER],
     '/finance': [ROLES.ADMIN, ROLES.FINANCE],
     '/logs': [ROLES.ADMIN],

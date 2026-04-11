@@ -140,12 +140,13 @@ export default function WorkDetails() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [role, currentUserId, canSelectWorker, selectedWorkerId, month]);
 
-    const columns = [
+    const groupColumns = [
         {
             title: '日期',
             dataIndex: 'create_date',
             key: 'create_date',
-            width: 160
+            width: 140,
+            render: (value) => (value ? String(value).slice(0, 10) : '-')
         },
         {
             title: '唛头',
@@ -153,6 +154,24 @@ export default function WorkDetails() {
             key: 'mark',
             width: 180
         },
+        {
+            title: '箱数',
+            dataIndex: 'box_count',
+            key: 'box_count',
+            width: 80,
+            align: 'right'
+        },
+        {
+            title: '装箱单总重量(kg)',
+            dataIndex: 'total_weight',
+            key: 'total_weight',
+            width: 140,
+            align: 'right',
+            render: (value) => Number(value || 0).toFixed(2)
+        }
+    ];
+
+    const boxColumns = [
         {
             title: '箱号',
             dataIndex: 'box_number',
@@ -167,30 +186,27 @@ export default function WorkDetails() {
             ellipsis: true
         },
         {
-            title: '件数',
-            dataIndex: 'piece_count',
-            key: 'piece_count',
-            width: 80,
-            align: 'center'
-        },
-        {
             title: '重量(kg)',
             dataIndex: 'weight',
             key: 'weight',
-            width: 100,
-            render: (value) => value || 0
+            width: 120,
+            align: 'right',
+            render: (value) => Number(value || 0).toFixed(2)
         },
         {
             title: '合打人数',
             dataIndex: 'worker_count',
             key: 'worker_count',
-            width: 100,
+            width: 110,
             align: 'center',
             render: (value) => <Tag color="blue">{value || 0} 人</Tag>
         }
     ];
 
-    const counts = detailData?.counts_by_team_size || { '1': 0, '2': 0, '3': 0, '4': 0 };
+    const groups = (detailData?.groups || []).map(group => ({
+        ...group,
+        key: group.packing_list_uid
+    }));
 
     return (
         <div style={{ padding: '8px 16px' }}>
@@ -222,34 +238,36 @@ export default function WorkDetails() {
 
             <Card style={{ marginBottom: 16 }} size="small">
                 <Row gutter={[8, 16]}>
-                    <Col xs={12} sm={8} md={4}>
+                    <Col xs={12} sm={8}>
                         <Statistic title="总箱数" value={detailData?.total_boxes || 0} />
                     </Col>
-                    <Col xs={12} sm={8} md={4}>
+                    <Col xs={12} sm={8}>
                         <Statistic title="总件数" value={detailData?.total_piece_count || 0} />
                     </Col>
-                    <Col xs={12} sm={8} md={4}>
-                        <Statistic title="1人打包" value={counts['1']} suffix="箱" />
-                    </Col>
-                    <Col xs={12} sm={8} md={4}>
-                        <Statistic title="2人合打" value={counts['2']} suffix="箱" />
-                    </Col>
-                    <Col xs={12} sm={8} md={4}>
-                        <Statistic title="3人合打" value={counts['3']} suffix="箱" />
-                    </Col>
-                    <Col xs={12} sm={8} md={4}>
-                        <Statistic title="4人合打" value={counts['4']} suffix="箱" />
+                    <Col xs={24} sm={8}>
+                        <Statistic title="总重量(kg)" value={Number(detailData?.total_weight || 0).toFixed(2)} />
                     </Col>
                 </Row>
             </Card>
 
             <Card size="small" bodyStyle={{ padding: 0 }}>
                 <Table
-                    rowKey="box_uid"
+                    rowKey="key"
                     loading={loading}
-                    dataSource={detailData?.items || []}
-                    columns={columns}
+                    dataSource={groups}
+                    columns={groupColumns}
                     pagination={{ pageSize: 20, showSizeChanger: true }}
+                    expandable={{
+                        expandedRowRender: (record) => (
+                            <Table
+                                rowKey="box_uid"
+                                columns={boxColumns}
+                                dataSource={record.boxes || []}
+                                pagination={false}
+                                size="small"
+                            />
+                        )
+                    }}
                     scroll={{ x: 'max-content' }}
                     size="small"
                 />

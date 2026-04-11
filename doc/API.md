@@ -338,6 +338,7 @@ x-token: <JWT_TOKEN>
 ```json
 {
   "code": 200,
+  "uid": 3232112,
   "msg": "success"
 }
 ```

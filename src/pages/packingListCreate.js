@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import {
+    AutoComplete,
     Form,
     Select,
     Button,
@@ -14,7 +15,8 @@ import {
     Divider,
     Typography,
     Popconfirm,
-    Tabs
+    Tabs,
+    Grid
 } from 'antd';
 import {
     PlusOutlined,
@@ -28,12 +30,15 @@ import getSafeHeader from '../common/safeHeader';
 
 const { Title, Text } = Typography;
 const { Option } = Select;
+const { useBreakpoint } = Grid;
 
 const COMMON_GOODS = ['衣服', '鞋子', '包包', '日用品', '电子产品', '玩具', '化妆品', '食品', '零食', '书籍', '配件', '饰品', '五金', '文具', '护肤品', '家居', '杂货'];
 
 function PackingListTab({ tabKey, updateTabTitle }) {
     const [form] = Form.useForm();
     const [messageApi, contextHolder] = message.useMessage();
+    const screens = useBreakpoint();
+    const isMobile = !screens.sm;
 
     // 状态
     const [customers, setCustomers] = useState([]);
@@ -74,7 +79,7 @@ function PackingListTab({ tabKey, updateTabTitle }) {
                 console.error("恢复保存的状态失败", e);
             }
         }
-    }, [tabKey]);
+    }, [tabKey, form]);
 
     // 监听状态变化并持久化
     useEffect(() => {
@@ -199,6 +204,22 @@ function PackingListTab({ tabKey, updateTabTitle }) {
             const values = await boxForm.validateFields();
             setLoading(true);
 
+            const itemDetails = (values.item_details || [])
+                .map(row => ({
+                    item_name: (row?.item_name || '').trim(),
+                    piece_count: Number(row?.piece_count || 0)
+                }))
+                .filter(row => row.item_name && row.piece_count > 0);
+
+            if (!itemDetails.length) {
+                messageApi.warning('请至少填写一条“品名-件数”');
+                setLoading(false);
+                return;
+            }
+
+            const totalPieceCount = itemDetails.reduce((sum, row) => sum + row.piece_count, 0);
+            const itemNameSummary = itemDetails.map(row => row.item_name).join('、');
+
             const res = await fetch(`${endpoint}/packing-list/${packingListUid}/box`, {
                 method: 'POST',
                 headers: {
@@ -206,8 +227,10 @@ function PackingListTab({ tabKey, updateTabTitle }) {
                     'Content-Type': 'application/json'
                 },
                 body: JSON.stringify({
-                    item_name: Array.isArray(values.item_name) ? values.item_name.join(', ') : values.item_name,
-                    piece_count: values.piece_count,
+                    item_name: itemNameSummary,
+                    item_details: itemDetails,
+                    piece_count: totalPieceCount,
+                    remark: (values.remark || '').trim() || null,
                     weight: values.weight || null
                 })
             });
@@ -226,7 +249,15 @@ function PackingListTab({ tabKey, updateTabTitle }) {
                 }
 
                 setBoxes(prev => [...prev, newBox]);
-                boxForm.setFieldsValue({ weight: null, piece_count: null }); // 保留品名和操作员
+                boxForm.setFieldsValue({
+                    weight: null,
+                    remark: '',
+                    item_details: itemDetails.map(row => ({
+                        item_name: row.item_name,
+                        piece_count: row.piece_count
+                    })),
+                    worker_ids: values.worker_ids || []
+                });
                 messageApi.success('箱子添加成功');
             } else {
                 messageApi.error(data.msg || '添加失败');
@@ -377,8 +408,21 @@ function PackingListTab({ tabKey, updateTabTitle }) {
         },
         {
             title: '品名',
-            dataIndex: 'item_name',
+            dataIndex: 'item_details',
             key: 'item_name',
+            render: (_, record) => {
+                const details = record.item_details || [];
+                if (!details.length) {
+                    return record.item_name || '-';
+                }
+                return (
+                    <div>
+                        {details.map((row, idx) => (
+                            <div key={`${record.uid}-item-${idx}`}>{row.item_name} x{row.piece_count}</div>
+                        ))}
+                    </div>
+                );
+            }
         },
         {
             title: '件数',
@@ -422,6 +466,14 @@ function PackingListTab({ tabKey, updateTabTitle }) {
                     </Space>
                 );
             }
+        },
+        {
+            title: '备注',
+            dataIndex: 'remark',
+            key: 'remark',
+            width: 180,
+            ellipsis: true,
+            render: (value) => value || '-'
         }
     ];
 
@@ -521,7 +573,7 @@ function PackingListTab({ tabKey, updateTabTitle }) {
                 </>
             ) : (
                 <Card size="small" style={{ marginBottom: 16, backgroundColor: '#f6ffed', border: '1px solid #b7eb8f' }}>
-                    <Space split={<Divider type="vertical" />}>
+                    <Space wrap split={isMobile ? null : <Divider type="vertical" />}>
                         <Text type="secondary">当前唛头</Text>
                         <Text strong style={{ fontSize: 18, color: '#52c41a' }}>{listNumber}</Text>
                         <Button type="link" size="small" onClick={handleReset}>[重置/新建]</Button>
@@ -532,36 +584,77 @@ function PackingListTab({ tabKey, updateTabTitle }) {
             {/* 添加箱子 */}
             {packingListUid && (
                 <Card title="➕ 添加新箱子" style={{ marginBottom: 16 }} size="small" bodyStyle={{ padding: '12px' }}>
-                    <Form form={boxForm} layout="vertical">
+                    <Form
+                        form={boxForm}
+                        layout="vertical"
+                        initialValues={{ item_details: [{ item_name: '', piece_count: null }] }}
+                    >
                         <Form.Item
-                            name="item_name"
-                            label="品名选择 (可多选)"
-                            rules={[{ required: true, message: '选择或输入品名' }]}
+                            label="品名与件数"
                             style={{ marginBottom: 12 }}
                         >
-                            <Select
-                                mode="tags"
-                                size="large"
-                                placeholder="选择或输入品名"
-                                style={{ width: '100%' }}
-                                options={COMMON_GOODS.map(g => ({ label: g, value: g }))}
-                            />
-                        </Form.Item>
+                            <Form.List name="item_details">
+                                {(fields, { add, remove }) => (
+                                    <div>
+                                        {fields.map((field) => (
+                                            <Space
+                                                key={field.key}
+                                                align="start"
+                                                style={{ display: 'flex', width: '100%', marginBottom: 8 }}
+                                            >
+                                                <Form.Item
+                                                    {...field}
+                                                    name={[field.name, 'item_name']}
+                                                    rules={[{ required: true, message: '请输入品名' }]}
+                                                    style={{ width: isMobile ? 170 : 220, marginBottom: 24 }}
+                                                >
+                                                    <AutoComplete
+                                                        size="large"
+                                                        placeholder="选择品名或输入"
+                                                        style={{ width: '100%' }}
+                                                        options={COMMON_GOODS.map(g => ({ label: g, value: g }))}
+                                                        filterOption={(inputValue, option) =>
+                                                            (option?.value || '').toUpperCase().includes(inputValue.toUpperCase())
+                                                        }
+                                                    />
+                                                </Form.Item>
 
-                        <Form.Item
-                            name="piece_count"
-                            label="件数"
-                            rules={[{ required: true, message: '请输入件数' }]}
-                            style={{ marginBottom: 12 }}
-                        >
-                            <InputNumber
-                                size="large"
-                                placeholder="请输入件数"
-                                min={1}
-                                precision={0}
-                                step={1}
-                                style={{ width: '100%' }}
-                            />
+                                                <Form.Item
+                                                    {...field}
+                                                    name={[field.name, 'piece_count']}
+                                                    rules={[{ required: true, message: '请输入件数' }]}
+                                                    style={{ width: isMobile ? 90 : 120, marginBottom: 24 }}
+                                                >
+                                                    <InputNumber
+                                                        size="large"
+                                                        min={1}
+                                                        precision={0}
+                                                        step={1}
+                                                        placeholder="件数"
+                                                        style={{ width: '100%' }}
+                                                    />
+                                                </Form.Item>
+
+                                                <Button
+                                                    icon={<DeleteOutlined />}
+                                                    danger
+                                                    onClick={() => remove(field.name)}
+                                                    disabled={fields.length <= 1}
+                                                />
+                                            </Space>
+                                        ))}
+
+                                        <Button
+                                            type="dashed"
+                                            icon={<PlusOutlined />}
+                                            block={isMobile}
+                                            onClick={() => add({ item_name: '', piece_count: null })}
+                                        >
+                                            新增品名件数
+                                        </Button>
+                                    </div>
+                                )}
+                            </Form.List>
                         </Form.Item>
 
                         <Form.Item
@@ -599,6 +692,10 @@ function PackingListTab({ tabKey, updateTabTitle }) {
                             </Select>
                         </Form.Item>
 
+                        <Form.Item name="remark" label="备注" style={{ marginBottom: 12 }}>
+                            <Input.TextArea rows={2} placeholder="可填写额外说明信息" />
+                        </Form.Item>
+
                         <Form.Item style={{ marginBottom: 0 }}>
                             <Button
                                 type="primary"
@@ -626,10 +723,11 @@ function PackingListTab({ tabKey, updateTabTitle }) {
                             pagination={false}
                             rowKey="uid"
                             size="small"
+                            scroll={{ x: isMobile ? 680 : undefined }}
                         />
 
-                        <div style={{ marginTop: 16, textAlign: 'right' }}>
-                            <Space>
+                        <div style={{ marginTop: 16, textAlign: isMobile ? 'left' : 'right' }}>
+                            <Space wrap>
                                 <Text>
                                     总重量: <Text strong>{boxes.reduce((sum, b) => sum + (b.weight || 0), 0).toFixed(2)} kg</Text>
                                 </Text>

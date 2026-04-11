@@ -43,6 +43,8 @@ const router = createBrowserRouter([{
     }, {
         path: 'work-details', element: <WorkDetails />
     }, {
+        path: 'bonus', element: <BonusEstimate />
+    }, {
         path: 'bonus-estimate', element: <BonusEstimate />
     }, {
         path: 'finance', element: <FinanceCenter />

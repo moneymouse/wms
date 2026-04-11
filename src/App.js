@@ -17,7 +17,7 @@ import {
     GiftOutlined,
     AccountBookOutlined
 } from '@ant-design/icons';
-import { Avatar, Button, Layout, Menu, Space, theme, Tooltip, Drawer, Grid } from 'antd';
+import { Avatar, Button, Layout, Menu, theme, Tooltip, Drawer, Grid } from 'antd';
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import { LogIcon } from "./pages/logs";
 import { menuPermissions, routePermissions, hasPermission, getLandingPage } from "./common/roleConfig";
@@ -53,6 +53,8 @@ function App() {
         if (currentPath === '') return '';
         if (currentPath.startsWith('orders/')) return 'orders';
         if (currentPath.startsWith('packing-list/')) return 'packing-list/new';
+        if (currentPath.startsWith('bonus-estimate')) return 'bonus';
+        if (currentPath.startsWith('bonus')) return 'bonus';
         return currentPath;
     };
 
@@ -94,7 +96,7 @@ function App() {
             setUsername('');
             navigate("/login")
         }
-    }, [pathname]);
+    }, [pathname, navigate]);
 
     const handleLogout = () => {
         localStorage.removeItem('jwt');
@@ -125,31 +127,31 @@ function App() {
             icon: <TeamOutlined />,
             label: '客户管理',
         },
-        // {
-        //     key: 'packing-list/new',
-        //     icon: <InboxOutlined />,
-        //     label: '创建装箱单',
-        // },
-        // {
-        //     key: 'packing-lists',
-        //     icon: <ContainerOutlined />,
-        //     label: '装箱单列表',
-        // },
-        // {
-        //     key: 'work-details',
-        //     icon: <SolutionOutlined />,
-        //     label: '工作详情',
-        // },
-        // {
-        //     key: 'bonus-estimate',
-        //     icon: <GiftOutlined />,
-        //     label: '预计奖金',
-        // },
-        // {
-        //     key: 'finance',
-        //     icon: <AccountBookOutlined />,
-        //     label: '财务',
-        // },
+        {
+            key: 'packing-list/new',
+            icon: <InboxOutlined />,
+            label: '创建装箱单',
+        },
+        {
+            key: 'packing-lists',
+            icon: <ContainerOutlined />,
+            label: '装箱单列表',
+        },
+        {
+            key: 'work-details',
+            icon: <SolutionOutlined />,
+            label: '工作详情',
+        },
+        {
+            key: 'bonus',
+            icon: <GiftOutlined />,
+            label: '奖金',
+        },
+        {
+            key: 'finance',
+            icon: <AccountBookOutlined />,
+            label: '财务',
+        },
         {
             key: 'logs',
             label: '操作日志',

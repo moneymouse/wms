@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { Button, Form, Input, message, Modal, Space, Table, Typography } from 'antd';
-import { EditOutlined, SearchOutlined } from '@ant-design/icons';
+import { Button, Form, Input, message, Modal, Popconfirm, Space, Table, Typography } from 'antd';
+import { DeleteOutlined, EditOutlined, SearchOutlined } from '@ant-design/icons';
 import { endpoint } from '../config';
 import getSafeHeader from '../common/safeHeader';
 
@@ -14,6 +14,7 @@ export default function CustomerManagement() {
     const [editVisible, setEditVisible] = useState(false);
     const [editLoading, setEditLoading] = useState(false);
     const [editingCustomer, setEditingCustomer] = useState(null);
+    const [deletingCustomerId, setDeletingCustomerId] = useState(null);
     const [editForm] = Form.useForm();
 
     // 加载客户列表
@@ -87,6 +88,30 @@ export default function CustomerManagement() {
         }
     };
 
+    // 删除客户
+    const handleDeleteCustomer = async (record) => {
+        setDeletingCustomerId(record.id);
+        try {
+            const res = await fetch(`${endpoint}/del_customer/${record.id}`, {
+                method: 'POST',
+                headers: getSafeHeader()
+            });
+            const result = await res.json();
+
+            if (result.code === 200) {
+                messageX.success('删除成功！');
+                await loadCustomers();
+            } else {
+                messageX.error(result.msg || '删除失败！');
+            }
+        } catch (error) {
+            messageX.error('删除失败！');
+            console.error(error);
+        } finally {
+            setDeletingCustomerId(null);
+        }
+    };
+
     // 过滤客户列表
     const filteredCustomers = customers.filter(customer =>
         customer.name?.toLowerCase().includes(searchText.toLowerCase()) ||
@@ -121,7 +146,7 @@ export default function CustomerManagement() {
         {
             title: '操作',
             key: 'action',
-            width: 100,
+            width: 180,
             render: (_, record) => (
                 <Space>
                     <Button
@@ -131,6 +156,22 @@ export default function CustomerManagement() {
                     >
                         编辑
                     </Button>
+                    <Popconfirm
+                        title="删除客户"
+                        description={`确认删除客户“${record.name}”及其相关信息吗？`}
+                        onConfirm={() => handleDeleteCustomer(record)}
+                        okText="确认"
+                        cancelText="取消"
+                    >
+                        <Button
+                            type="link"
+                            danger
+                            icon={<DeleteOutlined />}
+                            loading={deletingCustomerId === record.id}
+                        >
+                            删除
+                        </Button>
+                    </Popconfirm>
                 </Space>
             ),
         },

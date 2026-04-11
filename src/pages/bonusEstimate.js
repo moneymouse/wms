@@ -34,7 +34,7 @@ export default function BonusEstimate() {
     const [selectedWorkerId, setSelectedWorkerId] = useState(undefined);
 
     const [loading, setLoading] = useState(false);
-    const [estimateData, setEstimateData] = useState(null);
+    const [bonusData, setBonusData] = useState(null);
 
     const role = payload?.role;
     const currentUserId = payload?.user_id;
@@ -69,7 +69,7 @@ export default function BonusEstimate() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [canSelectWorker]);
 
-    const fetchEstimate = async () => {
+    const fetchBonus = async () => {
         if (!role) return;
 
         const params = new URLSearchParams({ month });
@@ -79,17 +79,17 @@ export default function BonusEstimate() {
 
         setLoading(true);
         try {
-            const res = await fetch(`${endpoint}/work/bonus-estimate?${params.toString()}`, {
+            const res = await fetch(`${endpoint}/work/bonus?${params.toString()}`, {
                 headers: getSafeHeader()
             });
             const data = await res.json();
             if (data.code === 200) {
-                setEstimateData(data.data);
+                setBonusData(data.data);
             } else {
-                messageApi.error(data.msg || '获取预计奖金失败');
+                messageApi.error(data.msg || '获取奖金失败');
             }
         } catch (error) {
-            messageApi.error('获取预计奖金失败');
+            messageApi.error('获取奖金失败');
             console.error(error);
         } finally {
             setLoading(false);
@@ -100,31 +100,82 @@ export default function BonusEstimate() {
         if (!role) return;
         if (canSelectWorker && !selectedWorkerId) return;
         if (!canSelectWorker && !currentUserId) return;
-        fetchEstimate();
+        fetchBonus();
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [role, currentUserId, canSelectWorker, selectedWorkerId, month]);
 
-    const counts = estimateData?.counts_by_team_size || { '1': 0, '2': 0, '3': 0, '4': 0 };
-    const rates = estimateData?.rates || { '1': 0, '2': 0, '3': 0, '4': 0 };
+    const hasUnmatched = useMemo(() => {
+        const daily = bonusData?.daily || [];
+        return daily.some(row => Number(row?.by_item?.unmatched?.piece_count || 0) > 0);
+    }, [bonusData]);
 
-    const rows = [1, 2, 3, 4].map(size => {
-        const key = String(size);
-        const count = counts[key] || 0;
-        const rate = Number(rates[key] || 0);
-        return {
-            key,
-            teamLabel: `${size}人合打`,
-            count,
-            rate,
-            amount: (count * rate).toFixed(2)
+    const itemDefs = useMemo(() => {
+        const defs = (bonusData?.bonus_items || []).map(item => ({
+            key: String(item.id),
+            label: item.label,
+            base_amount: Number(item.base_amount || 0)
+        }));
+        if (hasUnmatched) {
+            defs.push({
+                key: 'unmatched',
+                label: '未匹配分项',
+                base_amount: 0
+            });
+        }
+        return defs;
+    }, [bonusData, hasUnmatched]);
+
+    const rows = (bonusData?.daily || []).map(dayRow => {
+        const row = {
+            key: dayRow.date,
+            date: dayRow.date,
+            total_piece_count: dayRow.total_piece_count || 0,
+            total_boxes: dayRow.total_boxes || 0,
+            estimated_bonus: Number(dayRow.estimated_bonus || 0).toFixed(2)
         };
+
+        itemDefs.forEach(item => {
+            row[`piece_${item.key}`] = dayRow?.by_item?.[item.key]?.piece_count || 0;
+        });
+
+        return row;
     });
 
     const columns = [
-        { title: '类型', dataIndex: 'teamLabel', key: 'teamLabel' },
-        { title: '件数(箱)', dataIndex: 'count', key: 'count', align: 'right' },
-        { title: '奖金基数', dataIndex: 'rate', key: 'rate', align: 'right' },
-        { title: '小计', dataIndex: 'amount', key: 'amount', align: 'right' }
+        {
+            title: '日期',
+            dataIndex: 'date',
+            key: 'date',
+            width: 130
+        },
+        ...itemDefs.map(item => ({
+            title: `${item.label}件数`,
+            dataIndex: `piece_${item.key}`,
+            key: `piece_${item.key}`,
+            width: 120,
+            align: 'right'
+        })),
+        {
+            title: '汇总件数',
+            dataIndex: 'total_piece_count',
+            key: 'total_piece_count',
+            width: 120,
+            align: 'right'
+        },
+        {
+            title: '汇总箱数',
+            dataIndex: 'total_boxes',
+            key: 'total_boxes',
+            width: 120,
+            align: 'right'
+        },
+        {
+            title: '预计奖金(元)',
+            dataIndex: 'estimated_bonus',
+            key: 'estimated_bonus',
+            width: 130,
+            align: 'right'
+        }
     ];
 
     const escapeCsv = (value) => {
@@ -136,28 +187,43 @@ export default function BonusEstimate() {
     };
 
     const handleExportCsv = () => {
-        if (!estimateData) {
+        if (!bonusData) {
             messageApi.warning('暂无可导出的数据');
             return;
         }
 
-        const workerName = estimateData?.worker?.name || 'unknown';
+        const workerName = bonusData?.worker?.name || 'unknown';
         const csvRows = [];
 
         csvRows.push(['月份', month]);
         csvRows.push(['工人姓名', workerName]);
-        csvRows.push(['手机号', estimateData?.worker?.phone || '']);
+        csvRows.push(['手机号', bonusData?.worker?.phone || '']);
         csvRows.push([]);
-        csvRows.push(['类型', '件数(箱)', '奖金基数', '小计']);
 
-        rows.forEach(row => {
-            csvRows.push([row.teamLabel, row.count, row.rate, row.amount]);
+        csvRows.push(['奖金分项基数']);
+        csvRows.push(['分项', '基数']);
+        (bonusData?.bonus_items || []).forEach(item => {
+            csvRows.push([item.label, Number(item.base_amount || 0).toFixed(2)]);
         });
 
         csvRows.push([]);
-        csvRows.push(['总箱数', estimateData?.total_boxes || 0]);
-        csvRows.push(['总件数', estimateData?.total_piece_count || 0]);
-        csvRows.push(['预计总奖金', Number(estimateData?.estimated_bonus || 0).toFixed(2)]);
+
+        const header = ['日期', ...itemDefs.map(item => `${item.label}件数`), '汇总件数', '汇总箱数', '预计奖金(元)'];
+        csvRows.push(header);
+        rows.forEach(row => {
+            csvRows.push([
+                row.date,
+                ...itemDefs.map(item => row[`piece_${item.key}`]),
+                row.total_piece_count,
+                row.total_boxes,
+                row.estimated_bonus
+            ]);
+        });
+
+        csvRows.push([]);
+        csvRows.push(['总箱数', bonusData?.totals?.total_boxes || 0]);
+        csvRows.push(['总件数', bonusData?.totals?.total_piece_count || 0]);
+        csvRows.push(['预计总奖金', Number(bonusData?.totals?.estimated_bonus || 0).toFixed(2)]);
 
         const csvText = csvRows.map(line => line.map(escapeCsv).join(',')).join('\n');
         const blob = new Blob(['\ufeff' + csvText], { type: 'text/csv;charset=utf-8;' });
@@ -165,7 +231,7 @@ export default function BonusEstimate() {
 
         const link = document.createElement('a');
         link.href = url;
-        link.download = `bonus_estimate_${workerName}_${month}.csv`;
+        link.download = `bonus_${workerName}_${month}.csv`;
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
@@ -175,7 +241,7 @@ export default function BonusEstimate() {
     return (
         <div style={{ padding: '8px 16px' }}>
             {contextHolder}
-            <Title level={4} style={{ marginBottom: 16 }}>我的预计奖金</Title>
+            <Title level={4} style={{ marginBottom: 16 }}>我的奖金</Title>
 
             <Card style={{ marginBottom: 16 }} size="small" bodyStyle={{ padding: '12px' }}>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
@@ -196,7 +262,7 @@ export default function BonusEstimate() {
                             optionFilterProp="label"
                         />
                     )}
-                    <Button type="primary" icon={<ReloadOutlined />} onClick={fetchEstimate}>查询</Button>
+                    <Button type="primary" icon={<ReloadOutlined />} onClick={fetchBonus}>查询</Button>
                     <Button icon={<DownloadOutlined />} onClick={handleExportCsv}>导出 CSV</Button>
                 </div>
             </Card>
@@ -204,18 +270,32 @@ export default function BonusEstimate() {
             <Card style={{ marginBottom: 16 }} size="small">
                 <Row gutter={[8, 16]}>
                     <Col xs={12} sm={8}>
-                        <Statistic title="总箱数" value={estimateData?.total_boxes || 0} />
+                        <Statistic title="总箱数" value={bonusData?.totals?.total_boxes || 0} />
                     </Col>
                     <Col xs={12} sm={8}>
-                        <Statistic title="总件数" value={estimateData?.total_piece_count || 0} />
+                        <Statistic title="总件数" value={bonusData?.totals?.total_piece_count || 0} />
                     </Col>
                     <Col xs={24} sm={8}>
                         <Statistic
                             title="预计总奖金 (元)"
-                            value={Number(estimateData?.estimated_bonus || 0).toFixed(2)}
+                            value={Number(bonusData?.totals?.estimated_bonus || 0).toFixed(2)}
                             valueStyle={{ color: '#cf1322', fontWeight: 'bold' }}
                         />
                     </Col>
+                </Row>
+            </Card>
+
+            <Card title="奖金分项基数" size="small" style={{ marginBottom: 16 }}>
+                <Row gutter={[8, 16]}>
+                    {(bonusData?.bonus_items || []).map(item => (
+                        <Col key={item.id} xs={12} sm={8} md={6}>
+                            <Statistic
+                                title={item.label}
+                                value={Number(item.base_amount || 0).toFixed(2)}
+                                suffix="元/箱"
+                            />
+                        </Col>
+                    ))}
                 </Row>
             </Card>
 
@@ -225,7 +305,7 @@ export default function BonusEstimate() {
                     loading={loading}
                     dataSource={rows}
                     columns={columns}
-                    pagination={false}
+                    pagination={{ pageSize: 20, showSizeChanger: true }}
                     scroll={{ x: 'max-content' }}
                     size="small"
                 />

@@ -306,17 +306,19 @@ export default function OrderDetail() {
     const [form] = Form.useForm();
     const [editingKey, setEditingKey] = useState('');
     const [cargoData, setCargoData] = useState([]);
+    const fetchCargoData = async () => {
+        const {
+            code,
+            data
+        } = await (await fetch(`${endpoint}/orders/${order_id}/cargo?time=${(new Date()).getTime()}`, { headers: getSafeHeader() })).json();
+        if (code === 500) {
+            message.error("17Track 获取订单跟踪信息失败")
+        }
+        setCargoData((data || []).map(v => ({ ...v, key: v['uid'] })));
+    };
     useEffect(() => {
         (async () => {
-            const {
-                code,
-                data
-            } = await (await fetch(`${endpoint}/orders/${order_id}/cargo?time=${(new Date()).getTime()}`, { headers: getSafeHeader() })).json();
-            // 传入时间戳刷缓存
-            if (code === 500) {
-                message.error("17Track 获取订单跟踪信息失败")
-            }
-            setCargoData(data.map(v => ({ ...v, key: v['uid'] })));
+            await fetchCargoData();
         })();
     }, [])
     const isEditing = (record) => {
@@ -447,27 +449,41 @@ export default function OrderDetail() {
             width: 220,
             dataIndex: 'status',
             render(statusText, record, i) {
-                const _trackStatus = trackStatus[statusText]
+                // 装箱单包裹在未出库时显示业务状态；已出库后切换为第三方轨迹状态。
+                if (record?.packing_list_uid) {
+                    const cargoStatus = Number(record?.status || 0);
+                    if (cargoStatus !== 1) {
+                        const hasWaybill = !!String(record?.waybill_id || '').trim();
+                        if (hasWaybill) {
+                            return <Badge status={'processing'} text={'待出库'} />;
+                        }
+                        return <Badge status={'warning'} text={'待上传'} />;
+                    }
+                }
+
+                const _trackStatus = trackStatus[statusText] || {
+                    status: 'default',
+                    badgeText: String(statusText ?? '未知状态'),
+                    detail: false,
+                    title: '状态'
+                };
                 const MyBadge = () => <Badge style={{ cursor: "pointer" }} status={_trackStatus.status || "processing"}
                     text={_trackStatus.badgeText} onClick={() => {
                         window.open("https://t.17track.net/zh-cn#nums=" + record['waybill_id'])
-                    }} />
+                    }} />;
                 return _trackStatus.detail ?
                     <Popover trigger="hover" content={
                         <Timeline style={{ paddingTop: '1rem' }} reverse={false}
-                            items={record['events'].map((item, i) => {
+                            items={(record['events'] || []).map((item, i) => {
                                 return {
                                     children:
                                         <Space>
-                                            <div>{item['time_raw']['date']} {item['time_raw']['time']}</div>
-                                            <div>{item['location']}, {item['description']}</div>
+                                            <div>{item?.time_raw?.date} {item?.time_raw?.time}</div>
+                                            <div>{item?.location}, {item?.description}</div>
                                         </Space>,
                                     color: i === 0 ? _trackStatus.status === 'error' ? 'red' : '#1668dc' : 'gray'
                                 }
                             })}>
-                            {/*{record['events'].map((item, i) => {*/}
-                            {/*    return <Timeline.Item>{item['location']}, {item['description']}</Timeline.Item>*/}
-                            {/*})}*/}
                         </Timeline>
                     } title={<Typography.Text level={5}>{_trackStatus.title}</Typography.Text>} placement="top">
                         <Button type={"text"} style={{ padding: "unset", background: "transparent" }}><MyBadge /></Button>
@@ -652,6 +668,7 @@ export default function OrderDetail() {
     }
 
     const [TransportationEditing, setTransportationEditing] = useState("")
+
     return (
         <>
             {messageComponent}
@@ -764,13 +781,10 @@ export default function OrderDetail() {
                         <Descriptions.Item key={k} span={v.span || 1} label={v.label.split('/')[0]}>
                             <Typography.Text
                                 copyable={!!descriptionData[v.name]}
-                                editable={
-                                    // v.name === 'order_id' && descriptionData[v.name] ? false :
-                                    {
-                                        onChange: handleDescriptionDataChange,
-                                        // text: v.name === 'order_id' ? descriptionData['uid'] : null
-                                    }}>{descriptionData[v.name]}</Typography.Text>{descriptionData[v.name] &&
-                                        <span>{v.name === 'total_weight' ? 'kg' : ''}</span>}
+                                editable={v.name === 'customer_name' ? false : {
+                                    onChange: handleDescriptionDataChange,
+                                }}>{descriptionData[v.name]}</Typography.Text>{descriptionData[v.name] &&
+                                    <span>{v.name === 'total_weight' ? 'kg' : ''}</span>}
                         </Descriptions.Item>
                     )
                 })}
@@ -823,7 +837,7 @@ export default function OrderDetail() {
                 orderUid={descriptionData.uid}
                 onSuccess={(result) => {
                     message.success(`成功分配 ${result.success?.length || 0} 个箱子`);
-                    // 可选：刷新页面或更新数据
+                    fetchCargoData();
                 }}
             />
 

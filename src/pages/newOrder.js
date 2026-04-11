@@ -32,6 +32,9 @@ export default function NewOrder() {
     // message
     const [messageX, messageComponent] = message.useMessage();
     const [loading, setLoading] = useState(false)
+    const [jwtPayload, setJwtPayload] = useState({});
+    const [salesmanOptions, setSalesmanOptions] = useState([]);
+    const [salesmanLoading, setSalesmanLoading] = useState(false);
 
     const [customerNameOptions, setCustomerNameOptions] = useState([]);
 
@@ -50,6 +53,9 @@ export default function NewOrder() {
     const [createCustomerVisible, setCreateCustomerVisible] = useState(false);
     const [createCustomerForm] = Form.useForm();
     const [createCustomerLoading, setCreateCustomerLoading] = useState(false);
+
+    const currentUserId = jwtPayload?.user_id ?? jwtPayload?.id ?? jwtPayload?.uid;
+    const currentUserLabel = `${jwtPayload?.name || jwtPayload?.username || jwtPayload?.phone || '当前用户'} (${jwtPayload?.phone || '-'})`;
 
     async function handleModalOpen() {
         await updateCustomerName()
@@ -138,9 +144,60 @@ export default function NewOrder() {
         searchParams.get("orderId");
         loadFromLocalStorage();
     }, []);
+
+    useEffect(() => {
+        const jwt = localStorage.getItem('jwt');
+        if (!jwt) return;
+        try {
+            const parts = jwt.split('.');
+            if (parts.length === 3) {
+                setJwtPayload(JSON.parse(atob(parts[1])));
+            }
+        } catch (e) {
+            console.error('解析 JWT 时出错:', e);
+        }
+    }, []);
+
+    useEffect(() => {
+        (async () => {
+            setSalesmanLoading(true);
+            try {
+                const res = await (await fetch(`${endpoint}/users/list`, { headers: getSafeHeader() })).json();
+                if (res.code === 200 && Array.isArray(res.data)) {
+                    setSalesmanOptions(res.data.map((user) => ({
+                        value: user.id,
+                        label: `${user.name || '-'} (${user.phone || '-'})`
+                    })));
+                }
+            } finally {
+                setSalesmanLoading(false);
+            }
+        })();
+    }, []);
+
+    useEffect(() => {
+        if (currentUserId === undefined || currentUserId === null) return;
+        setSalesmanOptions((prev) => {
+            if (prev.some((item) => Number(item.value) === Number(currentUserId))) {
+                return prev;
+            }
+            return [{ value: Number(currentUserId), label: currentUserLabel }, ...prev];
+        });
+    }, [currentUserId, currentUserLabel]);
+
+    useEffect(() => {
+        if (currentUserId === undefined || currentUserId === null) return;
+        const existingSalesmanId = form.getFieldValue('salesman_id');
+        if (existingSalesmanId === undefined || existingSalesmanId === null || existingSalesmanId === '') {
+            form.setFieldValue('salesman_id', Number(currentUserId));
+        }
+    }, [currentUserId, form]);
     // 清空表单并从localStorage中移除保存的数据
     const handleClearForm = () => {
         form.resetFields();
+        if (currentUserId !== undefined && currentUserId !== null) {
+            form.setFieldValue('salesman_id', Number(currentUserId));
+        }
         localStorage.removeItem(FORM_STORAGE_KEY);
         messageX.success('表单已清空');
     };
@@ -164,16 +221,51 @@ export default function NewOrder() {
     const handleFinish = async (values) => {
         setLoading(true)
         try {
-            values['en_name'] = (values['en_name'] || '').toUpperCase();
+            const submitValues = { ...values };
+            submitValues.en_name = (submitValues.en_name || '').toUpperCase();
+
+            const selectedSalesmanId = submitValues.salesman_id === undefined || submitValues.salesman_id === null || submitValues.salesman_id === ''
+                ? (currentUserId !== undefined && currentUserId !== null ? Number(currentUserId) : undefined)
+                : Number(submitValues.salesman_id);
+
+            // 创建订单接口不接收业务员字段，创建后通过二次请求设置负责人
+            delete submitValues.salesman_id;
 
             const res = await (await fetch(`${endpoint}/create`, {
                 headers: getSafeHeader(),
                 method: 'POST',
-                body: JSON.stringify(values)
+                body: JSON.stringify(submitValues)
             })).json();
             if (res['code'] === 200) {
+                if (selectedSalesmanId !== undefined && !Number.isNaN(selectedSalesmanId)) {
+                    const orderUid = res?.uid || res?.data?.uid || res?.order_uid || res?.data?.order_uid;
+                    if (orderUid) {
+                        try {
+                            const setRes = await (await fetch(`${endpoint}/orders/${orderUid}/salesman`, {
+                                method: 'PUT',
+                                headers: {
+                                    ...getSafeHeader(),
+                                    'Content-Type': 'application/json'
+                                },
+                                body: JSON.stringify({ user_id: selectedSalesmanId })
+                            })).json();
+                            if (setRes?.code !== 200) {
+                                messageX.warning('订单已创建，但业务员设置失败，请在订单详情中修改。');
+                            }
+                        } catch (e) {
+                            console.error('设置业务员失败:', e);
+                            messageX.warning('订单已创建，但业务员设置失败，请在订单详情中修改。');
+                        }
+                    } else {
+                        messageX.warning('订单已创建，但接口未返回uid，无法自动设置业务员。');
+                    }
+                }
+
                 // Reset form to initial state.
                 form.resetFields();
+                if (currentUserId !== undefined && currentUserId !== null) {
+                    form.setFieldValue('salesman_id', Number(currentUserId));
+                }
                 messageX.success('创建成功！');
 
                 // 清空localStorage中保存的表单数据
@@ -219,7 +311,7 @@ export default function NewOrder() {
         updateCustomerName();
     }, []);
 
-    const [customerName, setCustomerName] = useState('')
+    // const [customerName, setCustomerName] = useState('')
     const handleSelect = async (value) => {
         // 选择客户后，更新其收件人列表（value是customer_id）
         const res = await fetch(`${endpoint}/receiver_list/${value}`, { headers: getSafeHeader() });
@@ -274,6 +366,21 @@ export default function NewOrder() {
                 {/*        </Item>*/}
                 {/*    </Col>*/}
                 {/*</Row>*/}
+                <Row gutter={16}>
+                    <Col span={8}>
+                        <Item name={'salesman_id'} label={'业务员/Salesman'} rules={[{ required: true }]}>
+                            <Select
+                                showSearch
+                                placeholder={'请选择业务员'}
+                                loading={salesmanLoading}
+                                options={salesmanOptions}
+                                filterOption={(input, option) =>
+                                    (option?.label || '').toLowerCase().includes(input.toLowerCase())
+                                }
+                            />
+                        </Item>
+                    </Col>
+                </Row>
                 <Typography.Title level={5} style={{ marginBottom: '1rem' }}>
                     基本信息/Basic Information
                     <Button

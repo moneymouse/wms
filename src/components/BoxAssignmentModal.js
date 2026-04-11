@@ -82,6 +82,46 @@ export default function BoxAssignmentModal({
         return mark ? `${mark}-${seq}` : `箱号 ${seq}`;
     };
 
+    const getBoxItemDetails = (box) => {
+        const details = Array.isArray(box?.item_details) ? box.item_details : [];
+        if (details.length > 0) {
+            return details
+                .map((row) => {
+                    const itemName = String(row?.item_name || '').trim();
+                    const pieceCount = Number(row?.piece_count || 0);
+                    if (!itemName) return null;
+                    return {
+                        itemName,
+                        pieceCount: pieceCount > 0 ? pieceCount : 0
+                    };
+                })
+                .filter(Boolean);
+        }
+
+        const fallbackName = String(box?.item_name || '').trim();
+        const fallbackCount = Number(box?.piece_count || 0);
+        return fallbackName
+            ? [{ itemName: fallbackName, pieceCount: fallbackCount > 0 ? fallbackCount : 0 }]
+            : [];
+    };
+
+    const renderBoxItemDetails = (box) => {
+        const details = getBoxItemDetails(box);
+        if (!details.length) {
+            return <Text type="secondary">-</Text>;
+        }
+
+        return (
+            <Space direction="vertical" size={1}>
+                {details.map((detail, idx) => (
+                    <Text key={`${box.uid}-detail-${idx}`}>
+                        {detail.itemName} x {detail.pieceCount}
+                    </Text>
+                ))}
+            </Space>
+        );
+    };
+
     const fetchUnassignedBoxes = async () => {
         setLoading(true);
         try {
@@ -318,17 +358,20 @@ export default function BoxAssignmentModal({
                                                 render: (_, record, index) => getBoxSequence(record, index)
                                             },
                                             {
-                                                title: '品名',
-                                                dataIndex: 'item_name',
-                                                key: 'item_name',
-                                                ellipsis: true
+                                                title: '品名件数明细',
+                                                key: 'item_details',
+                                                width: 260,
+                                                render: (_, record) => renderBoxItemDetails(record)
                                             },
                                             {
-                                                title: '件数',
+                                                title: '总件数',
                                                 dataIndex: 'piece_count',
                                                 key: 'piece_count',
                                                 width: 90,
-                                                render: (c) => c || 0
+                                                render: (c, record) => {
+                                                    if (c !== undefined && c !== null) return c;
+                                                    return getBoxItemDetails(record).reduce((sum, row) => sum + (row.pieceCount || 0), 0);
+                                                }
                                             },
                                             {
                                                 title: '重量',
