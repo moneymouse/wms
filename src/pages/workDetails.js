@@ -241,12 +241,12 @@ export default function WorkDetails() {
                     <Col xs={12} sm={8}>
                         <Statistic title="总箱数" value={detailData?.total_boxes || 0} />
                     </Col>
-                    <Col xs={12} sm={8}>
+                    {/* <Col xs={12} sm={8}>
                         <Statistic title="总件数" value={detailData?.total_piece_count || 0} />
-                    </Col>
-                    <Col xs={24} sm={8}>
+                    </Col> */}
+                    {/* <Col xs={24} sm={8}>
                         <Statistic title="总重量(kg)" value={Number(detailData?.total_weight || 0).toFixed(2)} />
-                    </Col>
+                    </Col> */}
                 </Row>
             </Card>
 

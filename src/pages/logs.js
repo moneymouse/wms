@@ -1,9 +1,9 @@
-import React, {useEffect, useState} from 'react'
-import {PicCenterOutlined} from "@ant-design/icons";
-import {Table, Typography, Card, Space, Tag, Collapse, message, Empty} from "antd";
-import {endpoint} from "../config";
+import React, { useEffect, useState } from 'react'
+import { PicCenterOutlined } from "@ant-design/icons";
+import { Table, Typography, Card, Space, Tag, Collapse, message, Empty } from "antd";
+import { endpoint } from "../config";
 import getSafeHeader from "../common/safeHeader"
-import {useNavigate} from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 
 const { Panel } = Collapse;
 const { Title, Text } = Typography;
@@ -28,7 +28,7 @@ export default function () {
                 headers: getSafeHeader()
             })).json();
             console.log(response);
-            const data = response.data.map((v, i) => ({...v, key: i })) || [];
+            const data = response.data.map((v, i) => ({ ...v, key: i })) || [];
             setLogs(data);
             setPagination({
                 ...pagination,
@@ -128,6 +128,20 @@ export default function () {
             ellipsis: true,
         },
         {
+            title: '操作用户',
+            dataIndex: 'user_name',
+            key: 'user_name',
+            width: 150,
+            render: (name) => name ? <Text strong>{name}</Text> : '-',
+        },
+        {
+            title: '用户角色',
+            dataIndex: 'user_role',
+            key: 'user_role',
+            width: 120,
+            render: (role) => role ? <Tag color={role === 'admin' ? 'red' : 'blue'}>{role}</Tag> : '-',
+        },
+        {
             title: 'PC名称',
             dataIndex: 'pc_name',
             key: 'pc_name',
@@ -188,7 +202,7 @@ export default function () {
 
     if (!isAdmin) {
         return (
-            <Card style={{marginTop: '20px'}}>
+            <Card style={{ marginTop: '20px' }}>
                 <Empty
                     description="无权限查看操作日志"
                     image={Empty.PRESENTED_IMAGE_SIMPLE}
@@ -213,14 +227,14 @@ export default function () {
                         (record.kwargs && Object.keys(record.kwargs).length > 0) ||
                         (record.json && Object.keys(record.json).length > 0),
                 }}
-                scroll={{ x: 1000 }}
+                scroll={{ x: 1200 }}
             />
         </Card>
     );
 }
 
-function LogIcon (){
+function LogIcon() {
     return <PicCenterOutlined />
 }
 
-export {LogIcon}
+export { LogIcon }

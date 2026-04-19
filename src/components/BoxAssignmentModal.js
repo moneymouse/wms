@@ -136,6 +136,7 @@ export default function BoxAssignmentModal({
             const data = await res.json();
 
             if (data.code === 200) {
+                console.log(data.data)
                 setPackingGroups(data.data || []);
             } else {
                 messageApi.error(data.msg || '获取数据失败');
@@ -304,7 +305,14 @@ export default function BoxAssignmentModal({
                             description="未找到匹配的唛头"
                         />
                     ) : (
-                        <Collapse defaultActiveKey={filteredGroups.map(g => g.packing_list_uid)}>
+                        <Collapse
+                            defaultActiveKey={filteredGroups.map(g => g.packing_list_uid)}
+                            style={{
+                                maxHeight: '50vh',
+                                overflowY: 'auto',
+                                paddingRight: 8
+                            }}
+                        >
                             {filteredGroups.map(group => (
                                 <Panel
                                     key={group.packing_list_uid}

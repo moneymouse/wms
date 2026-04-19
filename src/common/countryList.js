@@ -129,7 +129,7 @@ const countryList = [
     },
     {
         "label": "法属美特罗波利坦/FRANCE,, FX",
-        "value": "FRANCE"
+        "value": "FRANCE,, FX"
     },
     {
         "label": "根西岛/GUERNSEY, GG",
@@ -137,7 +137,7 @@ const countryList = [
     },
     {
         "label": "南乔治亚岛和南桑威奇群岛/SOUTH, GS",
-        "value": "SOUTH"
+        "value": "SOUTH, GS"
     },
     {
         "label": "赫德岛和麦克唐纳岛/HEARD, HM",
@@ -229,7 +229,7 @@ const countryList = [
     },
     {
         "label": "南苏丹共和国/SOUTH, SS",
-        "value": "SOUTH, SS"
+        "value": "SOUTH"
     },
     {
         "label": "巴勒斯坦/PALESTINE, PS",
@@ -457,7 +457,7 @@ const countryList = [
     },
     {
         "label": "法国/France, FR",
-        "value": "France, FR"
+        "value": "FRANCE"
     },
     {
         "label": "法罗群岛/Faroe, FO",
@@ -761,7 +761,7 @@ const countryList = [
     },
     {
         "label": "南非/South, ZA",
-        "value": "South, ZA"
+        "value": "SOUTH, ZA"
     },
     {
         "label": "尼泊尔/Nepal, NP",
@@ -953,11 +953,11 @@ const countryList = [
     },
     {
         "label": "新喀里多尼亚/New, NC",
-        "value": "NEW"
+        "value": "NEW, NC"
     },
     {
         "label": "新西兰/New, NZ",
-        "value": "New, NZ"
+        "value": "NEW"
     },
     {
         "label": "匈牙利/Hungary, HU",

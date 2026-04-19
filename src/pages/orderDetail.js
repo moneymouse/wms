@@ -26,7 +26,7 @@ import ExportButton from "../components/ExportButton";
 import trackStatus from "../common/trackStatus";
 import GoodInput from "../components/GoodName";
 import BoxAssignmentModal from "../components/BoxAssignmentModal";
-import { InboxOutlined } from "@ant-design/icons";
+import { DeleteOutlined, InboxOutlined } from "@ant-design/icons";
 
 const passHash = '18667b982b1c774d3c096422e457906afb227cfc7f956d3f4fc1f9bc07b98862';
 
@@ -152,7 +152,9 @@ export default function OrderDetail() {
     // 检查是否有查看客户联系信息的权限
     const canViewCustomerContact = ['admin', 'store_manager', 'salesperson'].includes(jwtPayload?.role);
     // 检查是否有分配箱子的权限
-    const canAssignBoxes = ['admin', 'store_manager', 'salesperson'].includes(jwtPayload?.role);
+    const canAssignBoxes = ['admin', 'store_manager', 'salesperson', 'clerk'].includes(jwtPayload?.role);
+    // 检查是否有包裹出货权限
+    const canShipCargos = ['admin', 'store_manager', 'salesperson', 'clerk'].includes(jwtPayload?.role);
 
     useEffect(() => {
         const jwt = localStorage.getItem('jwt');
@@ -390,6 +392,17 @@ export default function OrderDetail() {
             width: 200,
             render: (text, record, i) => text && <Typography.Text copyable key={i}>{text}</Typography.Text>
         },
+        {
+            title: '唛头',
+            key: 'tag',
+            dataIndex: 'tag',
+            ellipsis: false,
+            editable: true,
+            width: 150,
+            render(text, _, i) {
+                return text && <Typography.Text copyable key={i}>{text}</Typography.Text>
+            }
+        },
         // {
         //     title: '唛头',
         //     key: 'tag',
@@ -450,20 +463,22 @@ export default function OrderDetail() {
             dataIndex: 'status',
             render(statusText, record, i) {
                 // 装箱单包裹在未出库时显示业务状态；已出库后切换为第三方轨迹状态。
+                let effectiveStatusText = statusText;
                 if (record?.packing_list_uid) {
                     const cargoStatus = Number(record?.status || 0);
                     if (cargoStatus !== 1) {
-                        const hasWaybill = !!String(record?.waybill_id || '').trim();
-                        if (hasWaybill) {
-                            return <Badge status={'processing'} text={'待出库'} />;
-                        }
-                        return <Badge status={'warning'} text={'待上传'} />;
+                        return <Badge status={'processing'} text={'待出库'} />;
+                    }
+
+                    // For shipped packing-list boxes, prefer latest 17track status when available.
+                    if (record?.track_status) {
+                        effectiveStatusText = record.track_status;
                     }
                 }
 
-                const _trackStatus = trackStatus[statusText] || {
+                const _trackStatus = trackStatus[effectiveStatusText] || {
                     status: 'default',
-                    badgeText: String(statusText ?? '未知状态'),
+                    badgeText: String(effectiveStatusText ?? '未知状态'),
                     detail: false,
                     title: '状态'
                 };
@@ -539,13 +554,13 @@ export default function OrderDetail() {
                 ) : (
                     <Space size={'middle'}>
                         <Popconfirm
-                            title="删除包装箱"
-                            description="你确认要删除该包装箱吗？"
-                            onConfirm={handleDeleteCargo.bind({}, [record.uid])}
-                            okText="是的"
+                            title="移除包裹关联"
+                            description="你确认要将该包裹从当前订单中移除吗？"
+                            onConfirm={() => handleDeleteCargo([record.uid])}
+                            okText="确认移除"
                             cancelText="取消"
                         >
-                            <Button type={'text'} danger>删除</Button>
+                            <Button type={'text'} danger>移除</Button>
                         </Popconfirm>
                         <Button type={'text'} style={{ color: "#1677FF" }} disabled={editingKey !== ''}
                             onClick={() => edit(record)}>
@@ -592,33 +607,90 @@ export default function OrderDetail() {
             },
         };
     });
-    // 删除包装箱
-    const handleDeleteCargo = async (records, deleteSelected = false) => {
-        if (!window.confirm("确认删除吗？")) return
-        if (!verify()) message.error('密码错误！');
-        else {
-            //删除逻辑
-            const timestamp = (new Date()).getTime().toString(16);
-            console.log(records)
-            const record_ids = deleteSelected ? records : records.map(r => r.uid);
-            await (await fetch(`${endpoint}/cargo`, {
-                headers: getSafeHeader(),
-                body: JSON.stringify({ cargo_id_list: record_ids }),
-                method: 'DELETE'
-            })).json();
-
-            // // 更新cargoData状态，移除id在record_ids中的项
-            setCargoData(prevState => {
-                return prevState.filter(item => !record_ids.includes(item.key));
-            });
-
-            // 清除选中状态
-            if (deleteSelected) setSelectedKeys([]);
-
-            messageX.success('删除成功！');
-            // window.location.reload();
+    // 从订单移除包裹（仅解绑，不删除包裹）
+    const handleDeleteCargo = async (records) => {
+        if (!verify()) {
+            message.error('密码错误！');
+            return;
         }
+
+        const record_ids = records
+            .map((r) => (typeof r === 'string' ? r : (r?.uid || r?.key)))
+            .filter(Boolean);
+
+        if (record_ids.length === 0) {
+            messageX.warning('未找到可移除的包裹');
+            return;
+        }
+
+        await (await fetch(`${endpoint}/cargo/unbind`, {
+            headers: getSafeHeader(),
+            body: JSON.stringify({ cargo_id_list: record_ids }),
+            method: 'POST'
+        })).json();
+
+        // 更新页面：移除当前订单列表中已解绑包裹
+        setCargoData(prevState => prevState.filter(item => !record_ids.includes(item.key)));
+        setSelectedKeys(prevState => prevState.filter(key => !record_ids.includes(key)));
+
+        messageX.success(`已从订单移除 ${record_ids.length} 个包裹`);
     }
+
+    const handleShipSelectedCargos = async () => {
+        if (!canShipCargos) {
+            messageX.error('你没有包裹出货权限');
+            return;
+        }
+        if (selectedKeys.length === 0) {
+            messageX.warning('请先选择要出货的包裹');
+            return;
+        }
+        if (!verify()) {
+            message.error('密码错误！');
+            return;
+        }
+
+        setShippingSelected(true);
+        try {
+            const results = await Promise.all(
+                selectedKeys.map(async (cargoUid) => {
+                    try {
+                        const data = await (
+                            await fetch(`${endpoint}/cargo/${cargoUid}/output`, {
+                                headers: getSafeHeader(),
+                                method: 'POST'
+                            })
+                        ).json();
+                        return {
+                            cargoUid,
+                            success: data.code === 200,
+                            msg: data.msg || ''
+                        };
+                    } catch (_) {
+                        return {
+                            cargoUid,
+                            success: false,
+                            msg: '请求失败'
+                        };
+                    }
+                })
+            );
+
+            const successCount = results.filter((item) => item.success).length;
+            const failedCount = results.length - successCount;
+
+            if (failedCount > 0) {
+                messageX.warning(`已出货 ${successCount} 个包裹，失败 ${failedCount} 个`);
+            } else {
+                messageX.success(`已出货 ${successCount} 个包裹`);
+            }
+
+            setSelectedKeys([]);
+            await fetchCargoData();
+        } finally {
+            setShippingSelected(false);
+        }
+    };
 
     const [count, setCount] = useState(1);//包装箱添加计数
     const handleAdd = async () => {
@@ -662,6 +734,7 @@ export default function OrderDetail() {
 
     // 选择打印
     const [selectedKeys, setSelectedKeys] = useState([]);
+    const [shippingSelected, setShippingSelected] = useState(false);
     // 打印
     const handlePrint = () => {
         window.open(`${endpoint}/cargo/pdf/${selectedKeys.join('_')}`);
@@ -824,8 +897,30 @@ export default function OrderDetail() {
                 <ExportButton selectedKeys={[descriptionData.uid]} onSuccess={() => setSelectedKeys([])}
                     selectedCargos={selectedKeys} data={[{ ...descriptionData, key: descriptionData.uid }]} />
                 <Button onClick={handleQueryLogistics}>查询进度</Button>
-                {selectedKeys.length > 0 &&
-                    <Button type={'primary'} danger onClick={() => handleDeleteCargo(selectedKeys, true)}>删除</Button>}
+                {canShipCargos && (
+                    <Popconfirm
+                        title="出货已选包裹"
+                        description={`已选择 ${selectedKeys.length} 个包裹，请确认信息准确后再标记出货。`}
+                        onConfirm={handleShipSelectedCargos}
+                        okText="确认出货"
+                        cancelText="取消"
+                    >
+                        <Button type={'primary'} loading={shippingSelected}>出货（{selectedKeys.length}）</Button>
+                    </Popconfirm>
+                )}
+                {selectedKeys.length > 0 && (
+                    <Popconfirm
+                        title={`批量移除 ${selectedKeys.length} 个包裹`}
+                        description="确认将选中的包裹从当前订单移除吗？"
+                        onConfirm={() => handleDeleteCargo(selectedKeys)}
+                        okText="确认移除"
+                        cancelText="取消"
+                    >
+                        <Button danger icon={<DeleteOutlined />}>
+                            批量移除（{selectedKeys.length}）
+                        </Button>
+                    </Popconfirm>
+                )}
             </Space>
 
             {/* 箱子分配模态框 */}

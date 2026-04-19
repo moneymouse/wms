@@ -13,6 +13,7 @@ import AdminPage from "./pages/admin";
 import CustomerManagement from "./pages/customerManagement";
 import PackingListCreate from "./pages/packingListCreate";
 import PackingListList from "./pages/packingListList";
+import PackingListDetail from "./pages/packingListDetail";
 import ForgetPassword from "./pages/forgetPassword";
 import Settings from "./pages/settings";
 import WorkDetails from "./pages/workDetails";
@@ -40,6 +41,8 @@ const router = createBrowserRouter([{
         path: 'packing-list/new', element: <PackingListCreate />
     }, {
         path: 'packing-lists', element: <PackingListList />
+    }, {
+        path: 'packing-lists/:uid', element: <PackingListDetail />
     }, {
         path: 'work-details', element: <WorkDetails />
     }, {

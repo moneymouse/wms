@@ -1,13 +1,13 @@
-import React, {useEffect, useMemo, useState} from 'react';
-import {Button, Input, message, Modal, Row, Space, Table, Typography} from "antd";
-import {DeleteOutlined, SearchOutlined} from "@ant-design/icons";
+import React, { useEffect, useMemo, useState } from 'react';
+import { Button, Input, message, Modal, Row, Space, Table, Typography } from "antd";
+import { DeleteOutlined, SearchOutlined } from "@ant-design/icons";
 import orderProperty from "../common/orderProperty";
-import {useNavigate, useSearchParams} from "react-router-dom";
-import {endpoint} from "../config.js";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import { endpoint } from "../config.js";
 import getSafeHeader from '../common/safeHeader';
 import ExportButton from '../components/ExportButton';
 
-export default function () {
+export default function OrderList() {
     const [orderData, setOrderData] = useState([]);
     const [cargo, setCargo] = useState({});
     const navigate = useNavigate();
@@ -21,24 +21,24 @@ export default function () {
     });
     let flag = false;
 
-    async function fetchOrderData(_pagination = {}, sorter={}, query = searchParams.get('q') || '') {
-        const newPagination = {...pagination, ..._pagination};
+    async function fetchOrderData(_pagination = {}, sorter = {}, query = searchParams.get('q') || '') {
+        const newPagination = { ...pagination, ..._pagination };
         // p=${newPagination.current}&s=${newPagination.pageSize}${sorter.order?`&sf=${sorter.column.dataIndex}&so=${Number(sorter.order==='descend')}`:""}${query&&`&q=${query}`}
-        const {data, total} = await (await fetch(`${endpoint}/orders?` +
+        const { data, total } = await (await fetch(`${endpoint}/orders?` +
             new URLSearchParams({
                 q: query,
                 p: newPagination.current,
                 s: newPagination.pageSize,
                 ...(sorter.order && {
                     sf: sorter.column.dataIndex,
-                    so: Number(sorter.order==='descend')
+                    so: Number(sorter.order === 'descend')
                 })
             }).toString(), {
             headers: getSafeHeader()
         })).json();
 
         // setOrderData((_data) => [..._data, ...sortedData.map((v) => ({...v, key: v.uid})), ]);
-        setOrderData(data.map((v) => ({...v, key: v.uid})));
+        setOrderData(data.map((v) => ({ ...v, key: v.uid })));
 
         // 分页
         setPagination({
@@ -51,7 +51,7 @@ export default function () {
     const [tableLoading, setTableLoading] = useState(false);
     useEffect(() => {
         (async () => {
-            if(flag) return;
+            if (flag) return;
             setTableLoading(true);
             await fetchOrderData();
 
@@ -95,7 +95,14 @@ export default function () {
                     } :
                     false,
             fixed: i < 2 ? 'left' : '',
-            render: (text, record, i) => text && <Typography.Text copyable key={i}>{text}</Typography.Text>
+            render: (text, record, i) => {
+                if (property.name === 'order_id') {
+                    return text && <Typography.Text copyable key={i}>
+                        <Button type='link' onClick={() => navigate(record.uid)}>{text}</Button>
+                    </Typography.Text>
+                }
+                return text && <Typography.Text copyable key={i}>{text}</Typography.Text>
+            }
         }
     });
 
@@ -122,14 +129,14 @@ export default function () {
     const handleSearch = async (e) => {
         const value = e.target.value;
         if (value) {
-            setSearchParams({...searchParams, q: value});
+            setSearchParams({ ...searchParams, q: value });
         } else {
             // 如果搜索框为空，清除查询参数
             searchParams.delete('q');
             setSearchParams(searchParams);
         }
         setTableLoading(true);
-        await fetchOrderData({current: 1}, {}, value);
+        await fetchOrderData({ current: 1 }, {}, value);
         setTableLoading(false);
         setTableLoading(false);
     }
@@ -218,7 +225,7 @@ export default function () {
         setTableLoading(true)
         searchParams.set('p', pagination.current);
         setSearchParams(searchParams);
-        await fetchOrderData(pagination, Array.isArray(sorter) ? sorter[-1]: sorter);
+        await fetchOrderData(pagination, Array.isArray(sorter) ? sorter[-1] : sorter);
         // `dataSource` is useless since `pageSize` changed
         if (pagination.pageSize !== pagination.pageSize) {
             setOrderData([]);
@@ -228,8 +235,8 @@ export default function () {
 
     return (
         <>
-            <Typography.Title level={4} style={{marginBottom: '2rem'}}>订单列表/Orders List</Typography.Title>
-            <Row style={{marginBottom: "2rem"}}>
+            <Typography.Title level={4} style={{ marginBottom: '2rem' }}>订单列表/Orders List</Typography.Title>
+            <Row style={{ marginBottom: "2rem" }}>
                 <Space size={'large'}>
                     <Space>
                         <Input.TextArea
@@ -237,9 +244,9 @@ export default function () {
                             onChange={handleSearch}
                             placeholder={"订单号/客户名/收件人名/国家"}
                             defaultValue={keyword}
-                            style={{width: '20rem'}}
+                            style={{ width: '20rem' }}
                         />
-                        <Button type="primary" icon={<SearchOutlined/>}>查找</Button>
+                        <Button type="primary" icon={<SearchOutlined />}>查找</Button>
                     </Space>
 
                     {/* 导出按钮 */}
@@ -251,7 +258,7 @@ export default function () {
 
                     {selectedKeys.length > 0 && <Button
                         type="danger"
-                        icon={<DeleteOutlined/>}
+                        icon={<DeleteOutlined />}
                         loading={deleteLoading}
                         onClick={handleDelete}
                         disabled={selectedKeys.length === 0}
@@ -262,29 +269,29 @@ export default function () {
             </Row>
 
             <Table loading={tableLoading}
-                   rowSelection={{type: 'checkbox', onChange: handleSelectedChange, selectedRowKeys: selectedKeys}}
-                   columns={columns} dataSource={orderData}
-                   scroll={{x: 3600, y: 600}}
-                   defaultSortOrder={['order_date', 'descend']}
-                   pagination={pagination}
-                   expandable={
-                       {
-                           expendedRowRender(record) {
-                               console.log('a')
-                               const columns = {
-                                   key: 'uid',
-                                   title: '转单号',
-                                   dataIndex: 'transfer_id',
-                                   render: (text, record, i) => text &&
-                                       <Typography.Text copyable key={i}>{text}</Typography.Text>
-                               }
-                               const data = cargo[record.key].map((v, i) => ({...v, key: i})) || [];
-                               return <Table columns={columns} dataSource={data} pagination={false}/>;
-                           },
-                           defaultExpandAllRows: true
-                       }
-                   }
-                   onChange={handleTableChange}
+                rowSelection={{ type: 'checkbox', onChange: handleSelectedChange, selectedRowKeys: selectedKeys }}
+                columns={columns} dataSource={orderData}
+                scroll={{ x: 3600, y: 600 }}
+                defaultSortOrder={['order_date', 'descend']}
+                pagination={pagination}
+                expandable={
+                    {
+                        expendedRowRender(record) {
+                            console.log('a')
+                            const columns = {
+                                key: 'uid',
+                                title: '转单号',
+                                dataIndex: 'transfer_id',
+                                render: (text, record, i) => text &&
+                                    <Typography.Text copyable key={i}>{text}</Typography.Text>
+                            }
+                            const data = cargo[record.key].map((v, i) => ({ ...v, key: i })) || [];
+                            return <Table columns={columns} dataSource={data} pagination={false} />;
+                        },
+                        defaultExpandAllRows: true
+                    }
+                }
+                onChange={handleTableChange}
             />
         </>
     )

@@ -126,6 +126,7 @@ export default function BonusEstimate() {
     }, [bonusData, hasUnmatched]);
 
     const rows = (bonusData?.daily || []).map(dayRow => {
+        console.log(dayRow)
         const row = {
             key: dayRow.date,
             date: dayRow.date,
@@ -135,7 +136,7 @@ export default function BonusEstimate() {
         };
 
         itemDefs.forEach(item => {
-            row[`piece_${item.key}`] = dayRow?.by_item?.[item.key]?.piece_count || 0;
+            row[`piece_${item.key}`] = dayRow?.by_item?.[item.key]?.box_count || 0;
         });
 
         return row;
@@ -149,19 +150,19 @@ export default function BonusEstimate() {
             width: 130
         },
         ...itemDefs.map(item => ({
-            title: `${item.label}件数`,
+            title: `${item.label}箱数`,
             dataIndex: `piece_${item.key}`,
             key: `piece_${item.key}`,
             width: 120,
             align: 'right'
         })),
-        {
-            title: '汇总件数',
-            dataIndex: 'total_piece_count',
-            key: 'total_piece_count',
-            width: 120,
-            align: 'right'
-        },
+        // {
+        //     title: '汇总件数',
+        //     dataIndex: 'total_piece_count',
+        //     key: 'total_piece_count',
+        //     width: 120,
+        //     align: 'right'
+        // },
         {
             title: '汇总箱数',
             dataIndex: 'total_boxes',
@@ -222,7 +223,7 @@ export default function BonusEstimate() {
 
         csvRows.push([]);
         csvRows.push(['总箱数', bonusData?.totals?.total_boxes || 0]);
-        csvRows.push(['总件数', bonusData?.totals?.total_piece_count || 0]);
+        // csvRows.push(['总件数', bonusData?.totals?.total_piece_count || 0]);
         csvRows.push(['预计总奖金', Number(bonusData?.totals?.estimated_bonus || 0).toFixed(2)]);
 
         const csvText = csvRows.map(line => line.map(escapeCsv).join(',')).join('\n');
@@ -272,9 +273,9 @@ export default function BonusEstimate() {
                     <Col xs={12} sm={8}>
                         <Statistic title="总箱数" value={bonusData?.totals?.total_boxes || 0} />
                     </Col>
-                    <Col xs={12} sm={8}>
+                    {/* <Col xs={12} sm={8}>
                         <Statistic title="总件数" value={bonusData?.totals?.total_piece_count || 0} />
-                    </Col>
+                    </Col> */}
                     <Col xs={24} sm={8}>
                         <Statistic
                             title="预计总奖金 (元)"
