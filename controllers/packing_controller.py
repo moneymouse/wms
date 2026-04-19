@@ -6,20 +6,23 @@ Packing List Controller - 装箱单和箱子 API 接口
 
 import json
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, send_file
 
 from Auth import verify, allow, get_token_payload
 from services import packing_list_service
+from utils.packing_list_pdf import build_packing_list_pdf
 from utils.log import log
 
 packing_bp = Blueprint("packing", __name__, url_prefix="/api")
 
 # 允许创建装箱单的角色
 PACKING_CREATE_ROLES = ["admin", "store_manager", "salesperson", "worker"]
+# 允许编辑装箱单/箱子详情的角色
+PACKING_EDIT_ROLES = ["admin", "store_manager", "salesperson"]
 # 允许分配箱子的角色
-BOX_ASSIGN_ROLES = ["admin", "store_manager", "salesperson"]
+BOX_ASSIGN_ROLES = ["admin", "store_manager", "salesperson", "clerk"]
 # 允许出货的角色
-BOX_SHIP_ROLES = ["admin", "store_manager", "salesperson"]
+BOX_SHIP_ROLES = ["admin", "store_manager", "salesperson", "clerk", "worker"]
 
 
 # ---------------------------------------------------------------------------
@@ -183,7 +186,7 @@ def get_packing_list(uid):
 
 @packing_bp.put("/packing-list/<string:uid>")
 @verify
-@allow(role=PACKING_CREATE_ROLES)
+@allow(role=PACKING_EDIT_ROLES)
 @log(desc="Update packing list.", is_json=True)
 def update_packing_list(uid):
     """更新装箱单
@@ -195,17 +198,6 @@ def update_packing_list(uid):
         }
     """
     data = request.get_json() or {}
-
-    if "customer_id" in data:
-        payload = get_token_payload() or {}
-        role = payload.get("role")
-        if role not in ["admin", "store_manager"]:
-            return (
-                jsonify(
-                    {"code": 403, "msg": "Only admin/store_manager can change customer"}
-                ),
-                403,
-            )
 
     try:
         success = packing_list_service.update_packing_list(uid, data)
@@ -239,6 +231,41 @@ def complete_packing_list(uid):
     if not success:
         return jsonify({"code": 404, "msg": "Packing list not found"}), 404
     return jsonify({"code": 200, "msg": "success"})
+
+
+@packing_bp.get("/packing-list/<string:uid>/pdf")
+@verify
+@allow()
+def export_packing_list_pdf(uid):
+    """导出装箱单 PDF（中英对照）"""
+    detail = packing_list_service.get_packing_list(uid)
+    if detail is None:
+        return jsonify({"code": 404, "msg": "Packing list not found"}), 404
+
+    box_uids_param = (request.args.get("box_uids") or "").strip()
+    if box_uids_param:
+        selected_uids = {
+            box_uid.strip() for box_uid in box_uids_param.split(",") if box_uid.strip()
+        }
+        detail = {
+            **detail,
+            "boxes": [
+                box
+                for box in (detail.get("boxes") or [])
+                if box.get("uid") in selected_uids
+            ],
+        }
+
+    pdf_stream = build_packing_list_pdf(detail)
+    list_number = (detail.get("list_number") or detail.get("mark") or uid).strip()
+    safe_name = "".join(ch for ch in list_number if ch not in '\\/:*?"<>|') or uid
+
+    return send_file(
+        pdf_stream,
+        mimetype="application/pdf",
+        as_attachment=False,
+        download_name=f"packing-list-{safe_name}.pdf",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -325,7 +352,7 @@ def get_box(uid):
 
 @packing_bp.put("/box/<string:uid>")
 @verify
-@allow(role=PACKING_CREATE_ROLES)
+@allow(role=PACKING_EDIT_ROLES)
 @log(desc="Update box.", is_json=True)
 def update_box(uid):
     """更新箱子信息（品名、重量）
@@ -336,8 +363,15 @@ def update_box(uid):
             "weight": 6.0
         }
     """
-    data = request.get_json()
-    success = packing_list_service.update_box(uid, data)
+    data = request.get_json() or {}
+    if not isinstance(data, dict):
+        return jsonify({"code": 400, "msg": "invalid request payload"}), 400
+
+    try:
+        success = packing_list_service.update_box(uid, data)
+    except ValueError as e:
+        return jsonify({"code": 400, "msg": str(e)}), 400
+
     if not success:
         return jsonify({"code": 404, "msg": "Box not found"}), 404
     return jsonify({"code": 200, "msg": "success"})
@@ -369,7 +403,7 @@ def weigh_box(uid):
 
 @packing_bp.delete("/box/<string:uid>")
 @verify
-@allow(role=["admin", "store_manager"])
+@allow(role=PACKING_EDIT_ROLES)
 @log(desc="Delete box.")
 def delete_box(uid):
     """删除箱子（软删除）"""
@@ -386,7 +420,7 @@ def delete_box(uid):
 
 @packing_bp.put("/box/<string:uid>/workers")
 @verify
-@allow(role=PACKING_CREATE_ROLES)
+@allow(role=PACKING_EDIT_ROLES)
 @log(desc="Set box workers.", is_json=True)
 def set_box_workers(uid):
     """设置箱子的打包工人（最多4人）
@@ -406,6 +440,32 @@ def set_box_workers(uid):
         return jsonify({"code": 200, "msg": "success"})
     except ValueError as e:
         return jsonify({"code": 400, "msg": str(e)}), 400
+
+
+@packing_bp.post("/box/<string:uid>/workers/add")
+@verify
+@allow(role=PACKING_CREATE_ROLES)
+@log(desc="Add box workers if empty.", is_json=True)
+def add_box_workers_if_empty(uid):
+    """仅在箱子尚未设置工人时，新增打包工人（最多4人）
+
+    Request body:
+        {
+            "worker_ids": [1, 2]
+        }
+    """
+    data = request.get_json() or {}
+    worker_ids = data.get("worker_ids", [])
+
+    try:
+        success = packing_list_service.add_box_workers_if_empty(uid, worker_ids)
+        if not success:
+            return jsonify({"code": 404, "msg": "Box not found"}), 404
+        return jsonify({"code": 200, "msg": "success"})
+    except ValueError as e:
+        error_message = str(e)
+        status_code = 409 if "already set" in error_message else 400
+        return jsonify({"code": status_code, "msg": error_message}), status_code
 
 
 @packing_bp.get("/box/<string:uid>/workers")
@@ -529,6 +589,22 @@ def ship_selected_boxes(uid):
 
     result = packing_list_service.ship_boxes(uid, box_uids)
     return jsonify({"code": 200, "data": result})
+
+
+@packing_bp.post("/box/<string:uid>/undo-ship")
+@verify
+@allow(role=PACKING_EDIT_ROLES)
+@log(desc="Undo box shipping.")
+def undo_ship_box(uid):
+    """撤销单箱出货：将已出库回退为待出库。"""
+    try:
+        success = packing_list_service.undo_ship_box(uid)
+    except ValueError as e:
+        return jsonify({"code": 400, "msg": str(e)}), 400
+
+    if not success:
+        return jsonify({"code": 404, "msg": "Box not found"}), 404
+    return jsonify({"code": 200, "msg": "success"})
 
 
 @packing_bp.get("/orders/<string:order_uid>/boxes")

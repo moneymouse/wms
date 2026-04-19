@@ -210,6 +210,11 @@ def set_box_workers(box_uid: str, worker_ids: List[int]) -> bool:
     return box_model.set_workers(box_uid, worker_ids)
 
 
+def add_box_workers_if_empty(box_uid: str, worker_ids: List[int]) -> bool:
+    """仅在箱子尚未设置工人时，新增工人"""
+    return box_model.add_workers_if_empty(box_uid, worker_ids)
+
+
 def get_box_workers(box_uid: str) -> List[dict]:
     """获取箱子的打包工人"""
     return box_model.get_workers(box_uid)
@@ -285,6 +290,11 @@ def get_boxes_by_order(order_uid: str) -> List[dict]:
 def ship_boxes(packing_list_uid: str, box_uids: List[str]) -> dict:
     """批量出货：将待出库箱子更新为已出库。"""
     return box_model.batch_ship(packing_list_uid, box_uids)
+
+
+def undo_ship_box(uid: str) -> bool:
+    """撤销单箱出货：将已出库回退为待出库。"""
+    return box_model.undo_ship(uid)
 
 
 # ---------------------------------------------------------------------------

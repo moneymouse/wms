@@ -5,6 +5,9 @@ from unittest.mock import Mock, patch, MagicMock
 from io import BytesIO
 import pandas as pd
 
+from data import cargo_model
+from data.DB import CargoTable
+from data.database import SessionFactory
 from services.cargo_service import (
     get_cargo_with_tracking,
     generate_excel,
@@ -233,7 +236,10 @@ class TestCargoService(BaseServiceTest, FileTestMixin):
     def test_generate_excel_general_mode(self):
         """测试通用模式Excel生成"""
         mock_order = OrderFactory.create_order_data(
-            country="美国", zip_code="12345", order_id="TEST001", cargo_uid_list=["cargo1"]
+            country="美国",
+            zip_code="12345",
+            order_id="TEST001",
+            cargo_uid_list=["cargo1"],
         )
         mock_cargo = CargoFactory.create_cargo_data(weight=2.5)
 
@@ -263,8 +269,10 @@ class TestCargoService(BaseServiceTest, FileTestMixin):
     def test_generate_excel_with_cargo_filter(self):
         """测试使用货物过滤器"""
         mock_order = OrderFactory.create_order_data(
-            country="美国", zip_code="12345", order_id="TEST001",
-            cargo_uid_list=["cargo1", "cargo2"]
+            country="美国",
+            zip_code="12345",
+            order_id="TEST001",
+            cargo_uid_list=["cargo1", "cargo2"],
         )
         mock_cargo1 = CargoFactory.create_cargo_data(transfer_id="TR001", weight=1.5)
         mock_cargo2 = CargoFactory.create_cargo_data(transfer_id="TR002", weight=2.0)
@@ -358,6 +366,69 @@ class TestCargoService(BaseServiceTest, FileTestMixin):
             # 验证货物更新调用
             assert mock_cargo_model.update.call_count == 2
             mock_register.assert_called_once_with(register_list)
+
+    def test_apply_waybill_table_marks_box_as_shipped(self):
+        """测试箱子上传转单号后自动变为已出货"""
+        transfer_map = {"TR001": "WB001"}
+
+        mock_cargo_model = Mock()
+        mock_cargo_model.data_point = {
+            "box1": {
+                "transfer_id": "TR001",
+                "packing_list_uid": "pl1",
+                "target_order_uid": "order1",
+                "status": 0,
+            }
+        }
+
+        with patch("services.cargo_service.registerTrack") as mock_register, patch(
+            "datetime.datetime"
+        ) as mock_datetime:
+            mock_datetime.now.return_value.strftime.return_value = "2023-01-01 10:00"
+
+            register_list, error = apply_waybill_table(mock_cargo_model, transfer_map)
+
+            assert error is None
+            assert register_list == [("box1", "WB001")]
+            mock_cargo_model.update.assert_called_once_with(
+                "box1",
+                {
+                    "waybill_id": "WB001",
+                    "status": 1,
+                    "date": "2023-01-01 10:00",
+                },
+            )
+            mock_register.assert_called_once_with(register_list)
+
+    def test_cargo_model_update_marks_box_as_shipped(self):
+        """测试箱子直接更新运单号后自动变为已出货"""
+        session = SessionFactory()
+        try:
+            session.add(
+                CargoTable(
+                    uid="box1",
+                    origin_id="ORD001-1",
+                    transfer_id="TR001",
+                    tag="TAG1",
+                    count=1,
+                    weight=1.0,
+                    status=0,
+                    packing_list_uid="pl1",
+                    target_order_uid="order1",
+                    waybill_id="",
+                    create_date="2023-01-01 09:00",
+                )
+            )
+            session.commit()
+        finally:
+            session.close()
+
+        cargo_model.update("box1", {"waybill_id": "WB001"})
+        updated = cargo_model.read("box1")
+
+        assert updated["waybill_id"] == "WB001"
+        assert updated["status"] == 1
+        assert updated["date"] is not None
 
     def test_apply_waybill_table_register_error(self):
         """测试17track注册失败"""

@@ -443,6 +443,31 @@ class OrderModel(MySQLModel):
 
 
 class CargoModel(MySQLModel):
+    def unbind_from_order(self, uid: str) -> bool:
+        """Detach a cargo from its order by clearing target_order_uid."""
+        s = SessionFactory()
+        try:
+            db_record = (
+                s.query(self.table_class).filter(self.table_class.uid == uid).first()
+            )
+            if db_record is None:
+                return False
+
+            db_record.target_order_uid = None
+            db_record.update_date = time.strftime("%Y-%m-%d %H:%M")
+
+            # Non-outbound box should stay in pending-outbound when detached.
+            if db_record.packing_list_uid and int(db_record.status or 0) != 1:
+                db_record.status = 0
+
+            s.commit()
+            return True
+        except Exception:
+            s.rollback()
+            raise
+        finally:
+            s.close()
+
     def update(self, uid: str, record: dict):
         """Update cargo and keep legacy box fields synchronized for unified rows."""
         s = SessionFactory()
@@ -471,6 +496,15 @@ class CargoModel(MySQLModel):
                     db_record.count = int(record.get("piece_count"))
                 if "item_name" in record and record.get("item_name") is not None:
                     db_record.real_en_name = record.get("item_name")
+
+                if (
+                    "waybill_id" in record
+                    and str(db_record.waybill_id or "").strip()
+                    and db_record.target_order_uid
+                    and int(db_record.status or 0) != 1
+                ):
+                    db_record.status = 1
+                    db_record.date = time.strftime("%Y-%m-%d %H:%M")
 
             s.commit()
         except Exception:

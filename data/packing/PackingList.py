@@ -197,9 +197,34 @@ class PackingListModel:
             if record is None:
                 return False
 
+            if "list_number" in data or "mark" in data:
+                next_mark = data.get("list_number")
+                if next_mark is None:
+                    next_mark = data.get("mark")
+
+                normalized_mark = self._normalize_mark(str(next_mark or ""))
+                if not normalized_mark:
+                    raise ValueError("mark is required")
+
+                existing = (
+                    s.query(PackingListTable)
+                    .filter(
+                        PackingListTable.archive == False,
+                        PackingListTable.list_number == normalized_mark,
+                        PackingListTable.uid != uid,
+                    )
+                    .first()
+                )
+                if existing is not None:
+                    raise ValueError("mark already exists")
+
+                record.list_number = normalized_mark
+
             allowed_fields = ["photos", "status"]
             for k, v in data.items():
                 if k in allowed_fields and v is not None:
+                    if k == "photos" and isinstance(v, list):
+                        v = json.dumps(v, ensure_ascii=False)
                     setattr(record, k, v)
 
             if "customer_id" in data:
@@ -285,6 +310,13 @@ class PackingListModel:
             "target_order_id": box.order.order_id if box.order else None,
             "transfer_id": box.transfer_id,
             "waybill_id": box.waybill_id,
+            "workers": [
+                {
+                    "worker_id": w.worker_id,
+                    "worker_name": w.worker.name if w.worker else None,
+                }
+                for w in box.workers
+            ],
             "status": box.status,
         }
 
@@ -446,23 +478,131 @@ class BoxModel:
             if record.packing_list_uid is None:
                 return False
 
-            allowed_fields = [
-                "item_name",
-                "weight",
-                "piece_count",
-                "remark",
-                "item_details",
-            ]
-            for k, v in data.items():
-                if k in allowed_fields:
-                    if k == "item_details" and v is not None and not isinstance(v, str):
-                        v = json.dumps(v, ensure_ascii=False)
-                    setattr(record, k, v)
+            if not isinstance(data, dict):
+                raise ValueError("invalid payload")
 
-            if "piece_count" in data and data.get("piece_count") is not None:
-                record.count = int(data.get("piece_count"))
-            if "item_name" in data and data.get("item_name") is not None:
-                record.real_en_name = data.get("item_name")
+            has_item_details = "item_details" in data
+            if has_item_details:
+                raw_details = data.get("item_details")
+                if raw_details is None:
+                    normalized_details = []
+                elif isinstance(raw_details, str):
+                    try:
+                        normalized_details = json.loads(raw_details)
+                    except Exception:
+                        raise ValueError("item_details must be valid JSON array")
+                elif isinstance(raw_details, list):
+                    normalized_details = raw_details
+                else:
+                    raise ValueError("item_details must be a list")
+
+                normalized_rows: List[dict] = []
+                for row in normalized_details:
+                    name = str((row or {}).get("item_name") or "").strip()
+                    if not name:
+                        continue
+                    raw_piece = (row or {}).get("piece_count")
+                    try:
+                        piece = int(raw_piece)
+                    except (TypeError, ValueError):
+                        raise ValueError("piece_count in item_details must be integer")
+                    if piece <= 0:
+                        raise ValueError(
+                            "piece_count in item_details must be greater than 0"
+                        )
+                    normalized_rows.append({"item_name": name, "piece_count": piece})
+
+                if len(normalized_rows) == 0:
+                    raise ValueError("item_details requires at least one valid row")
+
+                merged_name = "、".join([row["item_name"] for row in normalized_rows])
+                merged_piece_count = sum(
+                    [row["piece_count"] for row in normalized_rows]
+                )
+
+                record.item_details = json.dumps(normalized_rows, ensure_ascii=False)
+                record.item_name = merged_name
+                record.real_en_name = merged_name
+                record.piece_count = merged_piece_count
+                record.count = merged_piece_count
+            else:
+                if "item_name" in data:
+                    name = str(data.get("item_name") or "").strip()
+                    if not name:
+                        raise ValueError("item_name is required")
+                    record.item_name = name
+                    record.real_en_name = name
+
+                if "piece_count" in data:
+                    try:
+                        piece = int(data.get("piece_count"))
+                    except (TypeError, ValueError):
+                        raise ValueError("piece_count must be integer")
+                    if piece <= 0:
+                        raise ValueError("piece_count must be greater than 0")
+                    record.piece_count = piece
+                    record.count = piece
+
+            if "weight" in data:
+                raw_weight = data.get("weight")
+                if raw_weight in [None, ""]:
+                    record.weight = None
+                else:
+                    try:
+                        weight = float(raw_weight)
+                    except (TypeError, ValueError):
+                        raise ValueError("weight must be a number")
+                    if weight <= 0:
+                        raise ValueError("weight must be greater than 0")
+                    record.weight = weight
+
+            if "box_number" in data:
+                try:
+                    box_number = int(data.get("box_number"))
+                except (TypeError, ValueError):
+                    raise ValueError("box_number must be integer")
+                if box_number <= 0:
+                    raise ValueError("box_number must be greater than 0")
+
+                duplicated = (
+                    s.query(BoxTable)
+                    .filter(
+                        BoxTable.archive == False,
+                        BoxTable.packing_list_uid == record.packing_list_uid,
+                        BoxTable.box_number == box_number,
+                        BoxTable.uid != record.uid,
+                    )
+                    .first()
+                )
+                if duplicated is not None:
+                    raise ValueError("box_number already exists in this packing list")
+
+                record.box_number = box_number
+                record.tag = self._build_box_tag(
+                    record.packing_list.list_number if record.packing_list else "",
+                    box_number,
+                )
+
+            if "remark" in data:
+                raw_remark = data.get("remark")
+                record.remark = (
+                    str(raw_remark).strip()
+                    if raw_remark is not None and str(raw_remark).strip()
+                    else None
+                )
+
+            if "transfer_id" in data:
+                record.transfer_id = str(data.get("transfer_id") or "").strip()
+
+            if "waybill_id" in data:
+                record.waybill_id = str(data.get("waybill_id") or "").strip()
+                if (
+                    record.packing_list_uid
+                    and record.target_order_uid
+                    and int(record.status or 0) != CARGO_STATUS_OUTBOUND
+                ):
+                    # 装箱单箱子兼容旧系统：未出库保持 status=0。
+                    record.status = CARGO_STATUS_PENDING_OUTBOUND
 
             record.update_date = time.strftime("%Y-%m-%d %H:%M")
             s.commit()
@@ -511,6 +651,55 @@ class BoxModel:
 
             # 添加新工人关联
             for worker_id in worker_ids:
+                worker_record = BoxWorkerTable(
+                    box_uid=box_uid,
+                    worker_id=worker_id,
+                    create_date=time.strftime("%Y-%m-%d %H:%M"),
+                )
+                s.add(worker_record)
+
+            s.commit()
+            return True
+        except Exception:
+            s.rollback()
+            raise
+        finally:
+            s.close()
+
+    def add_workers_if_empty(self, box_uid: str, worker_ids: List[int]) -> bool:
+        """仅在箱子未设置工人时，新增工人（最多4人）"""
+        if not isinstance(worker_ids, list) or len(worker_ids) == 0:
+            raise ValueError("worker_ids is required")
+
+        normalized_worker_ids: List[int] = []
+        for worker_id in worker_ids:
+            try:
+                parsed_worker_id = int(worker_id)
+            except (TypeError, ValueError):
+                raise ValueError("worker_ids must be integers")
+            if parsed_worker_id <= 0:
+                raise ValueError("worker_ids must be positive integers")
+            if parsed_worker_id not in normalized_worker_ids:
+                normalized_worker_ids.append(parsed_worker_id)
+
+        if len(normalized_worker_ids) > self.MAX_WORKERS:
+            raise ValueError(f"Maximum {self.MAX_WORKERS} workers allowed per box")
+
+        s = SessionFactory()
+        try:
+            box = s.query(BoxTable).filter_by(uid=box_uid).first()
+            if box is None:
+                return False
+            if box.packing_list_uid is None:
+                return False
+
+            existing_worker = (
+                s.query(BoxWorkerTable.id).filter_by(box_uid=box_uid).first()
+            )
+            if existing_worker is not None:
+                raise ValueError("workers already set for this box")
+
+            for worker_id in normalized_worker_ids:
                 worker_record = BoxWorkerTable(
                     box_uid=box_uid,
                     worker_id=worker_id,
@@ -611,6 +800,7 @@ class BoxModel:
         s = SessionFactory()
         try:
             query = s.query(PackingListTable).filter(PackingListTable.archive == False)
+            query = query.filter(PackingListTable.status != "draft")
             if customer_id is not None:
                 query = query.filter(PackingListTable.customer_id == customer_id)
 
@@ -693,14 +883,14 @@ class BoxModel:
                     )
                     continue
 
-                if not str(box.waybill_id or "").strip():
-                    results["failed"].append(
-                        {
-                            "uid": uid,
-                            "error": "Box has no waybill yet",
-                        }
-                    )
-                    continue
+                # if not str(box.waybill_id or "").strip():
+                #     results["failed"].append(
+                #         {
+                #             "uid": uid,
+                #             "error": "Box has no waybill yet",
+                #         }
+                #     )
+                #     continue
 
                 box.status = CARGO_STATUS_OUTBOUND
                 box.date = now
@@ -709,6 +899,35 @@ class BoxModel:
 
             s.commit()
             return results
+        except Exception:
+            s.rollback()
+            raise
+        finally:
+            s.close()
+
+    def undo_ship(self, uid: str) -> bool:
+        """撤销单箱出货：将 status 从 1 回退为 0。"""
+        s = SessionFactory()
+        try:
+            box = (
+                s.query(BoxTable)
+                .filter(
+                    BoxTable.archive == False,
+                    BoxTable.uid == uid,
+                    BoxTable.packing_list_uid.isnot(None),
+                )
+                .first()
+            )
+            if box is None:
+                return False
+
+            if int(box.status or 0) != CARGO_STATUS_OUTBOUND:
+                raise ValueError("Box is not outbound")
+
+            box.status = CARGO_STATUS_PENDING_OUTBOUND
+            box.update_date = time.strftime("%Y-%m-%d %H:%M")
+            s.commit()
+            return True
         except Exception:
             s.rollback()
             raise

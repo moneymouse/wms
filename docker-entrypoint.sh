@@ -51,6 +51,7 @@ fi
 # ---------------------------------------------------------------------------
 # Run Alembic migrations
 # ---------------------------------------------------------------------------
+echo "migration: ${RUN_MIGRATIONS:-false}"
 if [ "${RUN_MIGRATIONS:-false}" = "true" ]; then
     echo "RUN_MIGRATIONS=true, running database migrations..."
 

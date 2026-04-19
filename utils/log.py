@@ -1,4 +1,3 @@
-import base64
 import json
 import time
 from functools import wraps
@@ -6,6 +5,7 @@ from functools import wraps
 from flask import request
 from sqlalchemy import Column, Integer, String, Text
 
+from Auth import get_token_payload
 from data.database import Base, SessionFactory
 
 
@@ -20,6 +20,8 @@ class OperationLogTable(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     ip = Column(String(64))
     pc_name = Column(String(256))
+    user_name = Column(String(128))
+    user_role = Column(String(32))
     desc = Column(String(512))
     kwargs = Column(Text)  # JSON-serialised dict
     json_body = Column(Text)  # JSON-serialised request body
@@ -37,30 +39,24 @@ def log(desc: str = "", is_json: bool = False):
         @wraps(func)
         def wrap_function(*args, **kwargs):
             json_body: dict = {}
-            if is_json and request.is_json:
+            if is_json or request.is_json:
                 try:
                     json_body = json.loads(request.data)
                 except Exception:
                     json_body = {}
 
-            try:
-                token_payload = json.loads(
-                    base64.b64decode(
-                        request.headers.get("x-token", "..")
-                        .split(".")[1]
-                        .encode("ascii")
-                        + b"=="
-                    ).decode("utf-8")
-                )
-                pc_name = token_payload.get("hostname", "")
-            except Exception:
-                pc_name = ""
+            token_payload = get_token_payload() or {}
+            pc_name = token_payload.get("hostname", "")
+            user_name = token_payload.get("name", "") or ""
+            user_role = token_payload.get("role", "") or ""
 
             s = SessionFactory()
             try:
                 entry = OperationLogTable(
                     ip=request.remote_addr,
                     pc_name=pc_name,
+                    user_name=user_name,
+                    user_role=user_role,
                     desc=desc,
                     kwargs=json.dumps(kwargs, ensure_ascii=False),
                     json_body=json.dumps(json_body, ensure_ascii=False),
@@ -106,6 +102,8 @@ def load_log() -> list:
                 {
                     "ip": row.ip,
                     "pc_name": row.pc_name,
+                    "user_name": row.user_name,
+                    "user_role": row.user_role,
                     "desc": row.desc,
                     "kwargs": kwargs_val,
                     "json": json_val,

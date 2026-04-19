@@ -7,6 +7,7 @@ from unittest.mock import patch, Mock
 from tests.base import BaseControllerTest, APITestMixin, DatabaseTestMixin
 from tests.factories import OrderFactory, CargoFactory
 from data import RecordExist
+from utils.log import OperationLogTable, SessionFactory as LogSessionFactory
 
 
 @pytest.mark.unit
@@ -46,6 +47,35 @@ class TestOrderController(BaseControllerTest, APITestMixin, DatabaseTestMixin):
             expected_data = order_data.copy()
             expected_data["order_date"] = "2023-01-01 10:00"
             mock_create.assert_called_once_with(expected_data)
+
+    def test_create_order_logs_operator_identity(self, employee_token):
+        """测试创建订单时会记录操作者姓名和角色"""
+        order_data = OrderFactory.create_test_order_data()
+
+        with patch("data.add_customer_record"), patch(
+            "data.order_model.create"
+        ) as mock_create, patch("time.strftime", return_value="2023-01-01 10:00"):
+            mock_create.return_value = "order_uid"
+
+            response = self.make_authenticated_request(
+                "POST", f"{self.base_url}/create", employee_token, order_data
+            )
+
+            self.assert_api_success(response)
+
+        session = LogSessionFactory()
+        try:
+            log_entry = (
+                session.query(OperationLogTable)
+                .order_by(OperationLogTable.id.desc())
+                .first()
+            )
+            assert log_entry is not None
+            assert log_entry.user_name == "员工测试"
+            assert log_entry.user_role == "employee"
+            assert log_entry.desc == "Create order."
+        finally:
+            session.close()
 
     def test_create_order_record_exists(self, employee_token):
         """测试创建重复订单"""

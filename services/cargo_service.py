@@ -92,12 +92,25 @@ def get_cargo_with_tracking(uid: str, order_model, cargo_model):
             if track_info["latest_status"]["status"] == "NotFound":
                 continue
             tag = str(track_infos["tag"])
-            cargo_model.update(
-                tag, {"status": track_info["latest_status"]["sub_status"]}
-            )
+            if tag not in data:
+                # Ignore records that are not part of current order payload.
+                continue
+
+            latest_sub_status = track_info["latest_status"]["sub_status"]
+
+            # Packing-list boxes use status as business state (0 pending outbound / 1 outbound).
+            # Do not overwrite it with 17track sub status text.
+            if not data[tag].get("packing_list_uid"):
+                cargo_model.update(tag, {"status": latest_sub_status})
+            print(track_infos)
             data[tag].update(
                 {
-                    "status": track_info["latest_status"]["sub_status"],
+                    **(
+                        {"status": latest_sub_status}
+                        if not data[tag].get("packing_list_uid")
+                        else {}
+                    ),
+                    "track_status": latest_sub_status,
                     "desc": track_info["latest_status"]["sub_status_descr"],
                     "events": track_info["tracking"]["providers"][0]["events"],
                     "track_info": track_info,
@@ -224,22 +237,24 @@ def apply_waybill_table(cargo_model, transfer_map: dict):
     error 不为 None 时调用方可检查 error.args[0] 获取 17track 错误详情。
     """
     register_list = []
+    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     for cargo_uid, cargo in cargo_model.data_point.items():
         transfer_id = cargo.get("transfer_id")
         if transfer_id and transfer_map.get(str(transfer_id)):
             waybill_id = transfer_map[str(transfer_id)]
             update_payload = {"waybill_id": waybill_id}
 
-            # 装箱单箱子兼容旧系统：status=0 表示待出库。
+            # 装箱单箱子上传运单后即视为已出货。
             if cargo.get("packing_list_uid"):
                 if cargo.get("target_order_uid") and int(cargo.get("status") or 0) != 1:
-                    update_payload["status"] = 0
+                    update_payload["status"] = 1
+                    update_payload["date"] = now
             else:
                 # 兼容旧货物流程：转单号上传即出库。
                 update_payload.update(
                     {
                         "status": 1,
-                        "date": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
+                        "date": now,
                     }
                 )
 

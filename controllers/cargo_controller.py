@@ -32,6 +32,8 @@ _VALID_EXCEL_MODES = {
     "WE",
 }
 
+CARGO_SHIP_ROLES = ["admin", "store_manager", "salesperson", "clerk"]
+
 
 # 获取订单下的货物列表（含实时物流状态）
 @cargo_bp.get("/orders/<string:uid>/cargo")
@@ -79,6 +81,40 @@ def delete_cargo():
     return jsonify({"code": 200, "msg": "success"})
 
 
+@cargo_bp.post("/cargo/unbind")
+@allow()
+@verify
+@log(desc="Unbind cargo from order.", is_json=True)
+def unbind_cargo_from_order():
+    payload = json.loads(request.data or "{}")
+    cargo_id_list = payload.get("cargo_id_list") or []
+
+    if not isinstance(cargo_id_list, list) or len(cargo_id_list) == 0:
+        return jsonify({"code": 400, "msg": "cargo_id_list is required"}), 400
+
+    success_ids = []
+    failed_ids = []
+
+    for cargo_id in cargo_id_list:
+        if not cargo_id:
+            continue
+        if cargo_model.unbind_from_order(cargo_id):
+            success_ids.append(cargo_id)
+        else:
+            failed_ids.append(cargo_id)
+
+    return jsonify(
+        {
+            "code": 200,
+            "msg": "success",
+            "data": {
+                "success": success_ids,
+                "failed": failed_ids,
+            },
+        }
+    )
+
+
 # 更新货物信息（运单号变更时后台注册 17track）
 @cargo_bp.put("/cargo/<string:uid>")
 @allow()
@@ -93,16 +129,6 @@ def update_cargo(uid):
     old_waybill = cargo_record.get("waybill_id")
 
     new_waybill = update_data.get("waybill_id")
-    if (
-        new_waybill
-        and str(new_waybill).strip()
-        and new_waybill != old_waybill
-        and cargo_record.get("packing_list_uid")
-        and cargo_record.get("target_order_uid")
-        and int(cargo_record.get("status") or 0) != 1
-    ):
-        # 兼容旧系统：0=待出库，录入转单号后保持待出库。
-        update_data["status"] = 0
 
     cargo_model.update(uid, update_data)
     if new_waybill and new_waybill != old_waybill:
@@ -112,7 +138,8 @@ def update_cargo(uid):
 
 # 出货（标记已发货）
 @cargo_bp.post("/cargo/<string:uid>/output")
-@allow()
+@verify
+@allow(role=CARGO_SHIP_ROLES)
 @log(desc="Output cargo.")
 def output(uid):
     payload = {"status": 1, "date": time.strftime("%Y-%m-%d %H:%M")}

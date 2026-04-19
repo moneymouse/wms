@@ -106,6 +106,7 @@
 - **URL:** `GET /api/logs`
 - **认证:** 需要
 - **权限:** `admin`
+- **说明:** 返回日志时会一并包含发起操作的用户姓名和角色，便于在日志页面直接识别操作者。
 
 **响应示例:**
 
@@ -114,10 +115,15 @@
   "code": 200,
   "data": [
     {
-      "time": "2026-03-26 15:00:00",
-      "user": "admin",
-      "action": "Create order.",
-      "ip": "192.168.1.1"
+      "log_date": "2026-03-26 15:00:00",
+      "desc": "Create order.",
+      "user_name": "张三",
+      "user_role": "admin",
+      "pc_name": "WMS-PC",
+      "ip": "192.168.1.1",
+      "method": "POST",
+      "kwargs": {},
+      "json": {}
     }
   ]
 }
