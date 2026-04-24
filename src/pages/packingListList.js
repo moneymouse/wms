@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
     Table,
     Card,
@@ -79,6 +79,7 @@ const getPackingListStatusMeta = (record) => {
 export default function PackingListList() {
     const [messageApi, contextHolder] = message.useMessage();
     const navigate = useNavigate();
+    const [searchParams, setSearchParams] = useSearchParams();
     const screens = Grid.useBreakpoint();
 
     // 数据状态
@@ -87,11 +88,31 @@ export default function PackingListList() {
     const [loading, setLoading] = useState(false);
 
     // 筛选状态
-    const [page, setPage] = useState(1);
-    const [pageSize, setPageSize] = useState(20);
-    const [search, setSearch] = useState('');
-    const [status, setStatus] = useState(() => typeof window !== 'undefined' && window.innerWidth < 768 ? ['待出库'] : ['草稿']);
-    const [excludeStatus, setExcludeStatus] = useState(() => typeof window !== 'undefined' && window.innerWidth < 768 ? false : true);
+    const [page, setPage] = useState(parseInt(searchParams.get('page')) || 1);
+    const [pageSize, setPageSize] = useState(parseInt(searchParams.get('pageSize')) || 20);
+    const [search, setSearch] = useState(searchParams.get('search') || '');
+    const [status, setStatus] = useState(() => {
+        const urlStatus = searchParams.get('status');
+        if (urlStatus) return urlStatus.split(',');
+        return typeof window !== 'undefined' && window.innerWidth < 768 ? ['待出库'] : ['草稿'];
+    });
+    const [excludeStatus, setExcludeStatus] = useState(() => {
+        const urlExclude = searchParams.get('excludeStatus');
+        if (urlExclude !== null) return urlExclude === 'true';
+        return typeof window !== 'undefined' && window.innerWidth < 768 ? false : true;
+    });
+    const [shakeCount, setShakeCount] = useState(0);
+
+    // 同步状态到 URL
+    useEffect(() => {
+        const params = new URLSearchParams();
+        if (page !== 1) params.set('page', page);
+        if (pageSize !== 20) params.set('pageSize', pageSize);
+        if (search) params.set('search', search);
+        if (status && status.length > 0) params.set('status', status.join(','));
+        params.set('excludeStatus', excludeStatus);
+        setSearchParams(params, { replace: true });
+    }, [page, pageSize, search, status, excludeStatus, setSearchParams]);
 
     useEffect(() => {
         fetchPackingLists();
@@ -243,8 +264,12 @@ export default function PackingListList() {
                         placeholder="搜索唛头或客户名"
                         prefix={<SearchOutlined />}
                         value={search}
-                        onChange={(e) => setSearch(e.target.value)}
-                        onPressEnter={handleSearch}
+                        onChange={(e) => {
+                            setSearch(e.target.value);
+                            console.log('a')
+                            handleSearch();
+                        }}
+                        // onPressEnter={handleSearch}
                         style={{ width: 250 }}
                     />
                     <Select

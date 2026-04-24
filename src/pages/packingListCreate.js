@@ -80,7 +80,8 @@ function PackingListTab({
     updateTabTitle,
     updateTabMeta,
     initialDraftUid,
-    refreshDraftPackingLists
+    refreshDraftPackingLists,
+    requestCloseTab
 }) {
     const [form] = Form.useForm();
     const [messageApi, contextHolder] = message.useMessage();
@@ -515,44 +516,15 @@ function PackingListTab({
         }
     };
 
-    // 提交装箱单
+    // 保存装箱单（保持草稿并关闭当前子页面）
     const handleComplete = async () => {
         if (!packingListUid) {
             messageApi.warning('请先创建装箱单');
             return;
         }
-
-        if (boxes.length === 0) {
-            messageApi.warning('请至少添加一个箱子');
-            return;
-        }
-
-        // 检查是否所有箱子都已称重
-        const unweighedBoxes = boxes.filter(b => !b.weight || b.weight <= 0);
-        if (unweighedBoxes.length > 0) {
-            messageApi.warning(`还有 ${unweighedBoxes.length} 个箱子未称重`);
-            return;
-        }
-
-        try {
-            const res = await fetch(`${endpoint}/packing-list/${packingListUid}/complete`, {
-                method: 'POST',
-                headers: getSafeHeader()
-            });
-            const data = await res.json();
-
-            if (data.code === 200) {
-                messageApi.success('装箱单已提交！');
-                refreshDraftPackingLists?.();
-                // 重置页面
-                handleReset();
-            } else {
-                messageApi.error(data.msg || '提交失败');
-            }
-        } catch (error) {
-            messageApi.error('操作失败');
-            console.error(error);
-        }
+        messageApi.success('装箱单已保存为草稿');
+        refreshDraftPackingLists?.();
+        requestCloseTab?.(tabKey);
     };
 
     // 重置页面
@@ -950,7 +922,7 @@ function PackingListTab({
                                     onClick={handleComplete}
                                     style={{ marginLeft: 16 }}
                                 >
-                                    提交装箱单
+                                    保存装箱单
                                 </Button>
                             </Space>
                         </div>
@@ -968,6 +940,7 @@ export default function PackingListCreate() {
     const [draftPackingLists, setDraftPackingLists] = useState([]);
     const [draftLoading, setDraftLoading] = useState(false);
     const [selectedDraftUid, setSelectedDraftUid] = useState(undefined);
+    const [tabToClose, setTabToClose] = useState(null);
     const newTabIndex = React.useRef(1);
 
     const fetchDraftPackingLists = useCallback(async () => {
@@ -1016,6 +989,7 @@ export default function PackingListCreate() {
                     updateTabMeta={updateTabMeta}
                     initialDraftUid={draftUid}
                     refreshDraftPackingLists={fetchDraftPackingLists}
+                    requestCloseTab={setTabToClose}
                 />
             )
         };
@@ -1101,6 +1075,7 @@ export default function PackingListCreate() {
                         updateTabTitle={updateTabTitle}
                         updateTabMeta={updateTabMeta}
                         refreshDraftPackingLists={fetchDraftPackingLists}
+                        requestCloseTab={setTabToClose}
                     />
                 )
             }
@@ -1108,7 +1083,7 @@ export default function PackingListCreate() {
         setActiveKey(newActiveKey);
     };
 
-    const remove = (targetKey) => {
+    const remove = useCallback((targetKey) => {
         // 清除持久化的数据
         localStorage.removeItem(`packingList_tab_${targetKey}`);
 
@@ -1139,6 +1114,7 @@ export default function PackingListCreate() {
                         updateTabTitle={updateTabTitle}
                         updateTabMeta={updateTabMeta}
                         refreshDraftPackingLists={fetchDraftPackingLists}
+                        requestCloseTab={setTabToClose}
                     />
                 )
             });
@@ -1147,7 +1123,7 @@ export default function PackingListCreate() {
 
         setItems(newPanes);
         setActiveKey(newActiveKey);
-    };
+    }, [activeKey, fetchDraftPackingLists, items, updateTabMeta, updateTabTitle]);
 
     const onEdit = (targetKey, action) => {
         if (action === 'add') {
@@ -1156,6 +1132,12 @@ export default function PackingListCreate() {
             remove(targetKey);
         }
     };
+
+    useEffect(() => {
+        if (!tabToClose) return;
+        remove(tabToClose);
+        setTabToClose(null);
+    }, [tabToClose, remove]);
 
     return (
         <div style={{ padding: '0', height: '100%', display: 'flex', flexDirection: 'column' }}>

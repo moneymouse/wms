@@ -566,7 +566,8 @@ export default function FinanceCenter() {
             title: '唛头',
             dataIndex: 'mark',
             key: 'mark',
-            width: 180
+            width: 180,
+            render: (value, record) => value ? `${value}${record.status === 'draft' ? ' [草稿]' : ''}` : '-'
         },
         {
             title: '客户',
@@ -845,7 +846,7 @@ export default function FinanceCenter() {
             </Modal>
 
             <Modal
-                title={selectedPackingList ? `装箱单奖金分配 - ${selectedPackingList.mark}` : '装箱单奖金分配'}
+                title={selectedPackingList ? `装箱单奖金分配 - ${selectedPackingList.mark}${selectedPackingList.status === 'draft' ? ' [草稿]' : ''}` : '装箱单奖金分配'}
                 open={allocationModalVisible}
                 onCancel={() => {
                     setAllocationModalVisible(false);
