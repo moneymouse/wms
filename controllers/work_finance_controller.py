@@ -13,7 +13,6 @@ FINANCE_ROLES = ["admin", "finance"]
 
 @work_finance_bp.get("/work/workers")
 @verify
-@allow(role=FINANCE_ROLES)
 def get_workers():
     """获取操作人员列表（财务/管理员）。"""
     workers = work_finance_service.get_workers()

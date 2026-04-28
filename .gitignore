@@ -2,3 +2,4 @@
 frontend/
 *.pyc
 log/
+.DS_Store

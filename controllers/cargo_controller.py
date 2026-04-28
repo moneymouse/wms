@@ -18,21 +18,23 @@ from utils.log import log
 
 cargo_bp = Blueprint("cargo", __name__, url_prefix="/api")
 
-_VALID_EXCEL_MODES = {
-    "jifei",
-    "tongcang",
-    "huanshitong",
-    "jinfeiqi",
-    "jinlong",
-    "xinghang",
-    "tongcangups",
-    "yaxuan",
-    "kehu",
-    "jinlong_kuaidi",
-    "WE",
-}
-
 CARGO_SHIP_ROLES = ["admin", "store_manager", "salesperson", "clerk"]
+
+
+def _get_valid_excel_modes():
+    """动态获取所有有效的导出模板 mode_key（含硬编码的 kehu）。"""
+    from data.database import SessionFactory
+    from data.DB import ExcelTemplateTable
+
+    modes = {"kehu"}
+    with SessionFactory() as session:
+        records = (
+            session.query(ExcelTemplateTable.mode_key)
+            .filter(ExcelTemplateTable.archive == False)  # noqa: E712
+            .all()
+        )
+        modes.update(r.mode_key for r in records)
+    return modes
 
 
 # 获取订单下的货物列表（含实时物流状态）
@@ -68,6 +70,17 @@ def get_cargo():
             )
         result[order["uid"]] = data_list
     return jsonify({"code": 200, "data": result})
+
+
+# 批量归档货物
+@cargo_bp.post("/cargo/archive")
+@allow()
+@verify
+@log(desc="Archive cargo.", is_json=True)
+def archive_cargo():
+    for cargo_id in json.loads(request.data)["cargo_id_list"]:
+        cargo_model.archive(cargo_id)
+    return jsonify({"code": 200, "msg": "success"})
 
 
 # 批量删除货物
@@ -206,7 +219,7 @@ def download_excel(document_id):
 @allow()
 @log(desc="Export proxy's template excel.", is_json=True)
 def generate_excel_route(mode="jifei"):
-    if mode not in _VALID_EXCEL_MODES:
+    if mode not in _get_valid_excel_modes():
         return jsonify({"code": 404, "reason": "mode not found"})
 
     request_data = json.loads(request.data)

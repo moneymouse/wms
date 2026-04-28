@@ -1,13 +1,20 @@
 import math
 from io import BytesIO
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.cidfonts import UnicodeCIDFont
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import (
+    PageBreak,
+    Paragraph,
+    SimpleDocTemplate,
+    Spacer,
+    Table,
+    TableStyle,
+)
 from reportlab.lib.enums import TA_CENTER, TA_RIGHT
 
 # 注册字体
@@ -47,17 +54,7 @@ def _build_item_qty_text(box: Dict[str, Any]) -> str:
     return f"{fallback_name}*{fallback_qty}" if fallback_name else "-"
 
 
-def build_packing_list_pdf(detail: Dict[str, Any]) -> BytesIO:
-    buffer = BytesIO()
-    doc = SimpleDocTemplate(
-        buffer,
-        pagesize=A4,
-        leftMargin=14 * mm,
-        rightMargin=14 * mm,
-        topMargin=15 * mm,
-        bottomMargin=15 * mm,
-    )
-
+def _build_packing_list_story(detail: Dict[str, Any]) -> List[Any]:
     # --- 样式定义 (已调大字体和行距) ---
     base_style = ParagraphStyle(
         name="Base",
@@ -199,6 +196,41 @@ def build_packing_list_pdf(detail: Dict[str, Any]) -> BytesIO:
     table.setStyle(TableStyle(table_style_list))
 
     story.append(table)
+    return story
+
+
+def _create_pdf_document() -> Tuple[BytesIO, SimpleDocTemplate]:
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        leftMargin=14 * mm,
+        rightMargin=14 * mm,
+        topMargin=15 * mm,
+        bottomMargin=15 * mm,
+    )
+    return buffer, doc
+
+
+def build_packing_list_pdf(detail: Dict[str, Any]) -> BytesIO:
+    buffer, doc = _create_pdf_document()
+    doc.build(_build_packing_list_story(detail))
+    buffer.seek(0)
+    return buffer
+
+
+def build_packing_lists_pdf(details: List[Dict[str, Any]]) -> BytesIO:
+    valid_details = [d for d in (details or []) if isinstance(d, dict)]
+    if not valid_details:
+        raise ValueError("No packing list data provided")
+
+    story: List[Any] = []
+    for idx, detail in enumerate(valid_details):
+        story.extend(_build_packing_list_story(detail))
+        if idx < len(valid_details) - 1:
+            story.append(PageBreak())
+
+    buffer, doc = _create_pdf_document()
     doc.build(story)
     buffer.seek(0)
     return buffer

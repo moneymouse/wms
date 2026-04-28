@@ -172,7 +172,6 @@ CREATE TABLE IF NOT EXISTS users (
     phone       VARCHAR(32)     NOT NULL,
     name        VARCHAR(128)    NOT NULL,
     password    VARCHAR(512)    NOT NULL,
-    role        VARCHAR(32)     DEFAULT NULL,
     status      ENUM('pending','approved','rejected') NOT NULL DEFAULT 'pending',
     remark      VARCHAR(256)    DEFAULT NULL,
     create_date VARCHAR(32),
@@ -182,6 +181,28 @@ CREATE TABLE IF NOT EXISTS users (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE INDEX IF NOT EXISTS idx_users_status ON users (status);
+
+-- -----------------------------------------------------------------------------
+-- roles (system roles)
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS roles (
+    id          INT             NOT NULL AUTO_INCREMENT,
+    name        VARCHAR(32)     NOT NULL,
+    label       VARCHAR(64)     NOT NULL,
+    PRIMARY KEY (id),
+    UNIQUE KEY uq_roles_name (name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------------
+-- user_roles (many-to-many association)
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS user_roles (
+    user_id     INT             NOT NULL,
+    role_id     INT             NOT NULL,
+    PRIMARY KEY (user_id, role_id),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (role_id) REFERENCES roles(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- -----------------------------------------------------------------------------
 -- packing_lists (装箱单)

@@ -17,6 +17,7 @@ from data.finance import bonus_item_model
 from data.finance.BonusItem import BonusItemTable
 from data.packing.PackingList import BoxTable, BoxWorkerTable, PackingListTable
 from data.user.User import UserTable
+from data.user.Role import RoleTable, user_roles
 
 
 def normalize_month(month: Optional[str] = None) -> str:
@@ -37,7 +38,9 @@ def get_workers() -> List[dict]:
     with SessionFactory() as session:
         records = (
             session.query(UserTable)
-            .filter(UserTable.status == "approved", UserTable.role == "worker")
+            .join(user_roles, UserTable.id == user_roles.c.user_id)
+            .join(RoleTable, RoleTable.id == user_roles.c.role_id)
+            .filter(UserTable.status == "approved", RoleTable.name == "worker")
             .order_by(UserTable.name.asc())
             .all()
         )
@@ -305,14 +308,14 @@ def get_pending_bonus_allocation_packing_lists(
     month: Optional[str] = None,
     mark_search: Optional[str] = None,
 ) -> dict:
-    """获取未进行奖金分配的装箱单及其箱子。"""
+    """获取未进行奖金分配的装箱单及其箱子。允许 draft 和 completed 状态。"""
     if month:
         month = normalize_month(month)
 
     with SessionFactory() as session:
         q = session.query(PackingListTable).filter(
             PackingListTable.archive == False,
-            PackingListTable.status == "completed",
+            PackingListTable.status.in_(["draft", "completed"]),
         )
 
         if month:
@@ -378,6 +381,7 @@ def get_pending_bonus_allocation_packing_lists(
                 {
                     "packing_list_uid": packing_list.uid,
                     "mark": packing_list.list_number,
+                    "status": packing_list.status,
                     "customer_name": (
                         packing_list.customer.name if packing_list.customer else None
                     ),
@@ -418,8 +422,8 @@ def assign_bonus_for_packing_list(
         if packing_list is None:
             raise ValueError("packing list not found")
 
-        if packing_list.status != "completed":
-            raise ValueError("only completed packing list can be allocated")
+        # if packing_list.status != "completed":
+        #     raise ValueError("only completed packing list can be allocated")
 
         if not assignments:
             raise ValueError("assignments is required")
@@ -458,10 +462,12 @@ def assign_bonus_for_packing_list(
 
             valid_workers = (
                 session.query(UserTable)
+                .join(user_roles, UserTable.id == user_roles.c.user_id)
+                .join(RoleTable, RoleTable.id == user_roles.c.role_id)
                 .filter(
                     UserTable.id.in_(worker_ids),
                     UserTable.status == "approved",
-                    UserTable.role == "worker",
+                    RoleTable.name == "worker",
                 )
                 .all()
             )

@@ -10,6 +10,7 @@ from services.auth_service import (
     approve_user,
     reject_user,
     change_user_role,
+    delete_user,
 )
 from services.password_service import (
     request_password_reset,
@@ -66,9 +67,15 @@ def get_pending_users():
 @allow(role=["admin", "store_manager"])
 def approve(user_id):
     body = json.loads(request.data)
-    role = body.get("role", "").strip()
+    role = body.get("roles")
+    if role is None:
+        role = body.get("role")
+    if isinstance(role, str):
+        role = role.strip()
     payload = get_token_payload()
-    operator_role = payload.get("role") if payload else None
+    operator_role = (payload.get("roles") if payload else None) or (
+        payload.get("role") if payload else None
+    )
 
     updated, err = approve_user(user_id, role, operator_role)
     if err:
@@ -126,11 +133,13 @@ def get_user_list():
 def update_role(user_id):
     """
     Update user role.
-    Request body: {"role": "salesperson"} to set role
-                  {"role": null} or {"role": ""} to remove role
+    Request body: {"role": "salesperson"} / {"roles": ["salesperson", "clerk"]} to set roles
+                  {"role": null} / {"roles": []} to remove roles
     """
     body = json.loads(request.data)
-    role = body.get("role")
+    role = body.get("roles")
+    if role is None:
+        role = body.get("role")
     # Handle string role - strip whitespace
     if isinstance(role, str):
         role = role.strip() if role else None
@@ -139,11 +148,27 @@ def update_role(user_id):
     if err:
         status = 404 if "不存在" in err else 400
         return jsonify({"code": status, "msg": err}), status
-    msg = "角色已更新" if updated.get("role") else "角色已删除"
+    msg = "角色已更新" if updated.get("roles") else "角色已删除"
     return jsonify({"code": 200, "msg": msg, "data": updated})
 
 
+# 删除用户（管理员，硬删除）
+@auth_bp.delete("/users/<int:user_id>")
+@verify
+@allow(role="admin")
+def remove_user(user_id):
+    payload = get_token_payload()
+    current_user_id = payload.get("user_id")
+    if current_user_id == user_id:
+        return jsonify({"code": 403, "msg": "不能删除自己"}), 403
+    deleted, err = delete_user(user_id)
+    if err:
+        return jsonify({"code": 404, "msg": err}), 404
+    return jsonify({"code": 200, "msg": "用户已删除", "data": deleted})
+
+
 # ==================== 密码管理相关 API ====================
+
 
 # 忘记密码申请（无需登录）
 @auth_bp.post("/auth/password/forgot")
@@ -173,7 +198,7 @@ def password_change():
     """
     payload = get_token_payload()
     user_id = payload.get("user_id")
-    
+
     body = json.loads(request.data)
     old_password = body.get("old_password", "")
     new_password = body.get("new_password", "")
@@ -215,7 +240,7 @@ def reject_password_request(request_id):
     """拒绝密码重置申请"""
     body = json.loads(request.data)
     remark = body.get("remark", "")
-    
+
     success, err = reject_password_reset(request_id, remark)
     if err:
         return jsonify({"code": 404, "msg": err}), 404

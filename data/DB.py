@@ -171,8 +171,8 @@ class MySQLModel:
 
         return uid
 
-    def delete(self, uid: str):
-        """Soft delete a record by setting archive=True."""
+    def archive(self, uid: str):
+        """Soft delete (archive) a record by setting archive=True."""
         s = SessionFactory()
         try:
             db_record = (
@@ -180,6 +180,22 @@ class MySQLModel:
             )
             if db_record:
                 db_record.archive = True
+                s.commit()
+        except Exception:
+            s.rollback()
+            raise
+        finally:
+            s.close()
+
+    def delete(self, uid: str):
+        """Hard delete a record from the database."""
+        s = SessionFactory()
+        try:
+            db_record = (
+                s.query(self.table_class).filter(self.table_class.uid == uid).first()
+            )
+            if db_record:
+                s.delete(db_record)
                 s.commit()
         except Exception:
             s.rollback()
@@ -531,3 +547,28 @@ def get_data_point(field: str) -> dict:
     model = order_model if field == "order" else cargo_model
     records = model.read()
     return {r["uid"]: r for r in records}
+
+
+class GoodsNameTable(Base):
+    __tablename__ = "goods_names"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(256), nullable=False)
+    lang = Column(String(16), nullable=False)
+    create_date = Column(String(32))
+    update_date = Column(String(32))
+
+
+class ExcelTemplateTable(Base):
+    __tablename__ = "excel_templates"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    mode_key = Column(String(64), nullable=False, unique=True)
+    label = Column(String(128), nullable=False)
+    template_type = Column(String(32), nullable=False)
+    config = Column(Text, nullable=False, default="{}")
+    template_file = Column(String(256), nullable=True)
+    single_order_only = Column(Boolean, default=False)
+    archive = Column(Boolean, default=False)
+    create_date = Column(String(32))
+    update_date = Column(String(32))

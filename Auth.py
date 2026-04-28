@@ -101,6 +101,60 @@ def get_token_payload():
     return result if valid else None
 
 
+def normalize_roles(role_value):
+    """Normalize role input to a deduplicated role list."""
+    if role_value is None:
+        return []
+
+    if isinstance(role_value, str):
+        text = role_value.strip()
+        if not text:
+            return []
+
+        if text.startswith("[") and text.endswith("]"):
+            try:
+                parsed = json.loads(text)
+                if isinstance(parsed, list):
+                    return normalize_roles(parsed)
+            except Exception:
+                pass
+
+        items = [part.strip() for part in text.split(",") if part.strip()]
+        deduped = []
+        seen = set()
+        for item in items:
+            if item not in seen:
+                seen.add(item)
+                deduped.append(item)
+        return deduped
+
+    if isinstance(role_value, (list, tuple, set)):
+        deduped = []
+        seen = set()
+        for item in role_value:
+            for role_item in normalize_roles(item):
+                if role_item not in seen:
+                    seen.add(role_item)
+                    deduped.append(role_item)
+        return deduped
+
+    return []
+
+
+def get_payload_roles(payload):
+    """Extract role list from JWT payload (supports role and roles)."""
+    if not isinstance(payload, dict):
+        return []
+    merged = []
+    seen = set()
+    for source in (payload.get("roles"), payload.get("role")):
+        for role in normalize_roles(source):
+            if role not in seen:
+                seen.add(role)
+                merged.append(role)
+    return merged
+
+
 def verify(func):
     """装饰器：验证JWT token有效性，无效则返回401"""
 
@@ -138,9 +192,9 @@ def allow(ip_addr: list = None, role=None):
                 valid, payload = verify_jwt(x_token, secret_key)
                 if not valid:
                     return jsonify({"msg": payload}), 401
-                user_role = payload.get("role")
-                allowed_roles = role if isinstance(role, list) else [role]
-                if user_role not in allowed_roles:
+                user_roles = set(get_payload_roles(payload))
+                allowed_roles = set(normalize_roles(role))
+                if not user_roles.intersection(allowed_roles):
                     return jsonify({"msg": "Permission denied"}), 403
 
             return func(**kwargs)

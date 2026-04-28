@@ -154,6 +154,17 @@ class TestCargoService(BaseServiceTest, FileTestMixin):
             # 验证NotFound状态不会更新货物信息
             mock_cargo_model.update.assert_not_called()
 
+    def _mock_template(self, mode_key, template_type, config, single_order_only=False, template_file=None):
+        """辅助方法：创建 mock 模板对象"""
+        mock = Mock()
+        mock.mode_key = mode_key
+        mock.label = "极飞" if mode_key == "jifei" else "金飞"
+        mock.template_type = template_type
+        mock.config = __import__('json').dumps(config)
+        mock.single_order_only = single_order_only
+        mock.template_file = template_file
+        return mock
+
     def test_generate_excel_single_order_mode(self):
         """测试单订单模式Excel生成"""
         mock_order = OrderFactory.create_order_data(
@@ -163,11 +174,21 @@ class TestCargoService(BaseServiceTest, FileTestMixin):
         mock_cargo_model = Mock()
         mock_order_model.read.return_value = mock_order
 
-        with patch("services.cargo_service.load_workbook") as mock_load_wb:
+        mock_template = self._mock_template(
+            "jinfeiqi", "cell",
+            {"cell_mappings": [{"cell": "B3", "field": "order_id"}]},
+            single_order_only=True,
+            template_file="jinfeiqi_template.xlsx"
+        )
+
+        with patch("services.cargo_service.load_workbook") as mock_load_wb, patch(
+            "services.cargo_service._get_template"
+        ) as mock_get_template:
             mock_wb = MagicMock()
             mock_ws = MagicMock()
             mock_wb.active = mock_ws
             mock_load_wb.return_value = mock_wb
+            mock_get_template.return_value = mock_template
 
             result, error, is_plain_text = generate_excel(
                 "jinfeiqi", ["test_uid"], None, mock_order_model, mock_cargo_model
@@ -180,16 +201,22 @@ class TestCargoService(BaseServiceTest, FileTestMixin):
 
     def test_generate_excel_single_order_exceed_limit(self):
         """测试单订单模式超出数量限制"""
+        mock_template = self._mock_template(
+            "jinfeiqi", "cell", {}, single_order_only=True
+        )
+
         mock_order_model = Mock()
         mock_cargo_model = Mock()
 
-        result, error, is_plain_text = generate_excel(
-            "jinfeiqi", ["uid1", "uid2"], None, mock_order_model, mock_cargo_model
-        )
+        with patch("services.cargo_service._get_template") as mock_get_template:
+            mock_get_template.return_value = mock_template
+            result, error, is_plain_text = generate_excel(
+                "jinfeiqi", ["uid1", "uid2"], None, mock_order_model, mock_cargo_model
+            )
 
-        assert result is None
-        assert error == "Exceed Order Count Limitation"
-        assert not is_plain_text
+            assert result is None
+            assert error == "Exceed Order Count Limitation"
+            assert not is_plain_text
 
     def test_generate_excel_kehu_mode(self):
         """测试客户模式Excel生成"""
@@ -248,15 +275,18 @@ class TestCargoService(BaseServiceTest, FileTestMixin):
         mock_order_model.read.return_value = mock_order
         mock_cargo_model.read.return_value = mock_cargo
 
-        with patch(
-            "services.cargo_service.formatter",
+        mock_template = self._mock_template(
+            "jifei", "column",
             {
-                "jifei": {
-                    "columns": ["转运号", "重量"],
-                    "reference_table": {"转运号": "transfer_id", "重量": "weight"},
-                }
-            },
-        ), patch("pandas.DataFrame.to_excel") as mock_to_excel:
+                "columns": ["转运号", "重量"],
+                "reference_table": {"转运号": "transfer_id", "重量": "weight"},
+            }
+        )
+
+        with patch(
+            "services.cargo_service._get_template"
+        ) as mock_get_template, patch("pandas.DataFrame.to_excel") as mock_to_excel:
+            mock_get_template.return_value = mock_template
             result, error, is_plain_text = generate_excel(
                 "jifei", ["test_uid"], None, mock_order_model, mock_cargo_model
             )
@@ -285,15 +315,18 @@ class TestCargoService(BaseServiceTest, FileTestMixin):
         # 只要第一个货物
         request_cargo_list = ["cargo1"]
 
-        with patch(
-            "services.cargo_service.formatter",
+        mock_template = self._mock_template(
+            "jifei", "column",
             {
-                "jifei": {
-                    "columns": ["转运号", "重量"],
-                    "reference_table": {"转运号": "transfer_id", "重量": "weight"},
-                }
-            },
-        ), patch("pandas.DataFrame.to_excel") as mock_to_excel:
+                "columns": ["转运号", "重量"],
+                "reference_table": {"转运号": "transfer_id", "重量": "weight"},
+            }
+        )
+
+        with patch(
+            "services.cargo_service._get_template"
+        ) as mock_get_template, patch("pandas.DataFrame.to_excel") as mock_to_excel:
+            mock_get_template.return_value = mock_template
             result, error, is_plain_text = generate_excel(
                 "jifei",
                 ["test_uid"],

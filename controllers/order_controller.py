@@ -116,6 +116,28 @@ def update_order(uid):
     return jsonify({"code": 200, "msg": "success"})
 
 
+# 归档单个订单
+@order_bp.post("/orders/<string:uid>/archive")
+@allow()
+@verify
+@log(desc="Archive order.")
+def archive_order(uid):
+    order_model.archive(uid)
+    return jsonify({"code": 200, "msg": "success"})
+
+
+# 批量归档订单
+@order_bp.post("/orders/archive")
+@verify
+@allow()
+@log(desc="Archive orders.", is_json=True)
+def archive_order_list():
+    uid_list = json.loads(request.data)["uid_list"]
+    for uid in uid_list:
+        order_model.archive(uid)
+    return jsonify({"code": 200, "msg": "success"})
+
+
 # 删除单个订单
 @order_bp.delete("/orders/<string:uid>")
 @allow()

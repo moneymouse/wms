@@ -98,7 +98,7 @@ class PackingListModel:
             session.query(PackingListTable)
             .filter(
                 PackingListTable.list_number == normalized_mark,
-                PackingListTable.archive == False,
+                # PackingListTable.archive == False,
             )
             .first()
         )
@@ -257,8 +257,8 @@ class PackingListModel:
         finally:
             s.close()
 
-    def delete(self, uid: str) -> bool:
-        """软删除装箱单"""
+    def archive(self, uid: str) -> bool:
+        """归档装箱单"""
         s = SessionFactory()
         try:
             record = s.query(PackingListTable).filter_by(uid=uid).first()
@@ -266,6 +266,22 @@ class PackingListModel:
                 return False
             record.archive = True
             record.update_date = time.strftime("%Y-%m-%d %H:%M")
+            s.commit()
+            return True
+        except Exception:
+            s.rollback()
+            raise
+        finally:
+            s.close()
+
+    def delete(self, uid: str) -> bool:
+        """硬删除装箱单"""
+        s = SessionFactory()
+        try:
+            record = s.query(PackingListTable).filter_by(uid=uid).first()
+            if record is None:
+                return False
+            s.delete(record)
             s.commit()
             return True
         except Exception:
@@ -613,8 +629,8 @@ class BoxModel:
         finally:
             s.close()
 
-    def delete(self, uid: str) -> bool:
-        """软删除箱子"""
+    def archive(self, uid: str) -> bool:
+        """归档箱子"""
         s = SessionFactory()
         try:
             record = s.query(BoxTable).filter_by(uid=uid).first()
@@ -624,6 +640,24 @@ class BoxModel:
                 return False
             record.archive = True
             record.update_date = time.strftime("%Y-%m-%d %H:%M")
+            s.commit()
+            return True
+        except Exception:
+            s.rollback()
+            raise
+        finally:
+            s.close()
+
+    def delete(self, uid: str) -> bool:
+        """硬删除箱子"""
+        s = SessionFactory()
+        try:
+            record = s.query(BoxTable).filter_by(uid=uid).first()
+            if record is None:
+                return False
+            if record.packing_list_uid is None:
+                return False
+            s.delete(record)
             s.commit()
             return True
         except Exception:

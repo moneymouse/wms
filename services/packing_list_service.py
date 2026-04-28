@@ -156,6 +156,11 @@ def update_packing_list(uid: str, data: dict) -> bool:
     return packing_list_model.update(uid, data)
 
 
+def archive_packing_list(uid: str) -> bool:
+    """归档装箱单"""
+    return packing_list_model.archive(uid)
+
+
 def delete_packing_list(uid: str) -> bool:
     """删除装箱单"""
     return packing_list_model.delete(uid)
@@ -198,6 +203,11 @@ def update_box(uid: str, data: dict) -> bool:
 def weigh_box(uid: str, weight: float) -> bool:
     """称重箱子"""
     return box_model.update(uid, {"weight": weight})
+
+
+def archive_box(uid: str) -> bool:
+    """归档箱子"""
+    return box_model.archive(uid)
 
 
 def delete_box(uid: str) -> bool:

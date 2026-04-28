@@ -344,3 +344,50 @@ class TestAuthController(BaseControllerTest, APITestMixin, DatabaseTestMixin):
         self.test_endpoint_permission_denied(
             "PUT", f"{self.base_url}/users/1/role", employee_token
         )
+
+    def test_delete_user_success(self, admin_token):
+        """测试成功删除用户"""
+        with patch("controllers.auth_controller.delete_user") as mock_delete_user:
+            mock_delete_user.return_value = (
+                {"id": 1, "phone": "13800000001", "name": "用户1"},
+                None,
+            )
+
+            response = self.make_authenticated_request(
+                "DELETE", f"{self.base_url}/users/1", admin_token
+            )
+
+            json_data = self.assert_api_success(response, ["data"])
+            assert json_data["msg"] == "用户已删除"
+            assert json_data["data"]["id"] == 1
+            mock_delete_user.assert_called_once_with(1)
+
+    def test_delete_user_not_found(self, admin_token):
+        """测试删除不存在用户"""
+        with patch("controllers.auth_controller.delete_user") as mock_delete_user:
+            mock_delete_user.return_value = (None, "用户不存在")
+
+            response = self.make_authenticated_request(
+                "DELETE", f"{self.base_url}/users/999", admin_token
+            )
+
+            self.assert_response_code(response, 404)
+            json_data = self.assert_api_error(response, 404)
+            assert "不存在" in json_data["msg"]
+
+    def test_delete_user_self(self, admin_token):
+        """测试禁止删除自己"""
+        response = self.make_authenticated_request(
+            "DELETE", f"{self.base_url}/users/1", admin_token
+        )
+
+        self.assert_response_code(response, 403)
+        json_data = self.assert_response_json(response, ["code", "msg"])
+        assert json_data["code"] == 403
+        assert "不能删除自己" in json_data["msg"]
+
+    def test_delete_user_admin_only(self, employee_token):
+        """测试删除用户仅限管理员"""
+        self.test_endpoint_permission_denied(
+            "DELETE", f"{self.base_url}/users/1", employee_token
+        )

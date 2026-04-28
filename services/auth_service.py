@@ -1,10 +1,14 @@
 import os
 import time
 
-from Auth import hash_password, check_password, create_jwt
-from data.user import user_model, ROLES
+from Auth import hash_password, check_password, create_jwt, normalize_roles
+from data.user import user_model, ROLES, role_model
 from data.user.User import UserTable, STATUS_APPROVED
 from data.database import SessionFactory
+
+
+def _primary_role(roles: list[str]) -> str | None:
+    return roles[0] if roles else None
 
 
 def register_user(phone: str, name: str, password: str):
@@ -40,30 +44,50 @@ def login_user(phone: str, password: str):
         remark = user.get("remark") or ""
         return None, None, f"账号审核未通过：{remark}"
 
+    roles = normalize_roles(user.get("roles")) or normalize_roles(user.get("role"))
+    primary_role = _primary_role(roles)
+
     token = create_jwt(
         {
             "user_id": user["id"],
             "phone": user["phone"],
             "name": user["name"],
-            "role": user["role"],
+            "role": primary_role,
+            "roles": roles,
         }
     )
-    safe_user = {k: user[k] for k in ("id", "phone", "name", "role")}
+    safe_user = {k: user[k] for k in ("id", "phone", "name")}
+    safe_user["role"] = primary_role
+    safe_user["roles"] = roles
     return token, safe_user, None
 
 
-def approve_user(user_id: int, role: str, operator_role: str):
+def approve_user(user_id: int, role, operator_roles):
     """
     审核通过并分配角色。店长不可分配 admin 角色。
     返回 (updated_user, error_msg)。
     """
-    if role not in ROLES:
+    roles = normalize_roles(role)
+    if not roles:
         return None, f'无效角色，可选角色: {", ".join(ROLES)}'
+    if any(r not in ROLES for r in roles):
+        return None, f'无效角色，可选角色: {", ".join(ROLES)}'
+
+    normalized_operator_roles = set(normalize_roles(operator_roles))
     if user_model.get_by_id(user_id) is None:
         return None, "用户不存在"
-    if operator_role == "store_manager" and role == "admin":
+    if (
+        "store_manager" in normalized_operator_roles
+        and "admin" not in normalized_operator_roles
+        and "admin" in roles
+    ):
         return None, "店长无法分配管理员角色"
-    updated = user_model.approve(user_id=user_id, role=role)
+
+    role_objects = role_model.get_by_names(roles)
+    if len(role_objects) != len(roles):
+        return None, f'无效角色，可选角色: {", ".join(ROLES)}'
+
+    updated = user_model.approve(user_id=user_id, role_objects=role_objects)
     return updated, None
 
 
@@ -78,21 +102,36 @@ def reject_user(user_id: int, remark: str = None):
     return updated, None
 
 
-def change_user_role(user_id: int, role: str | None):
+def change_user_role(user_id: int, role):
     """
     直接修改已有用户的角色（管理员操作）。
     role 为 None 或空字符串时表示删除角色。
     返回 (updated_user, error_msg)。
     """
-    # Allow None or empty string to remove role
-    if role is not None and role != "" and role not in ROLES:
+    roles = normalize_roles(role)
+    if role is not None and roles and any(r not in ROLES for r in roles):
+        return None, f'无效角色，可选角色: {", ".join(ROLES)}'
+    if role not in (None, "") and not roles:
         return None, f'无效角色，可选角色: {", ".join(ROLES)}'
     if user_model.get_by_id(user_id) is None:
         return None, "用户不存在"
-    # Normalize empty string to None
-    actual_role = None if role == "" else role
-    updated = user_model.update_role(user_id=user_id, role=actual_role)
+
+    role_objects = role_model.get_by_names(roles) if roles else []
+    updated = user_model.update_role(user_id=user_id, role_objects=role_objects)
     return updated, None
+
+
+def delete_user(user_id: int):
+    """
+    硬删除用户（管理员操作）。
+    返回 (deleted_user, error_msg)。
+    """
+    existing = user_model.get_by_id(user_id)
+    if existing is None:
+        return None, "用户不存在"
+
+    user_model.delete(user_id)
+    return existing, None
 
 
 def init_admin_user():
@@ -120,15 +159,23 @@ def init_admin_user():
 
     now = time.strftime("%Y-%m-%d %H:%M")
     with SessionFactory() as session:
+        from data.user.Role import RoleTable
+
+        admin_role = session.query(RoleTable).filter_by(name="admin").first()
+        if not admin_role:
+            admin_role = RoleTable(name="admin", label="管理员")
+            session.add(admin_role)
+            session.flush()
+
         user = UserTable(
             phone=admin_phone,
             name=admin_name,
             password=hash_password(admin_password),
-            role="admin",
             status=STATUS_APPROVED,
             create_date=now,
             update_date=now,
         )
+        user.roles = [admin_role]
         session.add(user)
         session.commit()
 

@@ -117,14 +117,22 @@ class SQLiteModel:
             db_record.update_date = time.strftime("%Y-%m-%d %H:%M")
             self.session.commit()
 
+    def archive(self, uid: str):
+        db_record = self.session.query(self.table_class).filter(
+            self.table_class.uid == uid
+        ).first()
+
+        if db_record:
+            db_record.archive = True
+            self.session.commit()
+
     def delete(self, uid: str):
         db_record = self.session.query(self.table_class).filter(
             self.table_class.uid == uid
         ).first()
 
         if db_record:
-            # 软删除
-            db_record.archive = True
+            self.session.delete(db_record)
             self.session.commit()
 
     def _record_to_dict(self, record, _fields: List[str] = None, except_fields: List[str] = None) -> dict:

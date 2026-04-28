@@ -17,6 +17,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from data.database import Base
 from data.DB import OrderTable, CargoTable  # noqa: F401
 from data.user.User import UserTable  # noqa: F401
+from data.user.Role import RoleTable  # noqa: F401
+from data.user.PasswordResetRequest import PasswordResetRequestTable
 from data.customer.Customer import CustomerTable, ReceiverTable  # noqa: F401
 from data.packing.PackingList import (  # noqa: F401
     PackingListTable,
@@ -25,6 +27,7 @@ from data.packing.PackingList import (  # noqa: F401
 )
 from data.finance.BonusRate import BonusRateTable  # noqa: F401
 from data.finance.BonusItem import BonusItemTable  # noqa: F401
+from data.DB import GoodsNameTable, ExcelTemplateTable  # noqa: F401
 
 # this is the Alembic Config object
 config = context.config

@@ -10,7 +10,7 @@ from flask import Blueprint, jsonify, request, send_file
 
 from Auth import verify, allow, get_token_payload
 from services import packing_list_service
-from utils.packing_list_pdf import build_packing_list_pdf
+from utils.packing_list_pdf import build_packing_list_pdf, build_packing_lists_pdf
 from utils.log import log
 
 packing_bp = Blueprint("packing", __name__, url_prefix="/api")
@@ -209,12 +209,24 @@ def update_packing_list(uid):
     return jsonify({"code": 200, "msg": "success"})
 
 
+@packing_bp.post("/packing-list/<string:uid>/archive")
+@verify
+@allow(role=["admin", "store_manager"])
+@log(desc="Archive packing list.")
+def archive_packing_list(uid):
+    """归档装箱单"""
+    success = packing_list_service.archive_packing_list(uid)
+    if not success:
+        return jsonify({"code": 404, "msg": "Packing list not found"}), 404
+    return jsonify({"code": 200, "msg": "success"})
+
+
 @packing_bp.delete("/packing-list/<string:uid>")
 @verify
 @allow(role=["admin", "store_manager"])
 @log(desc="Delete packing list.")
 def delete_packing_list(uid):
-    """删除装箱单（软删除）"""
+    """删除装箱单"""
     success = packing_list_service.delete_packing_list(uid)
     if not success:
         return jsonify({"code": 404, "msg": "Packing list not found"}), 404
@@ -242,11 +254,14 @@ def export_packing_list_pdf(uid):
     if detail is None:
         return jsonify({"code": 404, "msg": "Packing list not found"}), 404
 
+    selected_uids = set(request.args.getlist("box_uids"))
     box_uids_param = (request.args.get("box_uids") or "").strip()
     if box_uids_param:
-        selected_uids = {
+        selected_uids.update(
             box_uid.strip() for box_uid in box_uids_param.split(",") if box_uid.strip()
-        }
+        )
+
+    if selected_uids:
         detail = {
             **detail,
             "boxes": [
@@ -265,6 +280,68 @@ def export_packing_list_pdf(uid):
         mimetype="application/pdf",
         as_attachment=False,
         download_name=f"packing-list-{safe_name}.pdf",
+    )
+
+
+@packing_bp.post("/packing-lists/pdf")
+@verify
+@allow()
+def export_packing_lists_pdf():
+    """批量导出装箱单 PDF（合并为一个文件）"""
+    data = request.get_json(silent=True) or {}
+    selections = data.get("selections")
+    if not isinstance(selections, list) or len(selections) == 0:
+        return jsonify({"code": 400, "msg": "selections is required"}), 400
+
+    details = []
+    for item in selections:
+        if not isinstance(item, dict):
+            return jsonify({"code": 400, "msg": "invalid selection item"}), 400
+
+        packing_list_uid = str(item.get("packing_list_uid") or "").strip()
+        if not packing_list_uid:
+            return jsonify({"code": 400, "msg": "packing_list_uid is required"}), 400
+
+        detail = packing_list_service.get_packing_list(packing_list_uid)
+        if detail is None:
+            return (
+                jsonify(
+                    {
+                        "code": 404,
+                        "msg": f"Packing list not found: {packing_list_uid}",
+                    }
+                ),
+                404,
+            )
+
+        box_uids = item.get("box_uids")
+        if box_uids is not None:
+            if not isinstance(box_uids, list):
+                return jsonify({"code": 400, "msg": "box_uids must be a list"}), 400
+            selected_uids = {
+                str(box_uid).strip() for box_uid in box_uids if str(box_uid).strip()
+            }
+            detail = {
+                **detail,
+                "boxes": [
+                    box
+                    for box in (detail.get("boxes") or [])
+                    if box.get("uid") in selected_uids
+                ],
+            }
+
+        details.append(detail)
+
+    try:
+        pdf_stream = build_packing_lists_pdf(details)
+    except ValueError as exc:
+        return jsonify({"code": 400, "msg": str(exc)}), 400
+
+    return send_file(
+        pdf_stream,
+        mimetype="application/pdf",
+        as_attachment=False,
+        download_name="packing-lists-batch.pdf",
     )
 
 
@@ -401,12 +478,24 @@ def weigh_box(uid):
     return jsonify({"code": 200, "msg": "success"})
 
 
+@packing_bp.post("/box/<string:uid>/archive")
+@verify
+@allow(role=PACKING_EDIT_ROLES)
+@log(desc="Archive box.")
+def archive_box(uid):
+    """归档箱子"""
+    success = packing_list_service.archive_box(uid)
+    if not success:
+        return jsonify({"code": 404, "msg": "Box not found"}), 404
+    return jsonify({"code": 200, "msg": "success"})
+
+
 @packing_bp.delete("/box/<string:uid>")
 @verify
 @allow(role=PACKING_EDIT_ROLES)
 @log(desc="Delete box.")
 def delete_box(uid):
-    """删除箱子（软删除）"""
+    """删除箱子"""
     success = packing_list_service.delete_box(uid)
     if not success:
         return jsonify({"code": 404, "msg": "Box not found"}), 404

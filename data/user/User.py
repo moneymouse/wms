@@ -1,7 +1,10 @@
 import time
+import json
 
 from sqlalchemy import Column, String, Integer, Enum as SAEnum
+from sqlalchemy.orm import relationship
 from data.database import Base, SessionFactory
+from data.user.Role import user_roles
 import logging
 
 ROLES = ["admin", "store_manager", "salesperson", "clerk", "finance", "worker"]
@@ -18,7 +21,6 @@ class UserTable(Base):
     phone = Column(String(32), nullable=False, unique=True)
     name = Column(String(128), nullable=False)
     password = Column(String(512), nullable=False)
-    role = Column(String(32), default=None)
     status = Column(
         SAEnum("pending", "approved", "rejected"), nullable=False, default="pending"
     )
@@ -26,12 +28,16 @@ class UserTable(Base):
     create_date = Column(String(32))
     update_date = Column(String(32))
 
+    roles = relationship("RoleTable", secondary=user_roles, back_populates="users")
+
     def to_dict(self, include_password=False):
+        role_names = [r.name for r in self.roles] if self.roles else []
         d = {
             "id": self.id,
             "phone": self.phone,
             "name": self.name,
-            "role": self.role,
+            "role": role_names[0] if role_names else None,
+            "roles": role_names,
             "status": self.status,
             "remark": self.remark,
             "create_date": self.create_date,
@@ -82,14 +88,15 @@ class UserModel:
             users = session.query(UserTable).filter_by(status=status).all()
             return [u.to_dict() for u in users]
 
-    def approve(self, user_id: int, role: str):
+    def approve(self, user_id: int, role_objects=None):
         now = time.strftime("%Y-%m-%d %H:%M")
         with SessionFactory() as session:
             user = session.query(UserTable).filter_by(id=user_id).first()
             if user is None:
                 return None
             user.status = "approved"
-            user.role = role
+            if role_objects is not None:
+                user.roles = role_objects
             user.update_date = now
             session.commit()
             return user.to_dict()
@@ -106,13 +113,16 @@ class UserModel:
             session.commit()
             return user.to_dict()
 
-    def update_role(self, user_id: int, role: str):
+    def update_role(self, user_id: int, role_objects=None):
         now = time.strftime("%Y-%m-%d %H:%M")
         with SessionFactory() as session:
             user = session.query(UserTable).filter_by(id=user_id).first()
             if user is None:
                 return None
-            user.role = role
+            if role_objects is not None:
+                user.roles = role_objects
+            else:
+                user.roles = []
             user.update_date = now
             session.commit()
             return user.to_dict()
@@ -134,6 +144,57 @@ class UserModel:
         with SessionFactory() as session:
             user = session.query(UserTable).filter_by(id=user_id).first()
             return user.to_dict(include_password=True) if user else None
+
+    def delete(self, user_id: int) -> bool:
+        """硬删除用户，并清理关联引用。"""
+        with SessionFactory() as session:
+            user = session.query(UserTable).filter_by(id=user_id).first()
+            if user is None:
+                return False
+
+            from data.DB import OrderTable, CargoTable
+            from data.packing.PackingList import PackingListTable, BoxWorkerTable
+            from data.user.PasswordResetRequest import PasswordResetRequestTable
+            from data.finance.BonusItem import BonusItemTable
+            from data.finance.BonusRate import BonusRateTable
+
+            session.query(OrderTable).filter(OrderTable.salesman_id == user_id).update(
+                {"salesman_id": None}, synchronize_session=False
+            )
+            session.query(CargoTable).filter(
+                CargoTable.bonus_assigned_by == user_id
+            ).update({"bonus_assigned_by": None}, synchronize_session=False)
+            session.query(BonusItemTable).filter(
+                BonusItemTable.updated_by == user_id
+            ).update({"updated_by": None}, synchronize_session=False)
+            session.query(BonusRateTable).filter(
+                BonusRateTable.updated_by == user_id
+            ).update({"updated_by": None}, synchronize_session=False)
+
+            session.query(BoxWorkerTable).filter(
+                BoxWorkerTable.worker_id == user_id
+            ).delete(synchronize_session=False)
+            session.query(PasswordResetRequestTable).filter(
+                PasswordResetRequestTable.user_id == user_id
+            ).delete(synchronize_session=False)
+
+            packing_list_uids = [
+                uid
+                for (uid,) in session.query(PackingListTable.uid)
+                .filter(PackingListTable.creator_id == user_id)
+                .all()
+            ]
+            if packing_list_uids:
+                session.query(CargoTable).filter(
+                    CargoTable.packing_list_uid.in_(packing_list_uids)
+                ).update({"packing_list_uid": None}, synchronize_session=False)
+                session.query(PackingListTable).filter(
+                    PackingListTable.creator_id == user_id
+                ).delete(synchronize_session=False)
+
+            session.delete(user)
+            session.commit()
+            return True
 
 
 user_model = UserModel()
