@@ -27,6 +27,7 @@ import trackStatus from "../common/trackStatus";
 import GoodInput from "../components/GoodName";
 import BoxAssignmentModal from "../components/BoxAssignmentModal";
 import { DeleteOutlined, InboxOutlined } from "@ant-design/icons";
+import { hasPermission } from "../common/roleConfig";
 
 const passHash = '18667b982b1c774d3c096422e457906afb227cfc7f956d3f4fc1f9bc07b98862';
 
@@ -150,11 +151,11 @@ export default function OrderDetail() {
     const [boxAssignmentVisible, setBoxAssignmentVisible] = useState(false);
 
     // 检查是否有查看客户联系信息的权限
-    const canViewCustomerContact = ['admin', 'store_manager', 'salesperson'].includes(jwtPayload?.role);
+    const canViewCustomerContact = hasPermission(jwtPayload?.roles, ['admin', 'store_manager', 'salesperson']);
     // 检查是否有分配箱子的权限
-    const canAssignBoxes = ['admin', 'store_manager', 'salesperson', 'clerk'].includes(jwtPayload?.role);
+    const canAssignBoxes = hasPermission(jwtPayload?.roles, ['admin', 'store_manager', 'salesperson', 'clerk']);
     // 检查是否有包裹出货权限
-    const canShipCargos = ['admin', 'store_manager', 'salesperson', 'clerk'].includes(jwtPayload?.role);
+    const canShipCargos = hasPermission(jwtPayload?.roles, ['admin', 'store_manager', 'salesperson', 'clerk']);
 
     useEffect(() => {
         const jwt = localStorage.getItem('jwt');
@@ -234,7 +235,7 @@ export default function OrderDetail() {
     }, [canViewCustomerContact, descriptionData.customer_ids]);
 
     const currentUserId = jwtPayload?.user_id ?? jwtPayload?.id ?? jwtPayload?.uid;
-    const canEditSalesman = jwtPayload?.role === 'admin'
+    const canEditSalesman = hasPermission(jwtPayload?.roles, ['admin'])
         || (currentUserId !== undefined && salesman?.id !== undefined && Number(currentUserId) === Number(salesman.id));
 
     const handleSaveSalesman = async (userId) => {

@@ -16,6 +16,7 @@ import {
 import { EditOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import { endpoint } from '../config';
 import getSafeHeader from '../common/safeHeader';
+import { hasPermission } from '../common/roleConfig';
 
 const { Title, Text } = Typography;
 
@@ -75,8 +76,8 @@ export default function FinanceCenter() {
 
     const [drafts, setDrafts] = useState({});
 
-    const role = payload?.role;
-    const canAccess = ['admin', 'finance'].includes(role);
+    const userRoles = payload?.roles || (payload?.role ? [payload.role] : []);
+    const canAccess = hasPermission(userRoles, ['admin', 'finance']);
 
     const workerOptions = useMemo(
         () => workers.map(worker => ({ label: `${worker.name} (${worker.phone || '-'})`, value: worker.id })),
@@ -516,7 +517,7 @@ export default function FinanceCenter() {
                         options={workerOptions}
                         onChange={(value) => updateDraft(record.box_uid, { worker_ids: value })}
                         style={{ width: '100%' }}
-                        maxTagCount={1}
+                        maxTagCount={4}
                         optionFilterProp="label"
                         showSearch
                     />

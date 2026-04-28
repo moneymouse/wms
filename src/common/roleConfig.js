@@ -8,6 +8,15 @@ export const ROLES = {
     WORKER: 'worker'
 };
 
+export const ROLE_LABEL_MAP = {
+    admin: '管理员',
+    store_manager: '店长',
+    salesperson: '业务员',
+    clerk: '文员',
+    finance: '财务',
+    worker: '操作人员'
+};
+
 // 菜单配置：key -> 可见角色列表
 export const menuPermissions = {
     '': [ROLES.ADMIN, ROLES.STORE_MANAGER, ROLES.SALESPERSON, ROLES.CLERK], // 创建订单
@@ -42,9 +51,14 @@ export const routePermissions = {
     '/settings': [ROLES.ADMIN, ROLES.STORE_MANAGER, ROLES.SALESPERSON, ROLES.CLERK, ROLES.FINANCE, ROLES.WORKER], // 设置
 };
 
-// 权限检查函数
-export const hasPermission = (userRole, allowedRoles) => {
-    return allowedRoles.includes(userRole);
+// 权限检查函数：用户角色集合与允许角色集合交集非空时通过
+export const hasPermission = (userRoles, allowedRoles) => {
+    const userRoleSet = new Set(Array.isArray(userRoles) ? userRoles : [userRoles]);
+    const allowedRoleSet = new Set(allowedRoles);
+    for (const role of userRoleSet) {
+        if (allowedRoleSet.has(role)) return true;
+    }
+    return false;
 };
 
 // 着陆页配置：角色 -> 默认着陆页
@@ -57,7 +71,13 @@ export const landingPages = {
     [ROLES.WORKER]: '/work-details',
 };
 
-// 获取角色着陆页
-export const getLandingPage = (userRole) => {
-    return landingPages[userRole] || '/orders';
+// 获取角色着陆页：传入角色数组时，返回第一个匹配角色的着陆页
+export const getLandingPage = (userRoles) => {
+    const roles = Array.isArray(userRoles) ? userRoles : [userRoles];
+    for (const role of roles) {
+        if (landingPages[role]) {
+            return landingPages[role];
+        }
+    }
+    return '/orders';
 };

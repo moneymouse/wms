@@ -3,6 +3,7 @@ import { PicCenterOutlined } from "@ant-design/icons";
 import { Table, Typography, Card, Space, Tag, Collapse, message, Empty } from "antd";
 import { endpoint } from "../config";
 import getSafeHeader from "../common/safeHeader"
+import { hasPermission } from "../common/roleConfig";
 import { useNavigate } from "react-router-dom";
 
 const { Panel } = Collapse;
@@ -51,10 +52,10 @@ export default function () {
                 if (parts.length === 3) {
                     // 解码 base64 编码的负载
                     const payload = JSON.parse(atob(parts[1]));
-                    // 检查用户角色是否为 boss
-                    setIsAdmin(payload.role === 'admin');
+                    const userRoles = payload.roles || (payload.role ? [payload.role] : []);
+                    setIsAdmin(hasPermission(userRoles, ['admin']));
 
-                    if (payload.role !== 'admin') {
+                    if (!hasPermission(userRoles, ['admin'])) {
                         message.error('只有管理员有权限查看操作日志！');
                         // 延迟一下跳转，让用户能看到消息
                         setTimeout(() => {

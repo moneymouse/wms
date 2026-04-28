@@ -161,11 +161,69 @@ export default function OrderList() {
 
     //选择与导出逻辑
     const [selectedKeys, setSelectedKeys] = useState([]);
+    const [archiveLoading, setArchiveLoading] = useState(false); //归档时按钮loading状态
     const [deleteLoading, setDeleteLoading] = useState(false); //删除时按钮loading状态
 
     const handleSelectedChange = (newSelectedKey) => {
         setSelectedKeys(newSelectedKey);
     }
+
+    // 归档订单逻辑
+    const handleArchive = async () => {
+        if (selectedKeys.length <= 0) {
+            message.warning('请先选择要归档的订单');
+            return;
+        }
+
+        Modal.confirm({
+            title: '确认归档订单',
+            content: `确定要归档选中的 ${selectedKeys.length} 个订单吗？归档后订单将不再显示在列表中。`,
+            okText: '确认归档',
+            cancelText: '取消',
+            onOk: async () => {
+                try {
+                    setArchiveLoading(true);
+
+                    let passKey = prompt("请输入管理密码。")
+                    if (passKey !== "159753") {
+                        alert("密码错误")
+                        return;
+                    }
+
+                    // 发送归档请求
+                    const result = await fetch(`${endpoint}/orders/archive`, {
+                        method: 'POST',
+                        headers: {
+                            ...getSafeHeader(),
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            uid_list: selectedKeys
+                        })
+                    });
+
+                    const response = await result.json();
+
+                    if (response.code === 200) {
+                        message.success('归档成功');
+
+                        // 更新数据，移除已归档的订单
+                        setOrderData(prevData => prevData.filter(item => !selectedKeys.includes(item.key)));
+
+                        // 清空选中状态
+                        setSelectedKeys([]);
+                    } else {
+                        message.error(response.message || '归档失败');
+                    }
+                } catch (error) {
+                    console.error('归档订单时出错:', error);
+                    message.error('归档订单失败，请稍后重试');
+                } finally {
+                    setArchiveLoading(false);
+                }
+            }
+        });
+    };
 
     // 删除订单逻辑
     const handleDelete = async () => {
@@ -175,8 +233,8 @@ export default function OrderList() {
         }
 
         Modal.confirm({
-            title: '确认删除订单',
-            content: `确定要删除选中的 ${selectedKeys.length} 个订单吗？此操作不可恢复。`,
+            title: '确认彻底删除订单',
+            content: `确定要彻底删除选中的 ${selectedKeys.length} 个订单吗？此操作不可恢复，订单数据将从数据库中永久删除。`,
             okText: '确认删除',
             okType: 'danger',
             cancelText: '取消',
@@ -193,7 +251,10 @@ export default function OrderList() {
                     // 发送删除请求
                     const result = await fetch(`${endpoint}/orders`, {
                         method: 'DELETE',
-                        headers: getSafeHeader(),
+                        headers: {
+                            ...getSafeHeader(),
+                            'Content-Type': 'application/json'
+                        },
                         body: JSON.stringify({
                             uid_list: selectedKeys
                         })
@@ -256,6 +317,13 @@ export default function OrderList() {
                         onSuccess={() => setSelectedKeys([])}
                     />
 
+                    {selectedKeys.length > 0 && <Button
+                        loading={archiveLoading}
+                        onClick={handleArchive}
+                        disabled={selectedKeys.length === 0}
+                    >
+                        归档选中订单
+                    </Button>}
                     {selectedKeys.length > 0 && <Button
                         type="danger"
                         icon={<DeleteOutlined />}

@@ -265,14 +265,12 @@ function PackingListTab({
 
     const fetchWorkers = async () => {
         try {
-            const res = await fetch(`${endpoint}/users/list`, {
+            const res = await fetch(`${endpoint}/work/workers`, {
                 headers: getSafeHeader()
             });
             const data = await res.json();
             if (data.code === 200) {
-                // 过滤出操作员角色的用户
-                const workerList = (data.data || []);
-                setWorkers(workerList);
+                setWorkers(data.data || []);
             }
         } catch (error) {
             console.error('获取操作员列表失败:', error);
@@ -463,6 +461,27 @@ function PackingListTab({
         }
     };
 
+    // 归档箱子
+    const handleArchiveBox = async (uid) => {
+        try {
+            const res = await fetch(`${endpoint}/box/${uid}/archive`, {
+                method: 'POST',
+                headers: getSafeHeader()
+            });
+            const data = await res.json();
+
+            if (data.code === 200) {
+                setBoxes(prev => prev.filter(b => b.uid !== uid));
+                messageApi.success('箱子已归档');
+            } else {
+                messageApi.error(data.msg || '归档失败');
+            }
+        } catch (error) {
+            messageApi.error('归档箱子失败');
+            console.error(error);
+        }
+    };
+
     // 删除箱子
     const handleDeleteBox = async (uid) => {
         try {
@@ -588,6 +607,9 @@ function PackingListTab({
                     return (
                         <Space>
                             <Text strong style={{ color: '#52c41a', fontSize: '16px' }}>{weight} kg</Text>
+                            {/* <Popconfirm title="确定归档？" onConfirm={() => handleArchiveBox(record.uid)}>
+                                <Button type="text" style={{ padding: 0 }}>归档</Button>
+                            </Popconfirm> */}
                             <Popconfirm title="确定删除？" onConfirm={() => handleDeleteBox(record.uid)}>
                                 <Button type="text" danger icon={<DeleteOutlined />} style={{ padding: 0 }} />
                             </Popconfirm>
@@ -605,6 +627,9 @@ function PackingListTab({
                             style={{ width: 90, border: '1px solid #1890ff', borderRadius: '4px' }}
                             onPressEnter={(e) => handleWeighBox(record.uid, parseFloat(e.target.value))}
                         />
+                        <Popconfirm title="确定归档？" onConfirm={() => handleArchiveBox(record.uid)}>
+                            <Button type="text" style={{ padding: 0 }}>归档</Button>
+                        </Popconfirm>
                         <Popconfirm title="确定删除？" onConfirm={() => handleDeleteBox(record.uid)}>
                             <Button type="text" danger icon={<DeleteOutlined />} style={{ padding: 0 }} />
                         </Popconfirm>
@@ -871,7 +896,7 @@ function PackingListTab({
                                     maxTagCount={3}
                                 >
                                     {workers.map(w => (
-                                        <Option key={w.id} value={w.id}>{w.name}</Option>
+                                        <Option key={w.id} value={w.id}>{w.name} {w.phone ? `(${w.phone})` : ''}</Option>
                                     ))}
                                 </Select>
                             </Form.Item>

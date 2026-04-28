@@ -33,6 +33,7 @@ import {
 } from '@ant-design/icons';
 import { endpoint } from '../config';
 import getSafeHeader from '../common/safeHeader';
+import { hasPermission } from '../common/roleConfig';
 
 const { Title, Text } = Typography;
 const { Option } = Select;
@@ -170,10 +171,10 @@ export default function PackingListDetail() {
     const [deletingBoxUid, setDeletingBoxUid] = useState(null);
     const [boxEditForm] = Form.useForm();
 
-    const canDeletePackingList = ['admin', 'store_manager'].includes(payload?.role);
-    const canEditPackingListDetail = ['admin', 'store_manager', 'salesperson'].includes(payload?.role);
-    const canShipBoxes = ['admin', 'store_manager', 'salesperson'].includes(payload?.role);
-    const canEditBoxes = ['admin', 'store_manager', 'salesperson'].includes(payload?.role);
+    const canDeletePackingList = hasPermission(payload?.roles, ['admin', 'store_manager']);
+    const canEditPackingListDetail = hasPermission(payload?.roles, ['admin', 'store_manager', 'salesperson']);
+    const canShipBoxes = hasPermission(payload?.roles, ['admin', 'store_manager', 'salesperson']);
+    const canEditBoxes = hasPermission(payload?.roles, ['admin', 'store_manager', 'salesperson']);
 
     useEffect(() => {
         setPayload(getJwtPayload());
@@ -397,12 +398,45 @@ export default function PackingListDetail() {
         }
     };
 
+    const handleArchiveCurrent = () => {
+        if (!currentDetail) return;
+
+        Modal.confirm({
+            title: '确认归档该装箱单吗？',
+            content: `唛头：${getMarkText(currentDetail)}。归档后装箱单将不再显示在列表中。`,
+            okText: '归档',
+            cancelText: '取消',
+            onOk: async () => {
+                setDeleting(true);
+                try {
+                    const res = await fetch(`${endpoint}/packing-list/${currentDetail.uid}/archive`, {
+                        method: 'POST',
+                        headers: getSafeHeader()
+                    });
+                    const data = await res.json();
+
+                    if (data.code === 200) {
+                        messageApi.success('装箱单已归档');
+                        navigate('/packing-lists');
+                    } else {
+                        messageApi.error(data.msg || '归档失败');
+                    }
+                } catch (error) {
+                    messageApi.error('归档失败');
+                    console.error(error);
+                } finally {
+                    setDeleting(false);
+                }
+            }
+        });
+    };
+
     const handleDeleteCurrent = () => {
         if (!currentDetail) return;
 
         Modal.confirm({
-            title: '确认删除该装箱单吗？',
-            content: `唛头：${getMarkText(currentDetail)}。删除后不可恢复。`,
+            title: '确认彻底删除该装箱单吗？',
+            content: `唛头：${getMarkText(currentDetail)}。此操作不可恢复，数据将从数据库中永久删除。`,
             okText: '删除',
             okType: 'danger',
             cancelText: '取消',
@@ -603,12 +637,44 @@ export default function PackingListDetail() {
         }
     };
 
+    const handleArchiveBox = (box) => {
+        if (!box?.uid || !currentDetail?.uid) return;
+
+        Modal.confirm({
+            title: '确认归档该箱子吗？',
+            content: `箱号：${box.box_number || '-'}。归档后箱子将不再显示。`,
+            okText: '归档',
+            cancelText: '取消',
+            onOk: async () => {
+                setDeletingBoxUid(box.uid);
+                try {
+                    const res = await fetch(`${endpoint}/box/${box.uid}/archive`, {
+                        method: 'POST',
+                        headers: getSafeHeader()
+                    });
+                    const data = await res.json();
+                    if (data.code === 200) {
+                        messageApi.success('箱子已归档');
+                        await handleViewDetail(currentDetail.uid);
+                    } else {
+                        messageApi.error(data.msg || '归档箱子失败');
+                    }
+                } catch (error) {
+                    messageApi.error('归档箱子失败');
+                    console.error(error);
+                } finally {
+                    setDeletingBoxUid(null);
+                }
+            }
+        });
+    };
+
     const handleDeleteBox = (box) => {
         if (!box?.uid || !currentDetail?.uid) return;
 
         Modal.confirm({
-            title: '确认删除该箱子吗？',
-            content: `箱号：${box.box_number || '-'}。删除后不可恢复。`,
+            title: '确认彻底删除该箱子吗？',
+            content: `箱号：${box.box_number || '-'}。此操作不可恢复，数据将从数据库中永久删除。`,
             okText: '删除',
             okType: 'danger',
             cancelText: '取消',
@@ -636,6 +702,56 @@ export default function PackingListDetail() {
         });
     };
 
+    const handleArchiveSelectedBoxes = () => {
+        if (!currentDetail?.uid) return;
+
+        const boxUids = selectedShipBoxUids.filter((uid) => allBatchCandidateUids.includes(uid));
+        if (boxUids.length === 0) {
+            messageApi.warning('请先选择要归档的箱子');
+            return;
+        }
+
+        Modal.confirm({
+            title: '确认归档所选箱子吗？',
+            content: `共选择 ${boxUids.length} 个箱子，归档后箱子将不再显示。`,
+            okText: '归档',
+            cancelText: '取消',
+            onOk: async () => {
+                setBatchDeleting(true);
+                try {
+                    const results = await Promise.all(
+                        boxUids.map(async (uid) => {
+                            try {
+                                const res = await fetch(`${endpoint}/box/${uid}/archive`, {
+                                    method: 'POST',
+                                    headers: getSafeHeader()
+                                });
+                                const data = await res.json();
+                                return { uid, success: data.code === 200, msg: data.msg };
+                            } catch (_) {
+                                return { uid, success: false, msg: '归档请求失败' };
+                            }
+                        })
+                    );
+
+                    const successCount = results.filter((item) => item.success).length;
+                    const failedCount = results.length - successCount;
+
+                    if (failedCount > 0) {
+                        messageApi.warning(`已归档 ${successCount} 箱，失败 ${failedCount} 箱`);
+                    } else {
+                        messageApi.success(`已归档 ${successCount} 箱`);
+                    }
+
+                    setSelectedShipBoxUids([]);
+                    await handleViewDetail(currentDetail.uid);
+                } finally {
+                    setBatchDeleting(false);
+                }
+            }
+        });
+    };
+
     const handleDeleteSelectedBoxes = () => {
         if (!currentDetail?.uid) return;
 
@@ -646,8 +762,8 @@ export default function PackingListDetail() {
         }
 
         Modal.confirm({
-            title: '确认删除所选箱子吗？',
-            content: `共选择 ${boxUids.length} 个箱子，删除后不可恢复。`,
+            title: '确认彻底删除所选箱子吗？',
+            content: `共选择 ${boxUids.length} 个箱子，此操作不可恢复，数据将从数据库中永久删除。`,
             okText: '删除',
             okType: 'danger',
             cancelText: '取消',
@@ -734,6 +850,7 @@ export default function PackingListDetail() {
         batchActionMenuItems.push({ key: 'ship', label: '出货' });
     }
     if (canEditBoxes) {
+        batchActionMenuItems.push({ key: 'archive', label: '归档已选' });
         batchActionMenuItems.push({ key: 'delete', label: '删除已选' });
     }
 
@@ -749,6 +866,10 @@ export default function PackingListDetail() {
     const handleBatchActionExecute = () => {
         if (resolvedBatchAction === 'ship') {
             handleShipSelectedBoxes();
+            return;
+        }
+        if (resolvedBatchAction === 'archive') {
+            handleArchiveSelectedBoxes();
             return;
         }
         if (resolvedBatchAction === 'delete') {
@@ -908,6 +1029,14 @@ export default function PackingListDetail() {
                     )}
                     {canDeletePackingList && (
                         <Button
+                            onClick={handleArchiveCurrent}
+                            loading={deleting}
+                        >
+                            归档装箱单
+                        </Button>
+                    )}
+                    {canDeletePackingList && (
+                        <Button
                             danger
                             icon={<DeleteOutlined />}
                             onClick={handleDeleteCurrent}
@@ -1041,6 +1170,15 @@ export default function PackingListDetail() {
                                             onClick={() => openBoxEditModal(box)}
                                         >
                                             编辑
+                                        </Button>
+                                    ) : null,
+                                    canEditBoxes ? (
+                                        <Button
+                                            type="link"
+                                            loading={deletingBoxUid === box.uid}
+                                            onClick={() => handleArchiveBox(box)}
+                                        >
+                                            归档
                                         </Button>
                                     ) : null,
                                     canEditBoxes ? (

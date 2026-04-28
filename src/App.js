@@ -20,7 +20,7 @@ import {
 import { Avatar, Button, Layout, Menu, theme, Tooltip, Drawer, Grid } from 'antd';
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import { LogIcon } from "./pages/logs";
-import { menuPermissions, routePermissions, hasPermission, getLandingPage } from "./common/roleConfig";
+import { menuPermissions, routePermissions, hasPermission, getLandingPage, ROLE_LABEL_MAP } from "./common/roleConfig";
 
 const { Header, Sider, Content } = Layout;
 const { useBreakpoint } = Grid;
@@ -31,7 +31,7 @@ function App() {
     const [drawerVisible, setDrawerVisible] = useState(false);
 
     const [collapsed, setCollapsed] = useState(true);
-    const [userRole, setUserRole] = useState(null);
+    const [userRoles, setUserRoles] = useState([]);
     const [username, setUsername] = useState('');
     const {
         token: { colorBgContainer },
@@ -39,14 +39,6 @@ function App() {
 
     const { pathname } = useLocation();
     const navigate = useNavigate();
-    const roleLabelMap = {
-        admin: '管理员',
-        store_manager: '店长',
-        salesperson: '业务员',
-        clerk: '文员',
-        finance: '财务',
-        worker: '操作人员'
-    };
 
     const getSelectedMenuKey = () => {
         const currentPath = pathname.replace(/^\//, '');
@@ -59,8 +51,6 @@ function App() {
     };
 
     useEffect(() => {
-        // console.log(process.env)
-        // if (process.env.NODE_ENV === 'development') return;
         // 从 localStorage 获取 JWT 并检查用户角色
         const jwt = localStorage.getItem('jwt');
         if (!jwt) navigate("/login");
@@ -70,9 +60,9 @@ function App() {
             if (parts.length === 3) {
                 // 解码 base64 编码的负载
                 const payload = JSON.parse(atob(parts[1]));
-                const role = payload.role;
+                const roles = payload.roles || (payload.role ? [payload.role] : []);
                 // 设置用户角色
-                setUserRole(role);
+                setUserRoles(roles);
                 setUsername(payload.name || payload.username || payload.phone || '');
 
                 // 检查当前路由权限，无权限则重定向到着陆页
@@ -86,13 +76,13 @@ function App() {
                     return key === currentPath;
                 });
 
-                if (routeKey && !hasPermission(role, routePermissions[routeKey])) {
-                    navigate(getLandingPage(role));
+                if (routeKey && !hasPermission(roles, routePermissions[routeKey])) {
+                    navigate(getLandingPage(roles));
                 }
             }
         } catch (e) {
             console.error('解析 JWT 时出错:', e);
-            setUserRole(null);
+            setUserRoles([]);
             setUsername('');
             navigate("/login")
         }
@@ -100,7 +90,7 @@ function App() {
 
     const handleLogout = () => {
         localStorage.removeItem('jwt');
-        setUserRole(null);
+        setUserRoles([]);
         setUsername('');
         navigate('/login');
     };
@@ -159,7 +149,7 @@ function App() {
         },
         {
             key: 'admin',
-            label: '用户申请',
+            label: '管理',
             icon: <UserSwitchOutlined />,
         },
         {
@@ -171,7 +161,7 @@ function App() {
 
     // 根据用户角色过滤菜单项
     const menuItems = allMenuItems.filter(item =>
-        menuPermissions[item.key] && hasPermission(userRole, menuPermissions[item.key])
+        menuPermissions[item.key] && hasPermission(userRoles, menuPermissions[item.key])
     );
 
     const siderContent = (
@@ -222,8 +212,11 @@ function App() {
                     {(isMobile || !collapsed) && (
                         <div style={{ lineHeight: 1.4, overflow: 'hidden', whiteSpace: 'nowrap' }}>
                             <div style={{ fontSize: 14, fontWeight: 500, textOverflow: 'ellipsis', overflow: 'hidden' }}>{username || '未知用户'}</div>
-                            <div style={{ fontSize: 12, opacity: 0.65 }}>
-                                {roleLabelMap[userRole] || userRole || '未登录'}
+                            <div style={{ fontSize: 12, opacity: 0.65, display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                                {userRoles.length > 0
+                                    ? userRoles.map(role => <span key={role}>{ROLE_LABEL_MAP[role] || role}</span>).reduce((prev, curr) => [prev, '，', curr])
+                                    : '未登录'
+                                }
                             </div>
                         </div>
                     )}

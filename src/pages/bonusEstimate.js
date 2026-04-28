@@ -3,6 +3,7 @@ import { Button, Card, Input, Select, Table, Typography, message, Row, Col, Stat
 import { ReloadOutlined, DownloadOutlined } from '@ant-design/icons';
 import { endpoint } from '../config';
 import getSafeHeader from '../common/safeHeader';
+import { hasPermission } from '../common/roleConfig';
 
 const { Title } = Typography;
 
@@ -36,9 +37,9 @@ export default function BonusEstimate() {
     const [loading, setLoading] = useState(false);
     const [bonusData, setBonusData] = useState(null);
 
-    const role = payload?.role;
+    const userRoles = payload?.roles || (payload?.role ? [payload.role] : []);
     const currentUserId = payload?.user_id;
-    const canSelectWorker = ['admin', 'finance'].includes(role);
+    const canSelectWorker = hasPermission(userRoles, ['admin', 'finance']);
 
     const selectedWorkerOptions = useMemo(
         () => workers.map(worker => ({ label: `${worker.name} (${worker.phone || '-'})`, value: worker.id })),
@@ -70,7 +71,7 @@ export default function BonusEstimate() {
     }, [canSelectWorker]);
 
     const fetchBonus = async () => {
-        if (!role) return;
+        if (!userRoles.length) return;
 
         const params = new URLSearchParams({ month });
         if (canSelectWorker && selectedWorkerId) {
@@ -97,12 +98,12 @@ export default function BonusEstimate() {
     };
 
     useEffect(() => {
-        if (!role) return;
+        if (!userRoles.length) return;
         if (canSelectWorker && !selectedWorkerId) return;
         if (!canSelectWorker && !currentUserId) return;
         fetchBonus();
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [role, currentUserId, canSelectWorker, selectedWorkerId, month]);
+    }, [userRoles, currentUserId, canSelectWorker, selectedWorkerId, month]);
 
     const hasUnmatched = useMemo(() => {
         const daily = bonusData?.daily || [];

@@ -16,6 +16,7 @@ import { ReloadOutlined } from '@ant-design/icons';
 import { useSearchParams } from 'react-router-dom';
 import { endpoint } from '../config';
 import getSafeHeader from '../common/safeHeader';
+import { hasPermission } from '../common/roleConfig';
 
 const { Title } = Typography;
 
@@ -50,9 +51,9 @@ export default function WorkDetails() {
     const [loading, setLoading] = useState(false);
     const [detailData, setDetailData] = useState(null);
 
-    const role = payload?.role;
+    const userRoles = payload?.roles || (payload?.role ? [payload.role] : []);
     const currentUserId = payload?.user_id;
-    const canSelectWorker = ['admin', 'finance'].includes(role);
+    const canSelectWorker = hasPermission(userRoles, ['admin', 'finance']);
 
     const selectedWorkerOptions = useMemo(
         () => workers.map(worker => ({ label: `${worker.name} (${worker.phone || '-'})`, value: worker.id })),
@@ -105,7 +106,7 @@ export default function WorkDetails() {
     }, [canSelectWorker, searchParams]);
 
     const fetchDetails = async () => {
-        if (!role) return;
+        if (!userRoles.length) return;
 
         const params = new URLSearchParams({ month });
         if (canSelectWorker && selectedWorkerId) {
@@ -133,12 +134,12 @@ export default function WorkDetails() {
     };
 
     useEffect(() => {
-        if (!role) return;
+        if (!userRoles.length) return;
         if (canSelectWorker && !selectedWorkerId) return;
         if (!canSelectWorker && !currentUserId) return;
         fetchDetails();
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [role, currentUserId, canSelectWorker, selectedWorkerId, month]);
+    }, [userRoles, currentUserId, canSelectWorker, selectedWorkerId, month]);
 
     const groupColumns = [
         {

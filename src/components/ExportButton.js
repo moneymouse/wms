@@ -5,50 +5,34 @@ import { endpoint } from '../config.js';
 import getSafeHeader from '../common/safeHeader';
 import genWayBill from "../common/genWayBill";
 
-const exportTypeItems = [
-    {
-        key: 'jifei',
-        label: '极飞订单'
-    }, {
-        key: 'tongcang',
-        label: '统仓订单'
-    }, {
-        key: 'tongcangups',
-        label: '统仓(UPS)订单'
-    }, {
-        key: 'jinfeiqi',
-        label: '金飞旗订单'
-    }, {
-        key: 'huanshitong',
-        label: '环世通订单'
-    }, {
-        key: 'xinghang',
-        label: '星航订单'
-    }, {
-        key: 'jinlong',
-        label: '金龙订单'
-    }, {
-        key: 'jinlong_kuaidi',
-        label: '金龙快递订单'
-    }, {
-        key: 'yaxuan',
-        label: '亚轩订单'
-    }, {
-        key: 'WE',
-        label: '亚轩WE订单'
-    }, {
-        key: 'wayBill',
-        label: '面单'
-    }, {
-        key: 'kehu',
-        label: "转单号列表"
-    },
+const FIXED_EXPORT_ITEMS = [
+    { key: 'kehu', label: '转单号列表' },
+    { key: 'wayBill', label: '面单' },
 ];
-
 
 const ExportButton = ({ selectedKeys, selectedCargos = [], data, onSuccess }) => {
     const [loading, setLoading] = useState(false);
     const [exportType, setExportType] = useState('jifei');
+    const [templates, setTemplates] = useState([]);
+
+    useEffect(() => {
+        fetch(`${endpoint}/excel-templates`, { headers: getSafeHeader() })
+            .then(r => r.json())
+            .then(res => {
+                if (res.code === 200) {
+                    const dynamicItems = (res.data || []).map(t => ({ key: t.mode_key, label: t.label }));
+                    const allItems = [...dynamicItems, ...FIXED_EXPORT_ITEMS];
+                    setTemplates(allItems);
+                    if (allItems.length > 0 && !allItems.find(i => i.key === exportType)) {
+                        setExportType(allItems[0].key);
+                    }
+                }
+            })
+            .catch(() => {
+                message.error('获取导出模板失败');
+            });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
 
     const handleExportPreview = async () => {
         if (selectedKeys.length > 1) {
@@ -118,12 +102,12 @@ const ExportButton = ({ selectedKeys, selectedCargos = [], data, onSuccess }) =>
         }
     };
 
-    const currentExportType = exportTypeItems.find(item => item.key === exportType);
+    const currentExportType = templates.find(item => item.key === exportType);
 
     return (
         <Dropdown.Button
             menu={{
-                items: exportTypeItems,
+                items: templates,
                 onClick(e) {
                     setExportType(e.key);
                 }

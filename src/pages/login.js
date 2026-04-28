@@ -68,7 +68,8 @@ const LoginForm = ({ messageApi }) => {
                     const parts = result.token.split('.');
                     if (parts.length === 3) {
                         const payload = JSON.parse(atob(parts[1]));
-                        landingPage = getLandingPage(payload.role);
+                        const roles = payload.roles || (payload.role ? [payload.role] : []);
+                        landingPage = getLandingPage(roles);
                     }
                 } catch (e) {
                     console.error('解析角色失败:', e);
