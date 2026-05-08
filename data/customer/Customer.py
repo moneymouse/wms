@@ -34,8 +34,7 @@ class CustomerTable(Base):
     receivers = relationship(
         "ReceiverTable",
         back_populates="customer",
-        foreign_keys="ReceiverTable.customer_name",
-        primaryjoin="CustomerTable.name == ReceiverTable.customer_name",
+        foreign_keys="ReceiverTable.customer_id",
         lazy="select",
     )
 
@@ -52,7 +51,7 @@ class ReceiverTable(Base):
     __tablename__ = "receivers"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    customer_name = Column(String(256), ForeignKey("customers.name"), nullable=False)
+    customer_id = Column(Integer, ForeignKey("customers.id"), nullable=False)
     receiver = Column(String(256))
     receiver_phone = Column(String(64))
     mail = Column(String(256))
@@ -65,7 +64,7 @@ class ReceiverTable(Base):
     customer = relationship(
         "CustomerTable",
         back_populates="receivers",
-        foreign_keys=[customer_name],
+        foreign_keys=[customer_id],
     )
 
 
@@ -85,16 +84,27 @@ def add_customer_record(record: dict) -> int | None:
         The customer ID if customer was found, None otherwise.
     """
     customer_name = str(record.get("customer_name", "")).strip()
+    raw_customer_id = record.get("customer_id")
     receiver_name = str(record.get("receiver", "")).strip()
     address_val = str(record.get("address", "")).strip()
 
-    if not customer_name:
+    customer_id = None
+    if raw_customer_id not in [None, "", 0, "0"]:
+        try:
+            customer_id = int(raw_customer_id)
+        except (TypeError, ValueError):
+            return None
+
+    if not customer_id and not customer_name:
         return None
 
     s = SessionFactory()
     try:
         # Find existing customer (do NOT create)
-        customer = s.query(CustomerTable).filter_by(name=customer_name).first()
+        if customer_id:
+            customer = s.query(CustomerTable).filter_by(id=customer_id).first()
+        else:
+            customer = s.query(CustomerTable).filter_by(name=customer_name).first()
         if customer is None:
             return None
 
@@ -108,7 +118,7 @@ def add_customer_record(record: dict) -> int | None:
         existing = (
             s.query(ReceiverTable)
             .filter_by(
-                customer_name=customer_name, receiver=receiver_name, address=address_val
+                customer_id=customer_id, receiver=receiver_name, address=address_val
             )
             .first()
         )
@@ -116,7 +126,7 @@ def add_customer_record(record: dict) -> int | None:
             return customer_id
 
         new_receiver = ReceiverTable(
-            customer_name=customer_name,
+            customer_id=customer_id,
             **{k: str(record.get(k, "")).strip() for k in fields},
         )
         s.add(new_receiver)
@@ -139,12 +149,7 @@ def get_customer_record(customer_id: int = 0, receiver_id: str = ""):
     s = SessionFactory()
     try:
         if customer_id:
-            customer = s.query(CustomerTable).filter_by(id=customer_id).first()
-            if customer is None:
-                return []
-            receivers = (
-                s.query(ReceiverTable).filter_by(customer_name=customer.name).all()
-            )
+            receivers = s.query(ReceiverTable).filter_by(customer_id=customer_id).all()
             return [
                 {"receiver_id": str(r.id), "receiver_name": r.receiver}
                 for r in receivers
@@ -206,12 +211,9 @@ def del_receiver_record(customer_id: int = 0, receiver_id: str = ""):
 
     s = SessionFactory()
     try:
-        customer = s.query(CustomerTable).filter_by(id=customer_id).first()
-        if customer is None:
-            return
         r = (
             s.query(ReceiverTable)
-            .filter_by(customer_name=customer.name, id=int(receiver_id))
+            .filter_by(customer_id=customer_id, id=int(receiver_id))
             .first()
         )
         if r:
@@ -231,11 +233,12 @@ def del_customer_record(customer_id: int = 0):
 
     s = SessionFactory()
     try:
+        # Cascade: delete receivers first
+        s.query(ReceiverTable).filter_by(customer_id=customer_id).delete()
         customer = s.query(CustomerTable).filter_by(id=customer_id).first()
         if customer is None:
+            s.commit()
             return
-        # Cascade: delete receivers first
-        s.query(ReceiverTable).filter_by(customer_name=customer.name).delete()
         s.delete(customer)
         s.commit()
     except Exception:

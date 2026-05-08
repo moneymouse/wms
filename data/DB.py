@@ -300,7 +300,6 @@ class MySQLModel:
             if "customer_ids" not in (except_fields or []):
                 if not _fields or "customer_ids" in _fields:
                     result["customer_ids"] = [c.id for c in record.customers]
-        print(result)
         return result
 
 
@@ -459,6 +458,55 @@ class OrderModel(MySQLModel):
 
 
 class CargoModel(MySQLModel):
+    def _lock_box_cost(self, session, box, now: str):
+        if not box.target_order_uid:
+            return
+        if not str(box.waybill_id or "").strip():
+            return
+        try:
+            weight = float(box.weight or 0)
+        except (TypeError, ValueError):
+            weight = 0
+        if weight <= 0:
+            raise ValueError("Box weight is required before outbound")
+
+        order = session.query(OrderTable).filter(OrderTable.uid == box.target_order_uid).first()
+        if order is None:
+            raise ValueError("Target order not found")
+        transportation_name = str(order.transportation or "").strip()
+        if not transportation_name:
+            raise ValueError("Order transportation is required before outbound")
+
+        mode = (
+            session.query(TransportationModeTable)
+            .filter(
+                TransportationModeTable.archive == False,  # noqa: E712
+                TransportationModeTable.name == transportation_name,
+            )
+            .first()
+        )
+        if mode is None:
+            raise ValueError("Transportation cost is not configured")
+
+        session.query(BoxCostRecordTable).filter(
+            BoxCostRecordTable.box_uid == box.uid
+        ).delete()
+        unit_cost = float(mode.cost or 0)
+        session.add(
+            BoxCostRecordTable(
+                box_uid=box.uid,
+                packing_list_uid=box.packing_list_uid,
+                order_uid=box.target_order_uid,
+                transportation_mode_id=mode.id,
+                transportation_name=mode.name,
+                waybill_id=box.waybill_id,
+                weight=weight,
+                unit_cost=unit_cost,
+                total_cost=unit_cost * weight,
+                create_date=now,
+            )
+        )
+
     def unbind_from_order(self, uid: str) -> bool:
         """Detach a cargo from its order by clearing target_order_uid."""
         s = SessionFactory()
@@ -494,7 +542,18 @@ class CargoModel(MySQLModel):
             if db_record is None:
                 return
 
-            db_record.update_date = time.strftime("%Y-%m-%d %H:%M")
+            now = time.strftime("%Y-%m-%d %H:%M")
+            print(f"[update cargo] {db_record.packing_list_uid}")
+            if db_record.packing_list_uid and int(db_record.status or 0) == 1:
+                for locked_field in ("transfer_id", "waybill_id"):
+                    if locked_field in record:
+                        next_value = str(record.get(locked_field) or "").strip()
+                        current_value = str(getattr(db_record, locked_field) or "").strip()
+                        print(f"[update cargo] locked_field: {locked_field}, n: {next_value}, c: {current_value}")
+                        if next_value != current_value:
+                            raise ValueError("Outbound box waybill cannot be modified; undo shipment first")
+
+            db_record.update_date = now
             for k, v in record.items():
                 if k not in self._columns:
                     continue
@@ -520,7 +579,8 @@ class CargoModel(MySQLModel):
                     and int(db_record.status or 0) != 1
                 ):
                     db_record.status = 1
-                    db_record.date = time.strftime("%Y-%m-%d %H:%M")
+                    db_record.date = now
+                    self._lock_box_cost(s, db_record, now)
 
             s.commit()
         except Exception:
@@ -572,3 +632,90 @@ class ExcelTemplateTable(Base):
     archive = Column(Boolean, default=False)
     create_date = Column(String(32))
     update_date = Column(String(32))
+
+
+class TransportationModeTable(Base):
+    __tablename__ = "transportation_modes"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(128), nullable=False, unique=True)
+    channel_group = Column(String(64), nullable=False, default="")
+    cost = Column(Float, nullable=False, default=0)
+    min_price = Column(Float, nullable=False, default=0)
+    archive = Column(Boolean, default=False)
+    create_date = Column(String(32))
+    update_date = Column(String(32))
+
+
+class TransportationCostVersionTable(Base):
+    __tablename__ = "transportation_cost_versions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    transportation_mode_id = Column(Integer, ForeignKey("transportation_modes.id"), nullable=False)
+    version_no = Column(Integer, nullable=False)
+    name = Column(String(128), nullable=False)
+    channel_group = Column(String(64), nullable=False, default="")
+    cost = Column(Float, nullable=False, default=0)
+    min_price = Column(Float, nullable=False, default=0)
+    change_type = Column(String(32), nullable=False, default="update")
+    remark = Column(String(512), nullable=True)
+    operator_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    operator_name = Column(String(128), nullable=True)
+    create_date = Column(String(32))
+
+
+class BoxCostRecordTable(Base):
+    __tablename__ = "box_cost_records"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    box_uid = Column(String(32), ForeignKey("cargos.uid"), nullable=False)
+    packing_list_uid = Column(String(32), ForeignKey("packing_lists.uid"), nullable=True)
+    order_uid = Column(String(32), ForeignKey("orders.uid"), nullable=True)
+    transportation_mode_id = Column(Integer, ForeignKey("transportation_modes.id"), nullable=True)
+    transportation_name = Column(String(128), nullable=False, default="")
+    waybill_id = Column(String(256), nullable=False, default="")
+    weight = Column(Float, nullable=False, default=0)
+    unit_cost = Column(Float, nullable=False, default=0)
+    total_cost = Column(Float, nullable=False, default=0)
+    create_date = Column(String(32))
+
+
+class OrderQuoteVersionTable(Base):
+    __tablename__ = "order_quote_versions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    order_uid = Column(String(32), ForeignKey("orders.uid"), nullable=False)
+    version_no = Column(Integer, nullable=False)
+    transportation_mode_id = Column(Integer, ForeignKey("transportation_modes.id"), nullable=True)
+    transportation_name = Column(String(128), nullable=False, default="")
+    channel_cost = Column(Float, nullable=False, default=0)
+    min_price = Column(Float, nullable=False, default=0)
+    quoted_price = Column(Float, nullable=False, default=0)
+    status = Column(String(32), nullable=False, default="adopted")
+    is_final = Column(Boolean, nullable=False, default=False)
+    quote_remark = Column(String(512), nullable=True)
+    review_remark = Column(String(512), nullable=True)
+    quoter_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    quoter_name = Column(String(128), nullable=True)
+    reviewer_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    reviewer_name = Column(String(128), nullable=True)
+    create_date = Column(String(32))
+    review_date = Column(String(32), nullable=True)
+
+
+class AuditLogTable(Base):
+    __tablename__ = "audit_logs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    event_type = Column(String(64), nullable=False)
+    target_type = Column(String(64), nullable=False)
+    target_id = Column(String(128), nullable=True)
+    action = Column(String(64), nullable=False)
+    operator_id = Column(Integer, nullable=True)
+    operator_name = Column(String(128), nullable=True)
+    operator_role = Column(String(128), nullable=True)
+    before_data = Column(Text, nullable=True)
+    after_data = Column(Text, nullable=True)
+    remark = Column(String(512), nullable=True)
+    ip = Column(String(64), nullable=True)
+    create_date = Column(String(32))

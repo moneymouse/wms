@@ -127,6 +127,9 @@ def get_packing_lists():
         - customer_id: 按客户筛选
         - status: 按状态筛选 (draft/completed)
         - q: 搜索关键词（搜索唛头编号或客户名）
+        - box_status: 按展示状态筛选，逗号分隔
+          (draft/pending_assign/pending_outbound/outbound)
+        - exclude_box_status: 是否排除所选展示状态 (default: false)
 
     Response:
         {
@@ -144,6 +147,10 @@ def get_packing_lists():
     customer_id = request.args.get("customer_id", type=int)
     status = request.args.get("status")
     search = request.args.get("q")
+    box_status = request.args.get("box_status")
+    exclude_box_status = (
+        request.args.get("exclude_box_status", "false").lower() == "true"
+    )
 
     result = packing_list_service.get_packing_lists(
         page=page,
@@ -151,6 +158,8 @@ def get_packing_lists():
         customer_id=customer_id,
         status=status,
         search=search,
+        box_status=box_status,
+        exclude_box_status=exclude_box_status,
     )
     return jsonify({"code": 200, "data": result})
 
@@ -669,23 +678,16 @@ def assign_boxes():
 @allow(role=BOX_SHIP_ROLES)
 @log(desc="Ship selected boxes.", is_json=True)
 def ship_selected_boxes(uid):
-    """装箱单出货：仅允许将待出库箱子置为已出库。"""
-    data = request.get_json() or {}
-    box_uids = data.get("box_uids") or []
-
-    if not isinstance(box_uids, list) or len(box_uids) == 0:
-        return jsonify({"code": 400, "msg": "box_uids is required"}), 400
-
-    result = packing_list_service.ship_boxes(uid, box_uids)
-    return jsonify({"code": 200, "data": result})
+    """显式出货已停用：通过记录转单号自动出货。"""
+    return jsonify({"code": 410, "msg": "请通过记录转单号完成出货"}), 410
 
 
 @packing_bp.post("/box/<string:uid>/undo-ship")
 @verify
-@allow(role=PACKING_EDIT_ROLES)
+@allow(role=["admin", "store_manager"])
 @log(desc="Undo box shipping.")
 def undo_ship_box(uid):
-    """撤销单箱出货：将已出库回退为待出库。"""
+    """撤销单箱出货：清空转单号、回退状态并删除成本记录。"""
     try:
         success = packing_list_service.undo_ship_box(uid)
     except ValueError as e:

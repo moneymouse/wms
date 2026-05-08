@@ -26,7 +26,6 @@ def registerTrack(_numbers: list[tuple]):
     length = len(_numbers)
     loop_times = length // 40
     rest = length % 40
-    print(token)
 
     def register_loop(numbers):
         res = requests.post(
@@ -63,14 +62,14 @@ def registerTrack(_numbers: list[tuple]):
         register_loop(number_list)
 
     register_loop(_numbers[-rest:])
-
-
+    
 def getTrackInfo(_waybill_numbers: list):
     length = len(_waybill_numbers)
     loop_times = length // 40
     rest = length % 40
 
     def track_info_loop(waybill_numbers):
+        logger.error(waybill_numbers)
         res = requests.post(
             url=f"{endpoint}/getTrackInfo",
             json=[{"number": number} for number in waybill_numbers],

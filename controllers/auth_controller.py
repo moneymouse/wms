@@ -126,6 +126,23 @@ def get_user_list():
     return jsonify({"code": 200, "data": simplified_users})
 
 
+# 获取业务员列表（所有已登录用户）
+@auth_bp.get("/users/salespersons")
+@verify
+def get_salesperson_list():
+    """
+    Get simplified salesperson list (id, name, phone only).
+    Only approved users with 'salesperson' role are returned.
+    Available to all authenticated users.
+    """
+    users = user_model.get_by_role("salesperson")
+    simplified_users = [
+        {"id": user["id"], "name": user["name"], "phone": user["phone"]}
+        for user in users
+    ]
+    return jsonify({"code": 200, "data": simplified_users})
+
+
 # 修改用户角色（管理员）
 @auth_bp.put("/users/<int:user_id>/role")
 @verify

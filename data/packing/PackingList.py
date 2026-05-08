@@ -10,10 +10,11 @@ import json
 from datetime import datetime
 from typing import List, Optional
 
-from sqlalchemy import Column, Integer, String, Boolean, Text, ForeignKey, func
-from sqlalchemy.orm import relationship
+from sqlalchemy import Column, Integer, String, Boolean, Text, ForeignKey, func, case, or_
+from sqlalchemy.orm import relationship, selectinload, joinedload
 
-from data.DB import CargoTable
+from data.DB import BoxCostRecordTable, CargoTable, OrderTable, TransportationModeTable
+from data.customer.Customer import CustomerTable
 from data.database import Base, SessionFactory
 
 
@@ -189,6 +190,104 @@ class PackingListModel:
         finally:
             s.close()
 
+    def list_page(
+        self,
+        page: int = 1,
+        page_size: int = 20,
+        customer_id: int = None,
+        status: str = None,
+        search: str = None,
+        box_status: str = None,
+        exclude_box_status: bool = False,
+    ) -> dict:
+        page = max(int(page or 1), 1)
+        page_size = min(max(int(page_size or 20), 1), 200)
+        target_statuses = [s.strip() for s in (box_status or "").split(",") if s.strip()]
+        status_level_map = {
+            "pending_assign": 0,
+            "pending_outbound": 1,
+            "outbound": 2,
+        }
+
+        s = SessionFactory()
+        try:
+            box_level = case(
+                (BoxTable.uid.is_(None), 0),
+                (BoxTable.status == CARGO_STATUS_OUTBOUND, 2),
+                (BoxTable.target_order_uid.isnot(None), 1),
+                else_=0,
+            )
+            min_level = func.coalesce(func.min(box_level), 0)
+
+            query = (
+                s.query(PackingListTable.uid, min_level.label("display_level"))
+                .outerjoin(
+                    BoxTable,
+                    (BoxTable.packing_list_uid == PackingListTable.uid)
+                    & (BoxTable.archive == False),  # noqa: E712
+                )
+                .filter(PackingListTable.archive == False)  # noqa: E712
+                .group_by(PackingListTable.uid, PackingListTable.create_date, PackingListTable.status)
+            )
+
+            if customer_id:
+                query = query.filter(PackingListTable.customer_id == customer_id)
+            if status:
+                query = query.filter(PackingListTable.status == status)
+            if search:
+                like = f"%{search}%"
+                query = query.outerjoin(CustomerTable, CustomerTable.id == PackingListTable.customer_id).filter(
+                    or_(
+                        PackingListTable.list_number.ilike(like),
+                        CustomerTable.name.ilike(like),
+                    )
+                )
+
+            if target_statuses:
+                conditions = []
+                if "draft" in target_statuses:
+                    conditions.append(PackingListTable.status == "draft")
+                levels = [
+                    status_level_map[item]
+                    for item in target_statuses
+                    if item in status_level_map
+                ]
+                if levels:
+                    conditions.append(
+                        (PackingListTable.status != "draft") & min_level.in_(levels)
+                    )
+                if conditions:
+                    condition = or_(*conditions)
+                    query = query.having(~condition if exclude_box_status else condition)
+
+            total = s.query(func.count()).select_from(query.subquery()).scalar() or 0
+            rows = (
+                query.order_by(PackingListTable.create_date.desc())
+                .offset((page - 1) * page_size)
+                .limit(page_size)
+                .all()
+            )
+            uid_list = [row.uid for row in rows]
+            if not uid_list:
+                return {"items": [], "total": total, "page": page, "page_size": page_size}
+
+            records = (
+                s.query(PackingListTable)
+                .options(
+                    joinedload(PackingListTable.customer),
+                    joinedload(PackingListTable.creator),
+                    selectinload(PackingListTable.boxes).selectinload(BoxTable.workers),
+                    selectinload(PackingListTable.boxes).joinedload(BoxTable.order),
+                )
+                .filter(PackingListTable.uid.in_(uid_list))
+                .all()
+            )
+            record_map = {record.uid: record for record in records}
+            items = [self._to_dict(record_map[uid]) for uid in uid_list if uid in record_map]
+            return {"items": items, "total": total, "page": page, "page_size": page_size}
+        finally:
+            s.close()
+
     def update(self, uid: str, data: dict) -> bool:
         """更新装箱单"""
         s = SessionFactory()
@@ -355,6 +454,55 @@ class BoxModel:
             return f"BOX_{box_number}"
         return "BOX"
 
+    def _lock_box_cost(self, session, box, now: str) -> None:
+        if not box.target_order_uid:
+            raise ValueError("Box must be assigned to an order before shipment")
+        if not str(box.waybill_id or "").strip():
+            raise ValueError("waybill_id is required before shipment")
+        try:
+            weight = float(box.weight or 0)
+        except (TypeError, ValueError):
+            weight = 0
+        if weight <= 0:
+            raise ValueError("Box weight is required before shipment")
+
+        order = session.query(OrderTable).filter(OrderTable.uid == box.target_order_uid).first()
+        if order is None:
+            raise ValueError("Target order not found")
+        transportation_name = str(order.transportation or "").strip()
+        if not transportation_name:
+            raise ValueError("Order transportation is required before shipment")
+
+        mode = (
+            session.query(TransportationModeTable)
+            .filter(
+                TransportationModeTable.name == transportation_name,
+                TransportationModeTable.archive == False,  # noqa: E712
+            )
+            .first()
+        )
+        if mode is None:
+            raise ValueError("Transportation cost is not configured")
+
+        unit_cost = float(mode.cost or 0)
+        session.query(BoxCostRecordTable).filter(
+            BoxCostRecordTable.box_uid == box.uid
+        ).delete(synchronize_session=False)
+        session.add(
+            BoxCostRecordTable(
+                box_uid=box.uid,
+                packing_list_uid=box.packing_list_uid,
+                order_uid=box.target_order_uid,
+                transportation_mode_id=mode.id,
+                transportation_name=mode.name,
+                waybill_id=str(box.waybill_id or "").strip(),
+                weight=weight,
+                unit_cost=unit_cost,
+                total_cost=round(unit_cost * weight, 4),
+                create_date=now,
+            )
+        )
+
     def create(
         self,
         packing_list_uid: str,
@@ -497,6 +645,17 @@ class BoxModel:
             if not isinstance(data, dict):
                 raise ValueError("invalid payload")
 
+            now = time.strftime("%Y-%m-%d %H:%M")
+            if int(record.status or 0) == CARGO_STATUS_OUTBOUND:
+                for locked_field in ("transfer_id", "waybill_id"):
+                    if locked_field in data:
+                        next_value = str(data.get(locked_field) or "").strip()
+                        current_value = str(getattr(record, locked_field) or "").strip()
+                        if next_value != current_value:
+                            raise ValueError(
+                                "Outbound box waybill cannot be modified; undo shipment first"
+                            )
+
             has_item_details = "item_details" in data
             if has_item_details:
                 raw_details = data.get("item_details")
@@ -615,12 +774,14 @@ class BoxModel:
                 if (
                     record.packing_list_uid
                     and record.target_order_uid
+                    and str(record.waybill_id or "").strip()
                     and int(record.status or 0) != CARGO_STATUS_OUTBOUND
                 ):
-                    # 装箱单箱子兼容旧系统：未出库保持 status=0。
-                    record.status = CARGO_STATUS_PENDING_OUTBOUND
+                    record.status = CARGO_STATUS_OUTBOUND
+                    record.date = now
+                    self._lock_box_cost(s, record, now)
 
-            record.update_date = time.strftime("%Y-%m-%d %H:%M")
+            record.update_date = now
             s.commit()
             return True
         except Exception:
@@ -657,6 +818,9 @@ class BoxModel:
                 return False
             if record.packing_list_uid is None:
                 return False
+            s.query(BoxWorkerTable).filter_by(box_uid=uid).delete(
+                synchronize_session=False
+            )
             s.delete(record)
             s.commit()
             return True
@@ -834,7 +998,6 @@ class BoxModel:
         s = SessionFactory()
         try:
             query = s.query(PackingListTable).filter(PackingListTable.archive == False)
-            query = query.filter(PackingListTable.status != "draft")
             if customer_id is not None:
                 query = query.filter(PackingListTable.customer_id == customer_id)
 
@@ -874,7 +1037,10 @@ class BoxModel:
             s.close()
 
     def batch_ship(self, packing_list_uid: str, box_uids: List[str]) -> dict:
-        """批量出货：仅允许已分配且已有转单号、且status=0的箱子出货。"""
+        """显式出货已停用，保留方法仅兼容旧调用。"""
+        raise ValueError("Shipment is completed by recording a waybill number")
+
+    def _legacy_batch_ship(self, packing_list_uid: str, box_uids: List[str]) -> dict:
         results = {"success": [], "failed": []}
         if not box_uids:
             return results
@@ -940,7 +1106,7 @@ class BoxModel:
             s.close()
 
     def undo_ship(self, uid: str) -> bool:
-        """撤销单箱出货：将 status 从 1 回退为 0。"""
+        """撤销单箱出货：清空运单号、回退状态并删除成本锁定记录。"""
         s = SessionFactory()
         try:
             box = (
@@ -958,8 +1124,13 @@ class BoxModel:
             if int(box.status or 0) != CARGO_STATUS_OUTBOUND:
                 raise ValueError("Box is not outbound")
 
+            now = time.strftime("%Y-%m-%d %H:%M")
+            box.waybill_id = ""
             box.status = CARGO_STATUS_PENDING_OUTBOUND
-            box.update_date = time.strftime("%Y-%m-%d %H:%M")
+            box.update_date = now
+            s.query(BoxCostRecordTable).filter(
+                BoxCostRecordTable.box_uid == box.uid
+            ).delete(synchronize_session=False)
             s.commit()
             return True
         except Exception:

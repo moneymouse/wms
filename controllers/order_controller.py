@@ -1,7 +1,9 @@
+import base64
 import json
 import time
 
 from flask import Blueprint, jsonify, request
+from sqlalchemy import or_
 
 from Auth import verify, allow, get_token_payload
 from data import (
@@ -10,11 +12,137 @@ from data import (
     RecordExist,
     add_customer_record,
 )
+from data.database import SessionFactory
+from data.DB import CargoTable, OrderQuoteVersionTable, OrderTable, TransportationModeTable
 from data.user.User import user_model
-from services.order_service import filter_orders, sort_orders
+from utils.audit import record_audit
 from utils.log import log
+from utils.quote_pdf import build_quote_pdf
 
 order_bp = Blueprint("order", __name__, url_prefix="/api")
+
+ORDER_LIST_EXCLUDED_FIELDS = {
+    "archive",
+    "salesman_id",
+    "cargo_count",
+    "create_date",
+}
+
+ORDER_SEARCH_FIELDS = [
+    "uid",
+    "order_id",
+    "customer_name",
+    "transportation",
+    "receiver",
+    "receiver_phone",
+    "mail",
+    "country",
+    "province",
+    "city",
+    "address",
+    "en_name",
+    "cn_name",
+    "post_code",
+    "zip_code",
+    "order_date",
+    "update_date",
+    "tag_all",
+]
+
+
+def _serialize_order_list_row(order):
+    return {
+        col.name: getattr(order, col.name)
+        for col in OrderTable.__table__.columns
+        if col.name not in ORDER_LIST_EXCLUDED_FIELDS
+    }
+
+
+def _apply_order_search(query, query_param):
+    if not query_param:
+        return query
+
+    primary = str(query_param).split("-", 1)[0].strip()
+    keywords = [k.strip() for k in str(query_param).splitlines() if k.strip()]
+    conditions = []
+    if primary:
+        like = f"%{primary}%"
+        conditions.extend(
+            getattr(OrderTable, field).ilike(like) for field in ORDER_SEARCH_FIELDS
+        )
+    for keyword in keywords:
+        like = f"%{keyword}%"
+        conditions.append(
+            OrderTable.cargos.any(
+                or_(
+                    CargoTable.transfer_id.ilike(like),
+                    CargoTable.waybill_id.ilike(like),
+                )
+            )
+        )
+    return query.filter(or_(*conditions)) if conditions else query
+
+
+def _apply_order_sort(query, sorted_field, sorted_order):
+    column = getattr(OrderTable, sorted_field, None)
+    if column is None:
+        column = OrderTable.create_date
+    return query.order_by(column.desc() if sorted_order == 1 else column.asc())
+
+
+def _current_operator():
+    payload = get_token_payload() or {}
+    return {
+        "id": payload.get("user_id") or payload.get("id"),
+        "name": payload.get("name") or payload.get("username") or payload.get("phone"),
+        "payload": payload,
+    }
+
+
+def _quote_dict(row):
+    return {
+        "id": row.id,
+        "order_uid": row.order_uid,
+        "version_no": row.version_no,
+        "transportation_mode_id": row.transportation_mode_id,
+        "transportation_name": row.transportation_name,
+        "channel_cost": row.channel_cost,
+        "min_price": row.min_price,
+        "quoted_price": row.quoted_price,
+        "status": row.status,
+        "is_final": row.is_final,
+        "quote_remark": row.quote_remark,
+        "review_remark": row.review_remark,
+        "quoter_id": row.quoter_id,
+        "quoter_name": row.quoter_name,
+        "reviewer_id": row.reviewer_id,
+        "reviewer_name": row.reviewer_name,
+        "create_date": row.create_date,
+        "review_date": row.review_date,
+    }
+
+
+def _order_pdf_dict(order):
+    return {
+        "uid": order.uid,
+        "order_id": order.order_id,
+        "customer_name": order.customer_name,
+        "receiver": order.receiver,
+        "country": order.country,
+        "city": order.city,
+        "address": order.address,
+        "transportation": order.transportation,
+    }
+
+
+def _next_quote_version(session, order_uid):
+    row = (
+        session.query(OrderQuoteVersionTable.version_no)
+        .filter(OrderQuoteVersionTable.order_uid == order_uid)
+        .order_by(OrderQuoteVersionTable.version_no.desc())
+        .first()
+    )
+    return (row[0] if row else 0) + 1
 
 
 # 创建订单
@@ -25,36 +153,45 @@ order_bp = Blueprint("order", __name__, url_prefix="/api")
 def create_order():
     """创建订单。
 
-    Request body 中的 customer_name 用于：
-    1. 查找已存在的客户并关联到订单
-    2. 添加收件人信息到该客户名下
+    Request body 中优先使用 customer_id 关联客户；customer_name 仅作为兼容兜底和订单快照。
 
-    如果 customer_name 对应的客户不存在，返回 404 错误。
+    如果 customer_id / customer_name 对应的客户不存在，返回 404 错误。
     """
     from data.customer.Customer import CustomerTable
     from data.database import SessionFactory
 
     record = json.loads(request.data)
-    customer_name = record.get("customer_name", "").strip()
+    customer_name = str(record.get("customer_name", "") or "").strip()
+    raw_customer_id = record.get("customer_id")
+    customer_id = None
+    if raw_customer_id not in [None, "", 0, "0"]:
+        try:
+            customer_id = int(raw_customer_id)
+        except (TypeError, ValueError):
+            return jsonify({"code": 400, "msg": "Invalid customer_id"}), 400
 
     # 验证客户是否存在
     customer = None
-    if customer_name:
+    if customer_id or customer_name:
         s = SessionFactory()
         try:
-            customer = s.query(CustomerTable).filter_by(name=customer_name).first()
+            if customer_id:
+                customer = s.query(CustomerTable).filter_by(id=customer_id).first()
+            else:
+                customer = s.query(CustomerTable).filter_by(name=customer_name).first()
             if customer is None:
+                target = f"ID:{customer_id}" if customer_id else customer_name
                 return (
                     jsonify(
-                        {"code": 404, "msg": f"Customer '{customer_name}' not found"}
+                        {"code": 404, "msg": f"Customer '{target}' not found"}
                     ),
                     404,
                 )
             customer_id = customer.id
+            record["customer_id"] = customer_id
+            record["customer_name"] = customer.name
         finally:
             s.close()
-    else:
-        customer_id = None
 
     # 添加收件人信息（客户已验证存在）
     add_customer_record(record)
@@ -79,7 +216,7 @@ def create_order():
 # 获取订单列表（支持分页、搜索、排序）
 @order_bp.get("/orders")
 @verify
-@allow()
+@allow(role=["admin", "store_manager", "salesperson", "clerk"])
 def get_order_list():
     page = request.args.get("p", 1, type=int) - 1
     page_size = request.args.get("s", 30, type=int)
@@ -87,15 +224,24 @@ def get_order_list():
     sorted_order = request.args.get("so", 1, type=int)
     query_param = request.args.get("q", "", type=str)
 
-    order_list = order_model.read()
-    order_list = filter_orders(order_list, query_param, cargo_model)
-    order_list = sort_orders(order_list, sorted_field, sorted_order)
+    page = max(page, 0)
+    page_size = min(max(page_size, 1), 200)
 
-    start = page * page_size
-    end = min(start + page_size, len(order_list))
-    return jsonify(
-        {"code": 200, "data": order_list[start:end], "total": len(order_list)}
-    )
+    with SessionFactory() as session:
+        query = session.query(OrderTable).filter(OrderTable.archive == False)  # noqa: E712
+        query = _apply_order_search(query, query_param)
+        total = query.count()
+        rows = (
+            _apply_order_sort(query, sorted_field, sorted_order)
+            .offset(page * page_size)
+            .limit(page_size)
+            .all()
+        )
+        return jsonify({
+            "code": 200,
+            "data": [_serialize_order_list_row(row) for row in rows],
+            "total": total,
+        })
 
 
 # 获取单个订单
@@ -258,3 +404,234 @@ def update_order_salesman(uid):
             {"code": 200, "msg": "success", "data": order_model.get_salesman(uid)}
         )
     return jsonify({"code": 404, "msg": "Order not found"}), 404
+
+
+@order_bp.get("/orders/<string:uid>/quotes")
+@verify
+@allow(role=["admin", "store_manager", "salesperson", "finance"])
+def get_order_quotes(uid):
+    with SessionFactory() as session:
+        order = session.query(OrderTable).filter(OrderTable.uid == uid).first()
+        if order is None:
+            return jsonify({"code": 404, "msg": "订单不存在"}), 404
+        rows = (
+            session.query(OrderQuoteVersionTable)
+            .filter(OrderQuoteVersionTable.order_uid == uid)
+            .order_by(OrderQuoteVersionTable.version_no.desc())
+            .all()
+        )
+        return jsonify({"code": 200, "data": [_quote_dict(row) for row in rows]})
+
+
+@order_bp.post("/orders/<string:uid>/quotes")
+@verify
+@allow(role=["salesperson"])
+def create_order_quote(uid):
+    body = json.loads(request.data or "{}")
+    transportation_mode_id = body.get("transportation_mode_id")
+    transportation_name = (body.get("transportation_name") or "").strip()
+    quoted_price = body.get("quoted_price")
+    quote_remark = body.get("quote_remark")
+
+    if quoted_price is None:
+        return jsonify({"code": 400, "msg": "报价不能为空"}), 400
+    try:
+        quoted_price = float(quoted_price)
+    except (TypeError, ValueError):
+        return jsonify({"code": 400, "msg": "报价格式不正确"}), 400
+    if quoted_price < 0:
+        return jsonify({"code": 400, "msg": "报价不能小于 0"}), 400
+
+    operator = _current_operator()
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    with SessionFactory() as session:
+        order = session.query(OrderTable).filter(OrderTable.uid == uid).first()
+        if order is None:
+            return jsonify({"code": 404, "msg": "订单不存在"}), 404
+
+        mode = None
+        if transportation_mode_id:
+            mode = (
+                session.query(TransportationModeTable)
+                .filter(TransportationModeTable.id == int(transportation_mode_id))
+                .first()
+            )
+        if mode is None and transportation_name:
+            mode = (
+                session.query(TransportationModeTable)
+                .filter(TransportationModeTable.name == transportation_name)
+                .first()
+            )
+        if mode is None and order.transportation:
+            mode = (
+                session.query(TransportationModeTable)
+                .filter(TransportationModeTable.name == order.transportation)
+                .first()
+            )
+        if mode is None:
+            return jsonify({"code": 404, "msg": "运输方式不存在，请先维护渠道成本"}), 404
+
+        status = "adopted" if quoted_price >= float(mode.min_price or 0) else "pending"
+        is_final = status == "adopted"
+        if is_final:
+            (
+                session.query(OrderQuoteVersionTable)
+                .filter(OrderQuoteVersionTable.order_uid == uid)
+                .update({"is_final": False})
+            )
+            order.transportation = mode.name
+            order.update_date = now
+
+        quote = OrderQuoteVersionTable(
+            order_uid=uid,
+            version_no=_next_quote_version(session, uid),
+            transportation_mode_id=mode.id,
+            transportation_name=mode.name,
+            channel_cost=float(mode.cost or 0),
+            min_price=float(mode.min_price or 0),
+            quoted_price=quoted_price,
+            status=status,
+            is_final=is_final,
+            quote_remark=quote_remark,
+            quoter_id=operator["id"],
+            quoter_name=operator["name"],
+            create_date=now,
+        )
+        session.add(quote)
+        session.commit()
+        session.refresh(quote)
+        after_data = _quote_dict(quote)
+        if is_final:
+            after_data["order_transportation"] = order.transportation
+
+    record_audit(
+        event_type="order_quote",
+        target_type="order",
+        target_id=uid,
+        action="quote_submit" if status == "pending" else "quote_adopt",
+        after_data=after_data,
+        remark=quote_remark,
+    )
+    msg = "报价已采纳" if status == "adopted" else "报价低于最低限制，已提交管理员审核"
+    return jsonify({"code": 200, "msg": msg, "data": after_data})
+
+
+@order_bp.get("/finance/quote-approvals")
+@verify
+@allow(role=["admin"])
+def get_quote_approvals():
+    with SessionFactory() as session:
+        rows = (
+            session.query(OrderQuoteVersionTable, OrderTable)
+            .join(OrderTable, OrderQuoteVersionTable.order_uid == OrderTable.uid)
+            .filter(OrderQuoteVersionTable.status == "pending")
+            .order_by(OrderQuoteVersionTable.create_date.desc())
+            .all()
+        )
+        data = []
+        for quote, order in rows:
+            item = _quote_dict(quote)
+            item.update({
+                "order_id": order.order_id,
+                "customer_name": order.customer_name,
+                "order_transportation": order.transportation,
+            })
+            data.append(item)
+        return jsonify({"code": 200, "data": data})
+
+
+@order_bp.put("/finance/quote-approvals/<int:quote_id>")
+@verify
+@allow(role=["admin"])
+def review_quote_approval(quote_id):
+    body = json.loads(request.data or "{}")
+    action = body.get("action")
+    review_remark = body.get("review_remark")
+    if action not in {"approve", "reject"}:
+        return jsonify({"code": 400, "msg": "action 必须是 approve 或 reject"}), 400
+
+    operator = _current_operator()
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    with SessionFactory() as session:
+        quote = (
+            session.query(OrderQuoteVersionTable)
+            .filter(OrderQuoteVersionTable.id == quote_id)
+            .first()
+        )
+        if quote is None:
+            return jsonify({"code": 404, "msg": "报价记录不存在"}), 404
+        if quote.status != "pending":
+            return jsonify({"code": 409, "msg": "该报价已审核"}), 409
+
+        before_data = _quote_dict(quote)
+        if action == "approve":
+            (
+                session.query(OrderQuoteVersionTable)
+                .filter(OrderQuoteVersionTable.order_uid == quote.order_uid)
+                .update({"is_final": False})
+            )
+            quote.status = "approved"
+            quote.is_final = True
+            order = (
+                session.query(OrderTable)
+                .filter(OrderTable.uid == quote.order_uid)
+                .first()
+            )
+            if order is not None:
+                order.transportation = quote.transportation_name
+                order.update_date = now
+        else:
+            quote.status = "rejected"
+            quote.is_final = False
+        quote.review_remark = review_remark
+        quote.reviewer_id = operator["id"]
+        quote.reviewer_name = operator["name"]
+        quote.review_date = now
+        session.commit()
+        session.refresh(quote)
+        after_data = _quote_dict(quote)
+        if action == "approve":
+            after_data["order_transportation"] = quote.transportation_name
+
+    record_audit(
+        event_type="order_quote",
+        target_type="quote",
+        target_id=quote_id,
+        action=f"quote_{action}",
+        before_data=before_data,
+        after_data=after_data,
+        remark=review_remark,
+    )
+    return jsonify({"code": 200, "msg": "审核完成", "data": after_data})
+
+
+@order_bp.get("/orders/<string:uid>/quote-pdf")
+@verify
+@allow(role=["admin", "store_manager", "salesperson", "finance"])
+def get_order_quote_pdf(uid):
+    with SessionFactory() as session:
+        order = session.query(OrderTable).filter(OrderTable.uid == uid).first()
+        if order is None:
+            return jsonify({"code": 404, "msg": "订单不存在"}), 404
+
+        quote = (
+            session.query(OrderQuoteVersionTable)
+            .filter(
+                OrderQuoteVersionTable.order_uid == uid,
+                OrderQuoteVersionTable.is_final == True,  # noqa: E712
+            )
+            .order_by(OrderQuoteVersionTable.version_no.desc())
+            .first()
+        )
+        if quote is None:
+            return jsonify({"code": 404, "msg": "暂无最终采纳报价"}), 404
+
+        pdf_stream = build_quote_pdf(_order_pdf_dict(order), _quote_dict(quote))
+        encoded = base64.b64encode(pdf_stream.getvalue()).decode("ascii")
+        safe_order_id = order.order_id or uid
+        return jsonify({
+            "code": 200,
+            "filename": f"quote-{safe_order_id}.pdf",
+            "mime_type": "application/pdf",
+            "data": encoded,
+        })

@@ -17,6 +17,7 @@ from .backup import backup
 
 # Import OperationLogTable so it is also registered
 import utils.log  # noqa: F401  registers operation_logs table
+import utils.audit  # noqa: F401  registers audit_logs table
 
 # Import UserTable so it is registered
 from .user.User import user_model  # noqa: F401  registers users table

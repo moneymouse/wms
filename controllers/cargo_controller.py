@@ -1,5 +1,4 @@
 import json
-import time
 from io import BytesIO
 
 from flask import Blueprint, jsonify, make_response, request, send_file
@@ -143,7 +142,10 @@ def update_cargo(uid):
 
     new_waybill = update_data.get("waybill_id")
 
-    cargo_model.update(uid, update_data)
+    try:
+        cargo_model.update(uid, update_data)
+    except ValueError as e:
+        return jsonify({"code": 400, "msg": str(e)}), 400
     if new_waybill and new_waybill != old_waybill:
         background_register(uid, new_waybill)
     return jsonify({"code": 200, "msg": "success"})
@@ -155,18 +157,7 @@ def update_cargo(uid):
 @allow(role=CARGO_SHIP_ROLES)
 @log(desc="Output cargo.")
 def output(uid):
-    payload = {"status": 1, "date": time.strftime("%Y-%m-%d %H:%M")}
-    cargo = cargo_model.read(uid)
-    if cargo is None:
-        return jsonify({"code": 404, "msg": "cargo not found"}), 404
-
-    cargo_model.update(uid, payload)
-    cargo = cargo_model.read(uid, except_fields=["price", "status", "archive"])
-    order = order_model.read(
-        cargo["origin_id"].split("-")[0], _fields=["customer_name"]
-    )
-    cargo.update(order)
-    return jsonify({"code": 200, "data": cargo})
+    return jsonify({"code": 410, "msg": "请通过记录转单号完成出货"}), 410
 
 
 # 录入货物重量和件数

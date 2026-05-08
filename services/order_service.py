@@ -21,8 +21,31 @@ def filter_orders(order_list: list, query_param: str, cargo_model) -> list:
     keywords = [k.strip().lower() for k in query_param.splitlines() if k.strip()]
     primary = str(query_param).split("-", 1)[0].lower()
 
+    # 订单中实际可用于搜索的字段（排除内部/无用字段）
+    _SEARCHABLE_FIELDS = [
+        "uid",
+        "order_id",
+        "customer_name",
+        "transportation",
+        "receiver",
+        "receiver_phone",
+        "mail",
+        "country",
+        "province",
+        "city",
+        "address",
+        "en_name",
+        "cn_name",
+        "post_code",
+        "zip_code",
+        "order_date",
+        "update_date",
+        "tag_all",
+    ]
+
     def order_matches(order: Dict[str, Any]) -> bool:
-        for val in order.values():
+        for field in _SEARCHABLE_FIELDS:
+            val = order.get(field)
             if val is not None and primary in str(val).lower():
                 return True
         for c_uid in order.get("cargo_uid_list", []):

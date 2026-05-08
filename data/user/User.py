@@ -3,9 +3,11 @@ import json
 
 from sqlalchemy import Column, String, Integer, Enum as SAEnum
 from sqlalchemy.orm import relationship
+from sqlalchemy.orm import Mapped
 from data.database import Base, SessionFactory
 from data.user.Role import user_roles
 import logging
+from typing import List
 
 ROLES = ["admin", "store_manager", "salesperson", "clerk", "finance", "worker"]
 
@@ -28,7 +30,7 @@ class UserTable(Base):
     create_date = Column(String(32))
     update_date = Column(String(32))
 
-    roles = relationship("RoleTable", secondary=user_roles, back_populates="users")
+    roles: Mapped[List["RoleTable"]] = relationship("RoleTable", secondary=user_roles, back_populates="users")
 
     def to_dict(self, include_password=False):
         role_names = [r.name for r in self.roles] if self.roles else []
@@ -88,6 +90,19 @@ class UserModel:
             users = session.query(UserTable).filter_by(status=status).all()
             return [u.to_dict() for u in users]
 
+    def get_by_role(self, role_name: str):
+        from data.user.Role import RoleTable, user_roles
+        with SessionFactory() as session:
+            users = (
+                session.query(UserTable)
+                .join(user_roles, UserTable.id == user_roles.c.user_id)
+                .join(RoleTable, RoleTable.id == user_roles.c.role_id)
+                .filter(RoleTable.name == role_name)
+                .filter(UserTable.status == STATUS_APPROVED)
+                .all()
+            )
+            return [u.to_dict() for u in users]
+
     def approve(self, user_id: int, role_objects=None):
         now = time.strftime("%Y-%m-%d %H:%M")
         with SessionFactory() as session:
@@ -96,7 +111,7 @@ class UserModel:
                 return None
             user.status = "approved"
             if role_objects is not None:
-                user.roles = role_objects
+                user.roles = [session.merge(r) for r in role_objects]
             user.update_date = now
             session.commit()
             return user.to_dict()
@@ -120,7 +135,7 @@ class UserModel:
             if user is None:
                 return None
             if role_objects is not None:
-                user.roles = role_objects
+                user.roles = [session.merge(r) for r in role_objects]
             else:
                 user.roles = []
             user.update_date = now

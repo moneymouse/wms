@@ -14,6 +14,7 @@ from controllers.packing_controller import packing_bp
 from controllers.work_finance_controller import work_finance_bp
 from controllers.goods_name_controller import goods_name_bp
 from controllers.excel_template_controller import excel_template_bp
+from controllers.transportation_controller import transportation_bp
 from services.auth_service import init_admin_user
 
 # ---------------------------------------------------------------------------
@@ -47,6 +48,7 @@ app.register_blueprint(packing_bp)
 app.register_blueprint(work_finance_bp)
 app.register_blueprint(goods_name_bp)
 app.register_blueprint(excel_template_bp)
+app.register_blueprint(transportation_bp)
 
 
 # ---------------------------------------------------------------------------

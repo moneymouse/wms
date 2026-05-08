@@ -90,6 +90,39 @@ def create_packing_list(
     )
 
 
+def _get_packing_list_display_status(pl: dict) -> str:
+    """计算装箱单的展示状态（复现前端 getPackingListStatusMeta 逻辑）。
+
+    Returns:
+        "draft" | "pending_assign" | "pending_outbound" | "outbound"
+    """
+    if pl.get("status") == "draft":
+        return "draft"
+
+    boxes = [b for b in pl.get("boxes", []) if not b.get("archive")]
+    if not boxes:
+        return "pending_assign"
+
+    min_level = float("inf")
+    for box in boxes:
+        raw_status = str(box.get("status") or "").strip().lower()
+        if raw_status == "1" or raw_status == "outbound":
+            level = 2  # outbound
+        elif box.get("target_order_uid"):
+            level = 1  # pending_outbound
+        else:
+            level = 0  # pending_assign
+        if level < min_level:
+            min_level = level
+
+    if min_level == 0:
+        return "pending_assign"
+    elif min_level == 1:
+        return "pending_outbound"
+    else:
+        return "outbound"
+
+
 def get_packing_list(uid: str) -> Optional[dict]:
     """获取单个装箱单详情"""
     return packing_list_model.read(uid)
@@ -101,6 +134,8 @@ def get_packing_lists(
     customer_id: int = None,
     status: str = None,
     search: str = None,
+    box_status: str = None,
+    exclude_box_status: bool = False,
 ) -> dict:
     """获取装箱单列表（分页）
 
@@ -108,8 +143,10 @@ def get_packing_lists(
         page: 页码
         page_size: 每页数量
         customer_id: 按客户筛选
-        status: 按状态筛选
+        status: 按状态筛选（packing_list 级别的 draft/completed）
         search: 搜索关键词（搜索唛头编号）
+        box_status: 按展示状态筛选，逗号分隔，如 "draft,pending_assign"
+        exclude_box_status: 是否排除所选展示状态
 
     Returns:
         {
@@ -119,36 +156,15 @@ def get_packing_lists(
             "page_size": int,
         }
     """
-    all_lists = packing_list_model.read()
-
-    # 筛选
-    if customer_id:
-        all_lists = [pl for pl in all_lists if pl["customer_id"] == customer_id]
-
-    if status:
-        all_lists = [pl for pl in all_lists if pl["status"] == status]
-
-    if search:
-        search_lower = search.lower()
-        all_lists = [
-            pl
-            for pl in all_lists
-            if search_lower in (pl.get("list_number") or "").lower()
-            or search_lower in (pl.get("customer_name") or "").lower()
-        ]
-
-    # 分页
-    total = len(all_lists)
-    start = (page - 1) * page_size
-    end = start + page_size
-    items = all_lists[start:end]
-
-    return {
-        "items": items,
-        "total": total,
-        "page": page,
-        "page_size": page_size,
-    }
+    return packing_list_model.list_page(
+        page=page,
+        page_size=page_size,
+        customer_id=customer_id,
+        status=status,
+        search=search,
+        box_status=box_status,
+        exclude_box_status=exclude_box_status,
+    )
 
 
 def update_packing_list(uid: str, data: dict) -> bool:
