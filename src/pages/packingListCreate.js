@@ -8,6 +8,7 @@ import {
     InputNumber,
     message,
     Card,
+    Modal,
     Space,
     Table,
     Divider,
@@ -462,24 +463,33 @@ function PackingListTab({
     };
 
     // 归档箱子
-    const handleArchiveBox = async (uid) => {
-        try {
-            const res = await fetch(`${endpoint}/box/${uid}/archive`, {
-                method: 'POST',
-                headers: getSafeHeader()
-            });
-            const data = await res.json();
+    const handleArchiveBox = (box) => {
+        Modal.confirm({
+            title: '确认归档该箱子吗？',
+            content: `箱号：${box.box_number || '-'}。归档后箱子将不再显示。`,
+            okText: '确认归档',
+            okType: 'danger',
+            cancelText: '取消',
+            onOk: async () => {
+                try {
+                    const res = await fetch(`${endpoint}/box/${box.uid}/archive`, {
+                        method: 'POST',
+                        headers: getSafeHeader()
+                    });
+                    const data = await res.json();
 
-            if (data.code === 200) {
-                setBoxes(prev => prev.filter(b => b.uid !== uid));
-                messageApi.success('箱子已归档');
-            } else {
-                messageApi.error(data.msg || '归档失败');
+                    if (data.code === 200) {
+                        setBoxes(prev => prev.filter(b => b.uid !== box.uid));
+                        messageApi.success('箱子已归档');
+                    } else {
+                        messageApi.error(data.msg || '归档失败');
+                    }
+                } catch (error) {
+                    messageApi.error('归档箱子失败');
+                    console.error(error);
+                }
             }
-        } catch (error) {
-            messageApi.error('归档箱子失败');
-            console.error(error);
-        }
+        });
     };
 
     // 删除箱子
@@ -607,9 +617,6 @@ function PackingListTab({
                     return (
                         <Space>
                             <Text strong style={{ color: '#52c41a', fontSize: '16px' }}>{weight} kg</Text>
-                            {/* <Popconfirm title="确定归档？" onConfirm={() => handleArchiveBox(record.uid)}>
-                                <Button type="text" style={{ padding: 0 }}>归档</Button>
-                            </Popconfirm> */}
                             <Popconfirm title="确定删除？" onConfirm={() => handleDeleteBox(record.uid)}>
                                 <Button type="text" danger icon={<DeleteOutlined />} style={{ padding: 0 }} />
                             </Popconfirm>
@@ -627,9 +634,7 @@ function PackingListTab({
                             style={{ width: 90, border: '1px solid #1890ff', borderRadius: '4px' }}
                             onPressEnter={(e) => handleWeighBox(record.uid, parseFloat(e.target.value))}
                         />
-                        <Popconfirm title="确定归档？" onConfirm={() => handleArchiveBox(record.uid)}>
-                            <Button type="text" style={{ padding: 0 }}>归档</Button>
-                        </Popconfirm>
+                        <Button type="text" danger style={{ padding: 0 }} onClick={() => handleArchiveBox(record)}>归档</Button>
                         <Popconfirm title="确定删除？" onConfirm={() => handleDeleteBox(record.uid)}>
                             <Button type="text" danger icon={<DeleteOutlined />} style={{ padding: 0 }} />
                         </Popconfirm>
@@ -845,7 +850,7 @@ function PackingListTab({
                                                     >
                                                         <Input
                                                             size="large"
-                                                            inputMode="numeric"
+                                                            inputMode="tel"
                                                             placeholder="件数或算式"
                                                             style={{ width: '100%' }}
                                                         />

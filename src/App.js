@@ -5,7 +5,6 @@ import {
     PlusSquareOutlined,
     UnorderedListOutlined,
     UploadOutlined,
-    UserSwitchOutlined,
     TeamOutlined,
     InboxOutlined,
     ContainerOutlined,
@@ -15,7 +14,10 @@ import {
     MenuOutlined,
     SolutionOutlined,
     GiftOutlined,
-    AccountBookOutlined
+    AccountBookOutlined,
+    ToolOutlined,
+    DollarOutlined,
+    AuditOutlined
 } from '@ant-design/icons';
 import { Avatar, Button, Layout, Menu, theme, Tooltip, Drawer, Grid } from 'antd';
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
@@ -143,14 +145,24 @@ function App() {
             label: '财务',
         },
         {
+            key: 'cost-management',
+            icon: <DollarOutlined />,
+            label: '成本管理',
+        },
+        {
             key: 'logs',
             label: '操作日志',
             icon: <LogIcon />,
         },
         {
+            key: 'audit-logs',
+            label: '审计日志',
+            icon: <AuditOutlined />,
+        },
+        {
             key: 'admin',
             label: '管理',
-            icon: <UserSwitchOutlined />,
+            icon: <ToolOutlined />,
         },
         {
             key: 'settings',

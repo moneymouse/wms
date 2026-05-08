@@ -37,6 +37,7 @@ export default function NewOrder() {
     const [salesmanLoading, setSalesmanLoading] = useState(false);
 
     const [customerNameOptions, setCustomerNameOptions] = useState([]);
+    const [selectedCustomerName, setSelectedCustomerName] = useState('');
 
     const [form] = Form.useForm();
 
@@ -98,6 +99,8 @@ export default function NewOrder() {
                 // 刷新客户列表并选中新创建的客户
                 await updateCustomerName();
                 form.setFieldValue('customer_name', values.name);
+                form.setFieldValue('customer_id', result.data.customer_id);
+                setSelectedCustomerName(values.name);
                 // 触发选择以加载收件人列表
                 handleSelect(result.data.customer_id);
             } else {
@@ -162,7 +165,7 @@ export default function NewOrder() {
         (async () => {
             setSalesmanLoading(true);
             try {
-                const res = await (await fetch(`${endpoint}/users/list`, { headers: getSafeHeader() })).json();
+                const res = await (await fetch(`${endpoint}/users/salespersons`, { headers: getSafeHeader() })).json();
                 if (res.code === 200 && Array.isArray(res.data)) {
                     setSalesmanOptions(res.data.map((user) => ({
                         value: user.id,
@@ -195,6 +198,7 @@ export default function NewOrder() {
     // 清空表单并从localStorage中移除保存的数据
     const handleClearForm = () => {
         form.resetFields();
+        setSelectedCustomerName('');
         if (currentUserId !== undefined && currentUserId !== null) {
             form.setFieldValue('salesman_id', Number(currentUserId));
         }
@@ -208,8 +212,9 @@ export default function NewOrder() {
             try {
                 const parsedData = JSON.parse(savedFormData);
                 form.setFieldsValue(parsedData);
-                if (parsedData.customer_name) {
-                    handleSelect(parsedData.customer_name);
+                if (parsedData.customer_id) {
+                    setSelectedCustomerName(parsedData.customer_name || '');
+                    handleSelect(parsedData.customer_id);
                 }
             } catch (e) {
                 console.error('Error parsing saved form data:', e);
@@ -263,6 +268,7 @@ export default function NewOrder() {
 
                 // Reset form to initial state.
                 form.resetFields();
+                setSelectedCustomerName('');
                 if (currentUserId !== undefined && currentUserId !== null) {
                     form.setFieldValue('salesman_id', Number(currentUserId));
                 }
@@ -313,6 +319,7 @@ export default function NewOrder() {
 
     // const [customerName, setCustomerName] = useState('')
     const handleSelect = async (value) => {
+        if (!value) return;
         // 选择客户后，更新其收件人列表（value是customer_id）
         const res = await fetch(`${endpoint}/receiver_list/${value}`, { headers: getSafeHeader() });
         const { data } = await res.json();
@@ -357,6 +364,9 @@ export default function NewOrder() {
                 onFinish={handleFinish}
                 onValuesChange={saveFormToLocalStorage} // 添加值变化时的回调
             >
+                <Item name={'customer_id'} hidden>
+                    <Input />
+                </Item>
                 {/*<Typography.Title level={5} style={{marginBottom: '1rem'}}>运单号/Order</Typography.Title>*/}
                 {/*<Row>*/}
                 {/*    <Col span={6}>*/}
@@ -395,6 +405,18 @@ export default function NewOrder() {
                     <Col span={10}>
                         <Item name={'customer_name'} label={'客户姓名/Customer Name'} rules={[{ required: true }]}>
                             <AutoComplete
+                                onChange={(value) => {
+                                    const currentCustomerId = form.getFieldValue('customer_id');
+                                    if (
+                                        (selectedCustomerName && value === selectedCustomerName)
+                                        || (currentCustomerId && String(value) === String(currentCustomerId))
+                                    ) {
+                                        return;
+                                    }
+                                    form.setFieldValue('customer_id', undefined);
+                                    setSelectedCustomerName('');
+                                    setOptions(prevState => ({ ...prevState, receiverList: [] }));
+                                }}
                                 onSearch={(value => {
                                     let res = [];
                                     if (value !== '') {
@@ -423,8 +445,10 @@ export default function NewOrder() {
                                         handleCreateCustomerOpen(inputValue);
                                     } else {
                                         // value是customer_id，option.label是客户名称
-                                        // 表单需要保存客户名称
+                                        // 表单保存客户ID，同时保留客户名称作为订单快照
+                                        form.setFieldValue('customer_id', value);
                                         form.setFieldValue('customer_name', option.label);
+                                        setSelectedCustomerName(option.label);
                                         handleSelect(value);
                                     }
                                 }}
@@ -678,7 +702,9 @@ export default function NewOrder() {
                             <Space direction="vertical" style={{ width: '100%' }} className={styles.li} onClick={() => {
                                 // 将当前的地址信息复制填充到表单中
                                 form.setFieldsValue(item);
+                                form.setFieldValue('customer_id', modalCustomerId);
                                 form.setFieldValue('customer_name', modalCustomerName);
+                                setSelectedCustomerName(modalCustomerName);
                                 handleModalClose();
                             }}>
                                 <div>

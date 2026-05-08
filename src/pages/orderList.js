@@ -13,7 +13,7 @@ export default function OrderList() {
     const navigate = useNavigate();
     const [searchParams, setSearchParams] = useSearchParams();
     const [pagination, setPagination] = useState({
-        pageSize: 30,
+        pageSize: 20,
         showSizeChanger: false,
         showTotal: (total) => `共${total}单`,
         current: Number(searchParams.get('p') || 1),
@@ -58,10 +58,10 @@ export default function OrderList() {
             searchParams.set('p', pagination.current.toString());
             // setSearchParams(searchParams);
 
-            const res = await fetch(`${endpoint}/cargo`, {
-                headers: getSafeHeader()
-            });
-            const p = await res.json();
+            // const res = await fetch(`${endpoint}/cargo`, {
+            //     headers: getSafeHeader()
+            // });
+            const p = { data: {} };
             setCargo(p.data);
 
             setTableLoading(false);
@@ -110,7 +110,7 @@ export default function OrderList() {
         title: '操作',
         dataIndex: '',
         key: 'x',
-        width: 120,// Increased width to accommodate new button
+        width: 120,
         fixed: 'right',
         align: 'center',
         render: (_, record) => (
@@ -179,6 +179,7 @@ export default function OrderList() {
             title: '确认归档订单',
             content: `确定要归档选中的 ${selectedKeys.length} 个订单吗？归档后订单将不再显示在列表中。`,
             okText: '确认归档',
+            okType: 'danger',
             cancelText: '取消',
             onOk: async () => {
                 try {
@@ -318,6 +319,7 @@ export default function OrderList() {
                     />
 
                     {selectedKeys.length > 0 && <Button
+                        danger
                         loading={archiveLoading}
                         onClick={handleArchive}
                         disabled={selectedKeys.length === 0}

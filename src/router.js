@@ -19,6 +19,8 @@ import Settings from "./pages/settings";
 import WorkDetails from "./pages/workDetails";
 import BonusEstimate from "./pages/bonusEstimate";
 import FinanceCenter from "./pages/financeCenter";
+import CostManagement from "./pages/costManagement";
+import AuditLogs from "./pages/auditLogs";
 
 // 移除 LogsRoute 组件，因为权限检查逻辑已经移到 Logs 组件内部
 
@@ -52,7 +54,11 @@ const router = createBrowserRouter([{
     }, {
         path: 'finance', element: <FinanceCenter />
     }, {
+        path: 'cost-management', element: <CostManagement />
+    }, {
         path: 'settings', element: <Settings />
+    }, {
+        path: 'audit-logs', element: <AuditLogs />
     }]
 }, {
     path: '/normal/:status', element: <Normal />,

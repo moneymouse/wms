@@ -33,6 +33,8 @@ const AdminPage = () => {
     // 密码重置相关状态
     const [passwordRequests, setPasswordRequests] = useState([]);
     const [passwordRequestsLoading, setPasswordRequestsLoading] = useState(false);
+    const [quoteApprovals, setQuoteApprovals] = useState([]);
+    const [quoteApprovalsLoading, setQuoteApprovalsLoading] = useState(false);
     const [rejectPasswordModalVisible, setRejectPasswordModalVisible] = useState(false);
     const [currentPasswordRequest, setCurrentPasswordRequest] = useState(null);
     const [passwordRejectRemark, setPasswordRejectRemark] = useState('');
@@ -47,6 +49,19 @@ const AdminPage = () => {
     const [newCnName, setNewCnName] = useState('');
     const [newEnName, setNewEnName] = useState('');
     const [editingGoodsName, setEditingGoodsName] = useState({ id: null, name: '' });
+
+    // 运输方式管理相关状态
+    const [transportationModes, setTransportationModes] = useState([]);
+    const [transportationLoading, setTransportationLoading] = useState(false);
+    const [transportationModalVisible, setTransportationModalVisible] = useState(false);
+    const [editingTransportation, setEditingTransportation] = useState(null);
+    const [transportationForm, setTransportationForm] = useState({
+        name: '',
+        channel_group: '',
+        cost: 0,
+        min_price: 0,
+    });
+    const [transportationSubmitting, setTransportationSubmitting] = useState(false);
 
     // Excel 模板管理相关状态
     const [excelTemplates, setExcelTemplates] = useState([]);
@@ -100,8 +115,10 @@ const AdminPage = () => {
         fetchApplications();
         fetchUsers();
         fetchPasswordRequests();
+        fetchQuoteApprovals();
         fetchGoodsNames();
         fetchExcelTemplates();
+        fetchTransportationModes();
     }, []);
 
     // 打开审核通过对话框
@@ -109,6 +126,49 @@ const AdminPage = () => {
         setCurrentRecord(record);
         setSelectedRoles(['salesperson']);
         setApproveModalVisible(true);
+    };
+
+    const fetchQuoteApprovals = async () => {
+        setQuoteApprovalsLoading(true);
+        try {
+            const response = await fetch(`${endpoint}/finance/quote-approvals`, {
+                headers: getSafeHeader()
+            });
+            const result = await response.json();
+            if (result.code === 200) {
+                setQuoteApprovals(result.data || []);
+            }
+        } catch (error) {
+            console.error('Fetch quote approvals error:', error);
+        } finally {
+            setQuoteApprovalsLoading(false);
+        }
+    };
+
+    const handleReviewQuote = async (record, action) => {
+        setSubmitting(true);
+        try {
+            const response = await fetch(`${endpoint}/finance/quote-approvals/${record.id}`, {
+                method: 'PUT',
+                headers: {
+                    ...getSafeHeader(),
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ action })
+            });
+            const result = await response.json();
+            if (result.code === 200) {
+                message.success(action === 'approve' ? '低价报价已通过' : '低价报价已拒绝');
+                fetchQuoteApprovals();
+            } else {
+                message.error(result.msg || '审核失败');
+            }
+        } catch (error) {
+            console.error('Review quote error:', error);
+            message.error('审核失败');
+        } finally {
+            setSubmitting(false);
+        }
     };
 
     // 打开审核拒绝对话框
@@ -399,6 +459,120 @@ const AdminPage = () => {
         }
     };
 
+    // ==================== 运输方式管理相关函数 ====================
+
+    const fetchTransportationModes = async () => {
+        setTransportationLoading(true);
+        try {
+            const response = await fetch(`${endpoint}/transportation-modes`, {
+                headers: getSafeHeader()
+            });
+            const result = await response.json();
+            if (result.code === 200) {
+                setTransportationModes(result.data || []);
+            } else {
+                message.error(result.msg || '获取运输方式列表失败');
+            }
+        } catch (error) {
+            console.error('Fetch transportation modes error:', error);
+            message.error('获取运输方式列表失败');
+        } finally {
+            setTransportationLoading(false);
+        }
+    };
+
+    const openTransportationModal = (record = null) => {
+        if (record) {
+            setEditingTransportation(record);
+            setTransportationForm({
+                name: record.name || '',
+                channel_group: record.channel_group || '',
+                cost: record.cost || 0,
+                min_price: record.min_price || 0,
+            });
+        } else {
+            setEditingTransportation(null);
+            setTransportationForm({
+                name: '',
+                channel_group: '',
+                cost: 0,
+                min_price: 0,
+            });
+        }
+        setTransportationModalVisible(true);
+    };
+
+    const closeTransportationModal = () => {
+        setTransportationModalVisible(false);
+        setEditingTransportation(null);
+        setTransportationForm({
+            name: '',
+            channel_group: '',
+            cost: 0,
+            min_price: 0,
+        });
+    };
+
+    const handleSaveTransportation = async () => {
+        const { name, channel_group, cost, min_price } = transportationForm;
+        if (!name.trim()) {
+            message.warning('请输入运输方式名称');
+            return;
+        }
+        setTransportationSubmitting(true);
+        try {
+            const url = editingTransportation
+                ? `${endpoint}/transportation-modes/${editingTransportation.id}`
+                : `${endpoint}/transportation-modes`;
+            const method = editingTransportation ? 'PUT' : 'POST';
+            const response = await fetch(url, {
+                method,
+                headers: {
+                    ...getSafeHeader(),
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    name: name.trim(),
+                    channel_group: channel_group.trim(),
+                    cost: Number(cost) || 0,
+                    min_price: Number(min_price) || 0,
+                })
+            });
+            const result = await response.json();
+            if (result.code === 200) {
+                message.success(editingTransportation ? '更新成功' : '创建成功');
+                closeTransportationModal();
+                fetchTransportationModes();
+            } else {
+                message.error(result.msg || '操作失败');
+            }
+        } catch (error) {
+            console.error('Save transportation mode error:', error);
+            message.error('操作异常');
+        } finally {
+            setTransportationSubmitting(false);
+        }
+    };
+
+    const handleDeleteTransportation = async (id) => {
+        try {
+            const response = await fetch(`${endpoint}/transportation-modes/${id}`, {
+                method: 'DELETE',
+                headers: getSafeHeader()
+            });
+            const result = await response.json();
+            if (result.code === 200) {
+                message.success('删除成功');
+                fetchTransportationModes();
+            } else {
+                message.error(result.msg || '删除失败');
+            }
+        } catch (error) {
+            console.error('Delete transportation mode error:', error);
+            message.error('删除失败');
+        }
+    };
+
     const openTemplateModal = (record = null) => {
         if (record) {
             let config = {};
@@ -573,23 +747,32 @@ const AdminPage = () => {
         }
     };
 
-    const handleArchiveTemplate = async (id) => {
-        try {
-            const response = await fetch(`${endpoint}/excel-templates/${id}/archive`, {
-                method: 'POST',
-                headers: getSafeHeader()
-            });
-            const result = await response.json();
-            if (result.code === 200) {
-                message.success('归档成功');
-                fetchExcelTemplates();
-            } else {
-                message.error(result.msg || '归档失败');
+    const handleArchiveTemplate = async (record) => {
+        Modal.confirm({
+            title: '确认归档导出模板',
+            content: `确定要归档模板“${record.label || record.mode_key}”吗？归档后该模板将不再显示在可用列表中。`,
+            okText: '确认归档',
+            okType: 'danger',
+            cancelText: '取消',
+            onOk: async () => {
+                try {
+                    const response = await fetch(`${endpoint}/excel-templates/${record.id}/archive`, {
+                        method: 'POST',
+                        headers: getSafeHeader()
+                    });
+                    const result = await response.json();
+                    if (result.code === 200) {
+                        message.success('归档成功');
+                        fetchExcelTemplates();
+                    } else {
+                        message.error(result.msg || '归档失败');
+                    }
+                } catch (error) {
+                    console.error('Archive template error:', error);
+                    message.error('归档失败');
+                }
             }
-        } catch (error) {
-            console.error('Archive template error:', error);
-            message.error('归档失败');
-        }
+        });
     };
 
     const handleDeleteTemplate = async (id) => {
@@ -616,28 +799,46 @@ const AdminPage = () => {
     const parseExcelForPreview = (file) => {
         const reader = new FileReader();
         reader.onload = (e) => {
-            const data = new Uint8Array(e.target.result);
-            const workbook = XLSX.read(data, { type: 'array' });
-            const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
-            const jsonData = XLSX.utils.sheet_to_json(firstSheet, { header: 1, defval: '' });
+            try {
+                const data = new Uint8Array(e.target.result);
+                const workbook = XLSX.read(data, { type: 'array' });
+                const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
 
-            const previewRows = jsonData.slice(0, 5);
-            if (previewRows.length === 0) {
-                setExcelPreview({ columns: [], rows: [] });
-                return;
+                if (!firstSheet) {
+                    message.error('Excel 文件为空或无法读取');
+                    setExcelPreview(null);
+                    return;
+                }
+
+                // blankrows: true 确保行索引与工作表行号严格对应，不会因空行错位
+                const jsonData = XLSX.utils.sheet_to_json(firstSheet, { header: 1, defval: '', blankrows: true });
+
+                const previewRows = jsonData;
+                if (previewRows.length === 0) {
+                    setExcelPreview({ columns: [], rows: [] });
+                    return;
+                }
+
+                const maxCols = Math.max(...previewRows.map(r => r.length), 0);
+                const columns = Array.from({ length: maxCols }, (_, idx) => XLSX.utils.encode_col(idx));
+
+                const rows = previewRows.map((row, rowIdx) =>
+                    Array.from({ length: maxCols }, (_, colIdx) => ({
+                        value: String(row[colIdx] || ''),
+                        cellRef: `${XLSX.utils.encode_col(colIdx)}${rowIdx + 1}`,
+                    }))
+                );
+
+                setExcelPreview({ columns, rows });
+            } catch (error) {
+                console.error('Parse Excel error:', error);
+                message.error('Excel 文件解析失败，请检查文件格式是否正确');
+                setExcelPreview(null);
             }
-
-            const maxCols = Math.max(...previewRows.map(r => r.length), 0);
-            const columns = Array.from({ length: maxCols }, (_, idx) => XLSX.utils.encode_col(idx));
-
-            const rows = previewRows.map((row, rowIdx) =>
-                Array.from({ length: maxCols }, (_, colIdx) => ({
-                    value: String(row[colIdx] || ''),
-                    cellRef: `${XLSX.utils.encode_col(colIdx)}${rowIdx + 1}`,
-                }))
-            );
-
-            setExcelPreview({ columns, rows });
+        };
+        reader.onerror = () => {
+            message.error('读取文件失败');
+            setExcelPreview(null);
         };
         reader.readAsArrayBuffer(file);
     };
@@ -1007,6 +1208,30 @@ const AdminPage = () => {
         },
     ];
 
+    const quoteApprovalColumns = [
+        { title: '订单号', dataIndex: 'order_id', key: 'order_id', width: 160 },
+        { title: '客户', dataIndex: 'customer_name', key: 'customer_name', width: 140 },
+        { title: '渠道', dataIndex: 'transportation_name', key: 'transportation_name', width: 160 },
+        { title: '成本', dataIndex: 'channel_cost', key: 'channel_cost', width: 100, render: v => Number(v || 0).toFixed(2) },
+        { title: '最低报价', dataIndex: 'min_price', key: 'min_price', width: 100, render: v => Number(v || 0).toFixed(2) },
+        { title: '申请报价', dataIndex: 'quoted_price', key: 'quoted_price', width: 100, render: v => <Typography.Text type="danger">{Number(v || 0).toFixed(2)}</Typography.Text> },
+        { title: '报价人', dataIndex: 'quoter_name', key: 'quoter_name', width: 110 },
+        { title: '申请时间', dataIndex: 'create_date', key: 'create_date', width: 170 },
+        { title: '说明', dataIndex: 'quote_remark', key: 'quote_remark' },
+        {
+            title: '操作',
+            key: 'action',
+            fixed: 'right',
+            width: 150,
+            render: (_, record) => (
+                <Space>
+                    <Button type="primary" size="small" loading={submitting} onClick={() => handleReviewQuote(record, 'approve')}>通过</Button>
+                    <Button danger size="small" loading={submitting} onClick={() => handleReviewQuote(record, 'reject')}>拒绝</Button>
+                </Space>
+            )
+        }
+    ];
+
     return (
         <Space direction="vertical" size={16} style={{ margin: 20, width: 'calc(100% - 40px)' }}>
             <Card title="用户申请管理">
@@ -1015,7 +1240,8 @@ const AdminPage = () => {
                     dataSource={data}
                     rowKey="id"
                     loading={loading}
-                    pagination={{ pageSize: 10 }}
+                    pagination={false}
+                    scroll={{ y: 400 }}
                 />
             </Card>
 
@@ -1025,7 +1251,8 @@ const AdminPage = () => {
                     dataSource={users}
                     rowKey="id"
                     loading={usersLoading}
-                    pagination={{ pageSize: 10 }}
+                    pagination={false}
+                    scroll={{ y: 400 }}
                 />
             </Card>
 
@@ -1037,6 +1264,18 @@ const AdminPage = () => {
                     loading={passwordRequestsLoading}
                     pagination={{ pageSize: 10 }}
                     locale={{ emptyText: '暂无密码重置申请' }}
+                />
+            </Card>
+
+            <Card title="低价报价审批">
+                <Table
+                    columns={quoteApprovalColumns}
+                    dataSource={quoteApprovals}
+                    rowKey="id"
+                    loading={quoteApprovalsLoading}
+                    pagination={{ pageSize: 10 }}
+                    scroll={{ x: 1300 }}
+                    locale={{ emptyText: '暂无待审批报价' }}
                 />
             </Card>
 
@@ -1171,6 +1410,47 @@ const AdminPage = () => {
                 />
             </Card> */}
 
+            <Card title="运输方式管理">
+                <Space direction="vertical" style={{ width: '100%' }}>
+                    <Button type="primary" onClick={() => openTransportationModal(null)} icon={<PlusOutlined />}>
+                        新增运输方式
+                    </Button>
+                    <Table
+                        dataSource={transportationModes}
+                        rowKey="id"
+                        loading={transportationLoading}
+                        pagination={false}
+                        scroll={{ y: 400 }}
+                        columns={[
+                            { title: '运输方式', dataIndex: 'name', key: 'name' },
+                            { title: '渠道分组', dataIndex: 'channel_group', key: 'channel_group' },
+                            {
+                                title: '成本',
+                                dataIndex: 'cost',
+                                key: 'cost',
+                                render: (v) => `¥${Number(v || 0).toFixed(2)}`
+                            },
+                            {
+                                title: '最低报价',
+                                dataIndex: 'min_price',
+                                key: 'min_price',
+                                render: (v) => `¥${Number(v || 0).toFixed(2)}`
+                            },
+                            {
+                                title: '操作',
+                                key: 'action',
+                                render: (_, record) => (
+                                    <Space>
+                                        <Button size="small" onClick={() => openTransportationModal(record)}>编辑</Button>
+                                        <Button danger size="small" onClick={() => handleDeleteTransportation(record.id)}>删除</Button>
+                                    </Space>
+                                )
+                            }
+                        ]}
+                    />
+                </Space>
+            </Card>
+
             <Card title="Excel模板管理">
                 <Space direction="vertical" style={{ width: '100%' }}>
                     <Button type="primary" onClick={() => openTemplateModal(null)} icon={<PlusOutlined />}>
@@ -1180,7 +1460,8 @@ const AdminPage = () => {
                         dataSource={excelTemplates}
                         rowKey="id"
                         loading={excelTemplateLoading}
-                        pagination={{ pageSize: 10 }}
+                        pagination={false}
+                        scroll={{ y: 400 }}
                         columns={[
                             { title: '标识', dataIndex: 'mode_key', key: 'mode_key' },
                             { title: '名称', dataIndex: 'label', key: 'label' },
@@ -1202,7 +1483,7 @@ const AdminPage = () => {
                                 render: (_, record) => (
                                     <Space>
                                         <Button size="small" onClick={() => openTemplateModal(record)}>编辑</Button>
-                                        <Button size="small" onClick={() => handleArchiveTemplate(record.id)}>归档</Button>
+                                        <Button danger size="small" onClick={() => handleArchiveTemplate(record)}>归档</Button>
                                         <Button danger size="small" onClick={() => handleDeleteTemplate(record.id)}>删除</Button>
                                     </Space>
                                 )
@@ -1309,7 +1590,7 @@ const AdminPage = () => {
 
                             {/* Excel 预览网格 */}
                             <div style={{ overflowX: 'auto' }}>
-                                <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 13, tableLayout: 'fixed' }}>
+                                <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 13, maxHeight: '20vh', tableLayout: 'fixed' }}>
                                     <thead>
                                         <tr>
                                             {excelPreview.columns.map(col => {
@@ -1478,6 +1759,58 @@ const AdminPage = () => {
                                     )
                                 }
                             ]}
+                        />
+                    </div>
+                </Space>
+            </Modal>
+
+            {/* 运输方式编辑对话框 */}
+            <Modal
+                title={editingTransportation ? '编辑运输方式' : '新增运输方式'}
+                open={transportationModalVisible}
+                onOk={handleSaveTransportation}
+                onCancel={closeTransportationModal}
+                confirmLoading={transportationSubmitting}
+                okText="保存"
+                cancelText="取消"
+            >
+                <Space direction="vertical" style={{ width: '100%' }} size="middle">
+                    <div>
+                        <span>运输方式名称：</span>
+                        <Input
+                            placeholder="如 欧盟DPD特快"
+                            value={transportationForm.name}
+                            onChange={(e) => setTransportationForm(prev => ({ ...prev, name: e.target.value }))}
+                            style={{ width: '100%', marginTop: 8 }}
+                        />
+                    </div>
+                    <div>
+                        <span>渠道分组：</span>
+                        <Input
+                            placeholder="如 TC、JF、YX"
+                            value={transportationForm.channel_group}
+                            onChange={(e) => setTransportationForm(prev => ({ ...prev, channel_group: e.target.value }))}
+                            style={{ width: '100%', marginTop: 8 }}
+                        />
+                    </div>
+                    <div>
+                        <span>成本（元）：</span>
+                        <Input
+                            type="number"
+                            placeholder="0"
+                            value={transportationForm.cost}
+                            onChange={(e) => setTransportationForm(prev => ({ ...prev, cost: e.target.value }))}
+                            style={{ width: '100%', marginTop: 8 }}
+                        />
+                    </div>
+                    <div>
+                        <span>最低报价（元）：</span>
+                        <Input
+                            type="number"
+                            placeholder="0"
+                            value={transportationForm.min_price}
+                            onChange={(e) => setTransportationForm(prev => ({ ...prev, min_price: e.target.value }))}
+                            style={{ width: '100%', marginTop: 8 }}
                         />
                     </div>
                 </Space>

@@ -37,7 +37,10 @@ export default function BonusEstimate() {
     const [loading, setLoading] = useState(false);
     const [bonusData, setBonusData] = useState(null);
 
-    const userRoles = payload?.roles || (payload?.role ? [payload.role] : []);
+    const userRoles = useMemo(
+        () => payload?.roles || (payload?.role ? [payload.role] : []),
+        [payload]
+    );
     const currentUserId = payload?.user_id;
     const canSelectWorker = hasPermission(userRoles, ['admin', 'finance']);
 

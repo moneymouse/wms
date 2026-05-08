@@ -28,7 +28,9 @@ export const menuPermissions = {
     'work-details': [ROLES.ADMIN, ROLES.FINANCE, ROLES.WORKER], // 工作详情
     'bonus': [ROLES.ADMIN, ROLES.FINANCE, ROLES.WORKER], // 奖金
     'finance': [ROLES.ADMIN, ROLES.FINANCE], // 财务配置与汇总
+    'cost-management': [ROLES.ADMIN, ROLES.STORE_MANAGER], // 渠道成本管理
     'logs': [ROLES.ADMIN], // 操作日志
+    'audit-logs': [ROLES.ADMIN], // 审计日志
     'admin': [ROLES.ADMIN], // 用户申请
     'settings': [ROLES.ADMIN, ROLES.STORE_MANAGER, ROLES.SALESPERSON, ROLES.CLERK, ROLES.FINANCE, ROLES.WORKER], // 设置（所有角色）
 };
@@ -46,7 +48,9 @@ export const routePermissions = {
     '/bonus': [ROLES.ADMIN, ROLES.FINANCE, ROLES.WORKER],
     '/bonus-estimate': [ROLES.ADMIN, ROLES.FINANCE, ROLES.WORKER],
     '/finance': [ROLES.ADMIN, ROLES.FINANCE],
+    '/cost-management': [ROLES.ADMIN, ROLES.STORE_MANAGER],
     '/logs': [ROLES.ADMIN],
+    '/audit-logs': [ROLES.ADMIN],
     '/admin': [ROLES.ADMIN],
     '/settings': [ROLES.ADMIN, ROLES.STORE_MANAGER, ROLES.SALESPERSON, ROLES.CLERK, ROLES.FINANCE, ROLES.WORKER], // 设置
 };

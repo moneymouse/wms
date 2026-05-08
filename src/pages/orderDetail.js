@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
     Badge,
     Button,
@@ -6,12 +6,15 @@ import {
     Form,
     InputNumber,
     message,
+    Modal,
     Popconfirm,
     Popover,
     Space,
     Select,
     Table,
+    Tag,
     Timeline,
+    Tooltip,
     Typography
 } from "antd";
 import orderProperty from "../common/orderProperty";
@@ -21,12 +24,11 @@ import { endpoint } from "../config.js";
 import { useParams } from "react-router-dom";
 import getSafeHeader from '../common/safeHeader';
 import styles from './orderDetail.module.css';
-import Transportation from "../components/transportation";
 import ExportButton from "../components/ExportButton";
 import trackStatus from "../common/trackStatus";
 import GoodInput from "../components/GoodName";
 import BoxAssignmentModal from "../components/BoxAssignmentModal";
-import { DeleteOutlined, InboxOutlined } from "@ant-design/icons";
+import { DeleteOutlined, DollarOutlined, InboxOutlined, PrinterOutlined, QuestionCircleOutlined } from "@ant-design/icons";
 import { hasPermission } from "../common/roleConfig";
 
 const passHash = '18667b982b1c774d3c096422e457906afb227cfc7f956d3f4fc1f9bc07b98862';
@@ -47,6 +49,31 @@ const verify = () => {
 }
 
 let focusFlag = '';
+
+function groupTransportationOptions(modes) {
+    const groups = {};
+    (modes || []).forEach((mode) => {
+        const group = mode.channel_group || '其他';
+        if (!groups[group]) groups[group] = [];
+        groups[group].push({
+            value: mode.id,
+            label: mode.name,
+            searchText: mode.name,
+            minPrice: Number(mode.min_price || 0),
+            mode,
+        });
+    });
+    return Object.entries(groups).map(([label, options]) => ({ label, options }));
+}
+
+function base64ToBlob(base64, mimeType) {
+    const binary = window.atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) {
+        bytes[i] = binary.charCodeAt(i);
+    }
+    return new Blob([bytes], { type: mimeType });
+}
 
 
 const EditableCell = (props) => {
@@ -142,6 +169,13 @@ export default function OrderDetail() {
     const [salesmanSaving, setSalesmanSaving] = useState(false);
     const [salesmanUsersLoading, setSalesmanUsersLoading] = useState(false);
     const [salesmanEditing, setSalesmanEditing] = useState(false);
+    const [quoteForm] = Form.useForm();
+    const [transportationModes, setTransportationModes] = useState([]);
+    const [quoteModalOpen, setQuoteModalOpen] = useState(false);
+    const [quoteSubmitting, setQuoteSubmitting] = useState(false);
+    const [quoteHistory, setQuoteHistory] = useState([]);
+    const [quotePdfPrinting, setQuotePdfPrinting] = useState(false);
+    const selectedQuoteModeId = Form.useWatch('transportation_mode_id', quoteForm);
 
     // 客户联系信息状态
     const [customerContact, setCustomerContact] = useState({ phone: '', wechat: '' });
@@ -154,9 +188,6 @@ export default function OrderDetail() {
     const canViewCustomerContact = hasPermission(jwtPayload?.roles, ['admin', 'store_manager', 'salesperson']);
     // 检查是否有分配箱子的权限
     const canAssignBoxes = hasPermission(jwtPayload?.roles, ['admin', 'store_manager', 'salesperson', 'clerk']);
-    // 检查是否有包裹出货权限
-    const canShipCargos = hasPermission(jwtPayload?.roles, ['admin', 'store_manager', 'salesperson', 'clerk']);
-
     useEffect(() => {
         const jwt = localStorage.getItem('jwt');
         if (jwt) {
@@ -196,7 +227,7 @@ export default function OrderDetail() {
         (async () => {
             setSalesmanUsersLoading(true);
             try {
-                const res = await (await fetch(`${endpoint}/users/list`, { headers: getSafeHeader() })).json();
+                const res = await (await fetch(`${endpoint}/users/salespersons`, { headers: getSafeHeader() })).json();
                 if (res.code === 200 && Array.isArray(res.data)) {
                     setSalesmanOptions(
                         res.data.map((user) => ({
@@ -210,6 +241,21 @@ export default function OrderDetail() {
             }
         })();
     }, [jwtPayload]);
+
+    // 如果当前业务员不在 salesperson 列表中，将其加入选项
+    useEffect(() => {
+        if (salesman && salesman.id !== undefined && salesman.id !== null) {
+            setSalesmanOptions((prev) => {
+                if (prev.some((item) => Number(item.value) === Number(salesman.id))) {
+                    return prev;
+                }
+                return [
+                    { value: Number(salesman.id), label: `${salesman.name || '-'} (${salesman.phone || '-'})` },
+                    ...prev
+                ];
+            });
+        }
+    }, [salesman]);
 
     // 获取客户联系信息
     useEffect(() => {
@@ -235,8 +281,123 @@ export default function OrderDetail() {
     }, [canViewCustomerContact, descriptionData.customer_ids]);
 
     const currentUserId = jwtPayload?.user_id ?? jwtPayload?.id ?? jwtPayload?.uid;
+    const userRoles = jwtPayload?.roles || (jwtPayload?.role ? [jwtPayload.role] : []);
+    const canQuote = hasPermission(userRoles, ['salesperson']);
     const canEditSalesman = hasPermission(jwtPayload?.roles, ['admin'])
         || (currentUserId !== undefined && salesman?.id !== undefined && Number(currentUserId) === Number(salesman.id));
+    const selectedQuoteMode = transportationModes.find(item => Number(item.id) === Number(selectedQuoteModeId));
+    const finalQuote = quoteHistory.find(item => item.is_final);
+    const quoteTransportationOptions = useMemo(
+        () => groupTransportationOptions(transportationModes),
+        [transportationModes]
+    );
+
+    const fetchTransportationModes = async () => {
+        try {
+            const res = await fetch(`${endpoint}/transportation-modes`, { headers: getSafeHeader() });
+            const data = await res.json();
+            if (data.code === 200) {
+                setTransportationModes(data.data || []);
+                return data.data || [];
+            }
+        } catch (error) {
+            console.error('获取运输方式失败:', error);
+        }
+        return [];
+    };
+
+    const fetchQuoteHistory = async () => {
+        try {
+            const res = await fetch(`${endpoint}/orders/${order_id}/quotes`, { headers: getSafeHeader() });
+            const data = await res.json();
+            if (data.code === 200) {
+                setQuoteHistory(data.data || []);
+                return data.data || [];
+            }
+        } catch (error) {
+            console.error('获取报价历史失败:', error);
+        }
+        return [];
+    };
+
+    const openQuoteModal = async () => {
+        const modes = transportationModes.length > 0 ? transportationModes : await fetchTransportationModes();
+        const matched = modes.find(item => item.name === descriptionData.transportation);
+        quoteForm.setFieldsValue({
+            transportation_mode_id: matched?.id,
+            quoted_price: undefined,
+            quote_remark: '',
+        });
+        setQuoteHistory([]);
+        setQuoteModalOpen(true);
+        fetchQuoteHistory();
+    };
+
+    const submitQuote = async () => {
+        try {
+            const values = await quoteForm.validateFields();
+            const selectedMode = transportationModes.find(item => Number(item.id) === Number(values.transportation_mode_id));
+            setQuoteSubmitting(true);
+            const res = await fetch(`${endpoint}/orders/${order_id}/quotes`, {
+                method: 'POST',
+                headers: { ...getSafeHeader(), 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    ...values,
+                    transportation_name: selectedMode?.name,
+                    quoted_price: Number(values.quoted_price || 0),
+                })
+            });
+            const data = await res.json();
+            if (data.code === 200) {
+                messageX.success(data.msg || '报价已提交');
+                quoteForm.setFieldsValue({
+                    quoted_price: undefined,
+                    quote_remark: '',
+                });
+                if (data.data?.is_final && data.data?.transportation_name) {
+                    setDescriptionData(prev => ({ ...prev, transportation: data.data.transportation_name }));
+                }
+                await fetchQuoteHistory();
+            } else {
+                messageX.error(data.msg || '报价失败');
+            }
+        } catch (error) {
+            if (error?.errorFields) return;
+            messageX.error('报价失败');
+            console.error(error);
+        } finally {
+            setQuoteSubmitting(false);
+        }
+    };
+
+    const handlePrintQuotePdf = async () => {
+        const previewWindow = window.open('', '_blank');
+        if (!previewWindow) {
+            messageX.warning('浏览器拦截了新窗口，请允许弹窗后重试');
+            return;
+        }
+        previewWindow.document.write('正在生成报价单 PDF...');
+        setQuotePdfPrinting(true);
+        try {
+            const res = await fetch(`${endpoint}/orders/${order_id}/quote-pdf`, {
+                headers: getSafeHeader()
+            });
+            const data = await res.json();
+            if (data.code !== 200) {
+                throw new Error(data.msg || '生成报价单失败');
+            }
+            const blob = base64ToBlob(data.data, data.mime_type || 'application/pdf');
+            const blobUrl = window.URL.createObjectURL(blob);
+            previewWindow.location.href = blobUrl;
+            window.setTimeout(() => window.URL.revokeObjectURL(blobUrl), 60 * 1000);
+        } catch (error) {
+            previewWindow.close();
+            messageX.error(error?.message || '生成报价单失败');
+            console.error(error);
+        } finally {
+            setQuotePdfPrinting(false);
+        }
+    };
 
     const handleSaveSalesman = async (userId) => {
         if (!canEditSalesman) {
@@ -352,11 +513,15 @@ export default function OrderDetail() {
                 const item = newData[index];
 
                 const timestamp = (new Date()).getTime().toString(16);
-                await (await fetch(`${endpoint}/cargo/${key}`, {
+                const updateRes = await (await fetch(`${endpoint}/cargo/${key}`, {
                     headers: getSafeHeader(),
                     body: JSON.stringify({ ...row }),
                     method: 'PUT'
                 })).json();
+                if (updateRes.code !== 200) {
+                    message.error(updateRes.msg || '修改失败！');
+                    return;
+                }
 
                 newData.splice(index, 1, {
                     ...item,
@@ -578,12 +743,15 @@ export default function OrderDetail() {
         return {
             ...col,
             onCell: (record) => {
+                const outboundLockedWaybill = ['transfer_id', 'waybill_id'].includes(col.dataIndex)
+                    && record.packing_list_uid
+                    && (Number(record.status) === 1 || String(record.status).toLowerCase() === 'outbound');
                 return {
                     record,
                     // inputType: col.dataIndex === 'age' ? 'number' : 'text',
                     dataIndex: col.dataIndex,
                     title: col.title,
-                    editing: isEditing(record),
+                    editing: isEditing(record) && !outboundLockedWaybill,
                     onEnter: async (flag) => {
                         await save(record.uid);
                         focusFlag = flag;
@@ -602,6 +770,7 @@ export default function OrderDetail() {
                         await save(record.uid);
                     },
                     onClick: () => {
+                        if (outboundLockedWaybill) return;
                         edit(record);
                     }
                 }
@@ -636,62 +805,6 @@ export default function OrderDetail() {
 
         messageX.success(`已从订单移除 ${record_ids.length} 个包裹`);
     }
-
-    const handleShipSelectedCargos = async () => {
-        if (!canShipCargos) {
-            messageX.error('你没有包裹出货权限');
-            return;
-        }
-        if (selectedKeys.length === 0) {
-            messageX.warning('请先选择要出货的包裹');
-            return;
-        }
-        if (!verify()) {
-            message.error('密码错误！');
-            return;
-        }
-
-        setShippingSelected(true);
-        try {
-            const results = await Promise.all(
-                selectedKeys.map(async (cargoUid) => {
-                    try {
-                        const data = await (
-                            await fetch(`${endpoint}/cargo/${cargoUid}/output`, {
-                                headers: getSafeHeader(),
-                                method: 'POST'
-                            })
-                        ).json();
-                        return {
-                            cargoUid,
-                            success: data.code === 200,
-                            msg: data.msg || ''
-                        };
-                    } catch (_) {
-                        return {
-                            cargoUid,
-                            success: false,
-                            msg: '请求失败'
-                        };
-                    }
-                })
-            );
-
-            const successCount = results.filter((item) => item.success).length;
-            const failedCount = results.length - successCount;
-
-            if (failedCount > 0) {
-                messageX.warning(`已出货 ${successCount} 个包裹，失败 ${failedCount} 个`);
-            } else {
-                messageX.success(`已出货 ${successCount} 个包裹`);
-            }
-
-            setSelectedKeys([]);
-            await fetchCargoData();
-        } finally {
-            setShippingSelected(false);
-        }
-    };
 
     const [count, setCount] = useState(1);//包装箱添加计数
     const handleAdd = async () => {
@@ -735,7 +848,6 @@ export default function OrderDetail() {
 
     // 选择打印
     const [selectedKeys, setSelectedKeys] = useState([]);
-    const [shippingSelected, setShippingSelected] = useState(false);
     // 打印
     const handlePrint = () => {
         window.open(`${endpoint}/cargo/pdf/${selectedKeys.join('_')}`);
@@ -801,7 +913,95 @@ export default function OrderDetail() {
                     <Button size="middle" danger loading={salesmanSaving}
                         onClick={handleRemoveSalesman}>移除</Button>
                 )}
+                {canQuote && !salesmanEditing && (
+                    <Button size="middle" type="primary" icon={<DollarOutlined />} onClick={openQuoteModal}>
+                        报价
+                    </Button>
+                )}
             </Space>
+            <Modal
+                title={`订单报价 ${descriptionData?.order_id || ''}`}
+                open={quoteModalOpen}
+                onCancel={() => setQuoteModalOpen(false)}
+                onOk={submitQuote}
+                confirmLoading={quoteSubmitting}
+                okText="提交报价"
+                cancelText="取消"
+                width={760}
+            >
+                <Form form={quoteForm} layout="vertical">
+                    <Form.Item label="货运渠道" required>
+                        <Space.Compact style={{ width: '100%' }}>
+                            <Form.Item
+                                name="transportation_mode_id"
+                                noStyle
+                                rules={[{ required: true, message: '请选择货运渠道' }]}
+                            >
+                                <Select
+                                    showSearch
+                                    optionFilterProp="searchText"
+                                    optionLabelProp="selectedLabel"
+                                    style={{ width: 'calc(100% - 40px)' }}
+                                    options={quoteTransportationOptions.map(group => ({
+                                        label: group.label,
+                                        options: group.options.map(option => ({
+                                            ...option,
+                                            selectedLabel: option.label,
+                                            label: (
+                                                <Space style={{ width: '100%', justifyContent: 'space-between' }}>
+                                                    <span>{option.label}</span>
+                                                    <Typography.Text type="secondary">
+                                                        最低 {Number(option.minPrice || 0).toFixed(2)}
+                                                    </Typography.Text>
+                                                </Space>
+                                            )
+                                        }))
+                                    }))}
+                                />
+                            </Form.Item>
+                            <Tooltip title={selectedQuoteMode ? `最低报价：${Number(selectedQuoteMode.min_price || 0).toFixed(2)}` : '请选择货运渠道'}>
+                                <Button htmlType="button" icon={<QuestionCircleOutlined />} />
+                            </Tooltip>
+                        </Space.Compact>
+                    </Form.Item>
+                    <Form.Item name="quoted_price" label="报价" rules={[{ required: true, message: '请输入报价' }]}>
+                        <InputNumber min={0} precision={2} style={{ width: '100%' }} />
+                    </Form.Item>
+                    <Form.Item name="quote_remark" label="报价说明">
+                        <Input.TextArea rows={3} />
+                    </Form.Item>
+                </Form>
+                <Space style={{ marginBottom: 12 }}>
+                    <Typography.Text type={finalQuote ? 'success' : 'secondary'}>
+                        {finalQuote
+                            ? `当前最终报价：${Number(finalQuote.quoted_price || 0).toFixed(2)} / ${finalQuote.transportation_name}`
+                            : '暂无最终采纳报价'}
+                    </Typography.Text>
+                    <Button
+                        icon={<PrinterOutlined />}
+                        disabled={!finalQuote}
+                        loading={quotePdfPrinting}
+                        onClick={handlePrintQuotePdf}
+                    >
+                        打印报价单
+                    </Button>
+                </Space>
+                <Typography.Title level={5}>报价版本</Typography.Title>
+                <Table
+                    size="small"
+                    rowKey="id"
+                    dataSource={quoteHistory}
+                    pagination={false}
+                    columns={[
+                        { title: '版本', dataIndex: 'version_no', key: 'version_no', width: 70 },
+                        { title: '渠道', dataIndex: 'transportation_name', key: 'transportation_name' },
+                        { title: '报价', dataIndex: 'quoted_price', key: 'quoted_price', width: 90, render: v => Number(v || 0).toFixed(2) },
+                        { title: '最低', dataIndex: 'min_price', key: 'min_price', width: 90, render: v => Number(v || 0).toFixed(2) },
+                        { title: '状态', dataIndex: 'status', key: 'status', width: 110, render: v => <Tag>{v}</Tag> },
+                        { title: '报价人', dataIndex: 'quoter_name', key: 'quoter_name', width: 100 },
+                    ]}
+                />
+            </Modal>
             <Descriptions style={{ marginBottom: '2rem' }} bordered>
                 {orderProperty.map((v, k) => {
                     const handleDescriptionDataChange = async (val) => {
@@ -827,16 +1027,21 @@ export default function OrderDetail() {
                         setDescriptionData(prevState => ({ ...prevState, [v.name]: val }))
                     }
 
-                    return v.name === 'transportation' || v.name === 'en_name' ? (
+                    if (v.name === 'transportation') {
+                        return (
+                            <Descriptions.Item key={k} span={v.span || 1} label={v.label.split('/')[0]}>
+                                <Typography.Text copyable={!!descriptionData[v.name]}>
+                                    {descriptionData[v.name]}
+                                </Typography.Text>
+                            </Descriptions.Item>
+                        );
+                    }
+
+                    return v.name === 'en_name' ? (
                         <Descriptions.Item style={TransportationEditing ? { width: 300 } : {}} key={k} span={v.span || 1}
                             label={v.label.split('/')[0]}>
                             {TransportationEditing === 'en_name' && v.name === 'en_name' ? (
                                 <GoodInput onEnter={() => setTransportationEditing("")}
-                                    onBlur={() => setTransportationEditing("")}
-                                    onChange={handleDescriptionDataChange}
-                                    defaultValue={descriptionData[v.name]} />
-                            ) : TransportationEditing === 'transportation' && v.name === 'transportation' ? (
-                                <Transportation onEnter={() => setTransportationEditing("")}
                                     onBlur={() => setTransportationEditing("")}
                                     onChange={handleDescriptionDataChange}
                                     defaultValue={descriptionData[v.name]} />
@@ -898,17 +1103,6 @@ export default function OrderDetail() {
                 <ExportButton selectedKeys={[descriptionData.uid]} onSuccess={() => setSelectedKeys([])}
                     selectedCargos={selectedKeys} data={[{ ...descriptionData, key: descriptionData.uid }]} />
                 <Button onClick={handleQueryLogistics}>查询进度</Button>
-                {canShipCargos && (
-                    <Popconfirm
-                        title="出货已选包裹"
-                        description={`已选择 ${selectedKeys.length} 个包裹，请确认信息准确后再标记出货。`}
-                        onConfirm={handleShipSelectedCargos}
-                        okText="确认出货"
-                        cancelText="取消"
-                    >
-                        <Button type={'primary'} loading={shippingSelected}>出货（{selectedKeys.length}）</Button>
-                    </Popconfirm>
-                )}
                 {selectedKeys.length > 0 && (
                     <Popconfirm
                         title={`批量移除 ${selectedKeys.length} 个包裹`}

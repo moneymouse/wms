@@ -18,8 +18,7 @@ import {
     Grid,
     Checkbox,
     Spin,
-    Dropdown,
-    Popconfirm
+    Dropdown
 } from 'antd';
 import {
     PrinterOutlined,
@@ -28,8 +27,7 @@ import {
     DeleteOutlined,
     EditOutlined,
     ArrowLeftOutlined,
-    CloseOutlined,
-    SendOutlined
+    CloseOutlined
 } from '@ant-design/icons';
 import { endpoint } from '../config';
 import getSafeHeader from '../common/safeHeader';
@@ -160,9 +158,8 @@ export default function PackingListDetail() {
     const [editingPackingStatus, setEditingPackingStatus] = useState('draft');
     const [editingPhotos, setEditingPhotos] = useState([]);
     const [savingCustomer, setSavingCustomer] = useState(false);
-    const [shipping, setShipping] = useState(false);
     const [batchDeleting, setBatchDeleting] = useState(false);
-    const [selectedBatchAction, setSelectedBatchAction] = useState('ship');
+    const [selectedBatchAction, setSelectedBatchAction] = useState('archive');
     const [selectedShipBoxUids, setSelectedShipBoxUids] = useState([]);
     const [boxEditVisible, setBoxEditVisible] = useState(false);
     const [editingBox, setEditingBox] = useState(null);
@@ -173,12 +170,16 @@ export default function PackingListDetail() {
 
     const canDeletePackingList = hasPermission(payload?.roles, ['admin', 'store_manager']);
     const canEditPackingListDetail = hasPermission(payload?.roles, ['admin', 'store_manager', 'salesperson']);
-    const canShipBoxes = hasPermission(payload?.roles, ['admin', 'store_manager', 'salesperson']);
     const canEditBoxes = hasPermission(payload?.roles, ['admin', 'store_manager', 'salesperson']);
+    const canUndoShip = hasPermission(payload?.roles, ['admin', 'store_manager']);
 
     useEffect(() => {
         setPayload(getJwtPayload());
     }, []);
+
+    useEffect(() => {
+        console.log(payload);
+    }, [payload]);
 
     useEffect(() => {
         if (uid) {
@@ -404,7 +405,8 @@ export default function PackingListDetail() {
         Modal.confirm({
             title: '确认归档该装箱单吗？',
             content: `唛头：${getMarkText(currentDetail)}。归档后装箱单将不再显示在列表中。`,
-            okText: '归档',
+            okText: '确认归档',
+            okType: 'danger',
             cancelText: '取消',
             onOk: async () => {
                 setDeleting(true);
@@ -643,7 +645,8 @@ export default function PackingListDetail() {
         Modal.confirm({
             title: '确认归档该箱子吗？',
             content: `箱号：${box.box_number || '-'}。归档后箱子将不再显示。`,
-            okText: '归档',
+            okText: '确认归档',
+            okType: 'danger',
             cancelText: '取消',
             onOk: async () => {
                 setDeletingBoxUid(box.uid);
@@ -714,7 +717,8 @@ export default function PackingListDetail() {
         Modal.confirm({
             title: '确认归档所选箱子吗？',
             content: `共选择 ${boxUids.length} 个箱子，归档后箱子将不再显示。`,
-            okText: '归档',
+            okText: '确认归档',
+            okType: 'danger',
             cancelText: '取消',
             onOk: async () => {
                 setBatchDeleting(true);
@@ -830,28 +834,20 @@ export default function PackingListDetail() {
         }
     };
 
-    const shipCandidates = (currentDetail?.boxes || []).filter(
-        (box) => normalizeBoxStatus(box) === BOX_STATUS.PENDING_OUTBOUND
-    );
-    const allShipCandidateUids = shipCandidates.map((box) => box.uid);
     const allSelectableBoxUids = (currentDetail?.boxes || []).map((box) => box.uid);
-    const allBatchCandidateUids = (currentDetail?.boxes || [])
-        .filter((box) => canEditBoxes || normalizeBoxStatus(box) === BOX_STATUS.PENDING_OUTBOUND)
-        .map((box) => box.uid);
-    const selectedShipCount = selectedShipBoxUids.filter((uid) => allShipCandidateUids.includes(uid)).length;
+    const allBatchCandidateUids = canEditBoxes
+        ? (currentDetail?.boxes || []).map((box) => box.uid)
+        : [];
     const selectedSelectableCount = selectedShipBoxUids.filter((uid) => allSelectableBoxUids.includes(uid)).length;
     const selectedPrintableBoxUids = selectedShipBoxUids.filter((uid) => allSelectableBoxUids.includes(uid));
     const selectedBatchCount = selectedShipBoxUids.filter((uid) => allBatchCandidateUids.includes(uid)).length;
     const isShipAllChecked = allSelectableBoxUids.length > 0 && selectedSelectableCount === allSelectableBoxUids.length;
     const isShipIndeterminate = selectedSelectableCount > 0 && selectedSelectableCount < allSelectableBoxUids.length;
-    const canBatchActions = canShipBoxes || canEditBoxes;
+    const canBatchActions = canEditBoxes;
     const batchActionMenuItems = [];
-    if (canShipBoxes) {
-        batchActionMenuItems.push({ key: 'ship', label: '出货' });
-    }
     if (canEditBoxes) {
-        batchActionMenuItems.push({ key: 'archive', label: '归档已选' });
-        batchActionMenuItems.push({ key: 'delete', label: '删除已选' });
+        batchActionMenuItems.push({ key: 'archive', label: '归档已选', danger: true });
+        batchActionMenuItems.push({ key: 'delete', label: '删除已选', danger: true });
     }
 
     const resolvedBatchAction =
@@ -861,13 +857,9 @@ export default function PackingListDetail() {
 
     const currentBatchActionMeta = batchActionMenuItems.find((item) => item.key === resolvedBatchAction);
     const currentBatchActionLoading =
-        resolvedBatchAction === 'ship' ? shipping : resolvedBatchAction === 'delete' ? batchDeleting : false;
+        ['archive', 'delete'].includes(resolvedBatchAction) ? batchDeleting : false;
 
     const handleBatchActionExecute = () => {
-        if (resolvedBatchAction === 'ship') {
-            handleShipSelectedBoxes();
-            return;
-        }
         if (resolvedBatchAction === 'archive') {
             handleArchiveSelectedBoxes();
             return;
@@ -892,78 +884,6 @@ export default function PackingListDetail() {
             return;
         }
         setSelectedShipBoxUids((prev) => Array.from(new Set([...prev, ...allSelectableBoxUids])));
-    };
-
-    const handleShipSingleBox = async (boxUid) => {
-        if (!currentDetail?.uid) return;
-
-        try {
-            const res = await fetch(`${endpoint}/packing-list/${currentDetail.uid}/ship`, {
-                method: 'POST',
-                headers: {
-                    ...getSafeHeader(),
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({ box_uids: [boxUid] })
-            });
-            const data = await res.json();
-
-            if (data.code === 200) {
-                const failedCount = data.data?.failed?.length || 0;
-                if (failedCount > 0) {
-                    messageApi.error(`箱子出货失败`);
-                } else {
-                    messageApi.success(`箱子已出货`);
-                }
-                await handleViewDetail(currentDetail.uid);
-            } else {
-                messageApi.error(data.msg || '出货失败');
-            }
-        } catch (error) {
-            messageApi.error('出货失败');
-            console.error(error);
-        }
-    };
-
-    const handleShipSelectedBoxes = async () => {
-        if (!currentDetail?.uid) return;
-        if (selectedShipCount === 0) {
-            messageApi.warning('请先选择待出库的箱子');
-            return;
-        }
-
-        setShipping(true);
-        try {
-            const boxUids = selectedShipBoxUids.filter((id) => allShipCandidateUids.includes(id));
-            const res = await fetch(`${endpoint}/packing-list/${currentDetail.uid}/ship`, {
-                method: 'POST',
-                headers: {
-                    ...getSafeHeader(),
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({ box_uids: boxUids })
-            });
-            const data = await res.json();
-
-            if (data.code === 200) {
-                const successCount = data.data?.success?.length || 0;
-                const failedCount = data.data?.failed?.length || 0;
-                if (failedCount > 0) {
-                    messageApi.warning(`已出货 ${successCount} 箱，失败 ${failedCount} 箱`);
-                } else {
-                    messageApi.success(`已出货 ${successCount} 箱`);
-                }
-                setSelectedShipBoxUids([]);
-                await handleViewDetail(currentDetail.uid);
-            } else {
-                messageApi.error(data.msg || '出货失败');
-            }
-        } catch (error) {
-            messageApi.error('出货失败');
-            console.error(error);
-        } finally {
-            setShipping(false);
-        }
     };
 
     if (loading) {
@@ -1029,6 +949,7 @@ export default function PackingListDetail() {
                     )}
                     {canDeletePackingList && (
                         <Button
+                            danger
                             onClick={handleArchiveCurrent}
                             loading={deleting}
                         >
@@ -1137,6 +1058,7 @@ export default function PackingListDetail() {
                                         onClick: (e) => setSelectedBatchAction(e.key)
                                     }}
                                     type="primary"
+                                    danger={!!currentBatchActionMeta?.danger}
                                     onClick={handleBatchActionExecute}
                                     loading={currentBatchActionLoading}
                                     disabled={selectedBatchCount === 0 || !resolvedBatchAction}
@@ -1175,6 +1097,7 @@ export default function PackingListDetail() {
                                     canEditBoxes ? (
                                         <Button
                                             type="link"
+                                            danger
                                             loading={deletingBoxUid === box.uid}
                                             onClick={() => handleArchiveBox(box)}
                                         >
@@ -1191,21 +1114,6 @@ export default function PackingListDetail() {
                                         >
                                             删除
                                         </Button>
-                                    ) : null,
-                                    (canShipBoxes && normalizeBoxStatus(box) === BOX_STATUS.PENDING_OUTBOUND) ? (
-                                        <Popconfirm
-                                            title="确定要出货该箱子吗？"
-                                            onConfirm={() => handleShipSingleBox(box.uid)}
-                                            okText="出货"
-                                            cancelText="取消"
-                                        >
-                                            <Button
-                                                type="link"
-                                                icon={<SendOutlined />}
-                                            >
-                                                出货
-                                            </Button>
-                                        </Popconfirm>
                                     ) : null
                                 ].filter(Boolean)}
                             >
@@ -1545,7 +1453,7 @@ export default function PackingListDetail() {
                             <Text type="secondary">当前状态</Text>
                             {renderBoxStatusTag(editingBox)}
                         </Space>
-                        {canEditBoxes && normalizeBoxStatus(editingBox) === BOX_STATUS.OUTBOUND && (
+                        {canUndoShip && normalizeBoxStatus(editingBox) === BOX_STATUS.OUTBOUND && (
                             <Button
                                 danger
                                 loading={undoShipping}
@@ -1609,10 +1517,18 @@ export default function PackingListDetail() {
                             <InputNumber min={0.01} step={0.1} style={{ width: 180 }} placeholder="未称重可留空" />
                         </Form.Item>
                         <Form.Item name="transfer_id" label="转单号" style={{ marginBottom: 0 }}>
-                            <Input placeholder="可选" style={{ width: 220 }} />
+                            <Input
+                                placeholder={normalizeBoxStatus(editingBox) === BOX_STATUS.OUTBOUND ? '撤销出货后可修改' : '可选'}
+                                disabled={normalizeBoxStatus(editingBox) === BOX_STATUS.OUTBOUND}
+                                style={{ width: 220 }}
+                            />
                         </Form.Item>
                         <Form.Item name="waybill_id" label="运单号" style={{ marginBottom: 0 }}>
-                            <Input placeholder="可选" style={{ width: 220 }} />
+                            <Input
+                                placeholder={normalizeBoxStatus(editingBox) === BOX_STATUS.OUTBOUND ? '撤销出货后可修改' : '可选'}
+                                disabled={normalizeBoxStatus(editingBox) === BOX_STATUS.OUTBOUND}
+                                style={{ width: 220 }}
+                            />
                         </Form.Item>
                     </Space>
 

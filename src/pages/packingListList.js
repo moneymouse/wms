@@ -40,6 +40,13 @@ const BOX_STATUS_META = {
 
 const PACKING_DRAFT_META = { text: '草稿', color: 'default', level: -1 };
 
+const STATUS_TEXT_TO_CODE = {
+    '草稿': 'draft',
+    '待分配': 'pending_assign',
+    '待出库': 'pending_outbound',
+    '已出库': 'outbound'
+};
+
 const getMarkText = (record) => record?.list_number || record?.mark || '-';
 
 const normalizeBoxStatus = (box) => {
@@ -134,7 +141,7 @@ export default function PackingListList() {
     useEffect(() => {
         fetchPackingLists();
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [page, pageSize, search, reloadTick]);
+    }, [page, pageSize, search, status, excludeStatus, reloadTick]);
 
     const fetchPackingLists = async () => {
         setLoading(true);
@@ -144,6 +151,17 @@ export default function PackingListList() {
                 s: pageSize,
                 ...(search && { q: search })
             });
+
+            if (status && status.length > 0) {
+                const mappedStatus = status
+                    .map((s) => STATUS_TEXT_TO_CODE[s])
+                    .filter(Boolean)
+                    .join(',');
+                if (mappedStatus) {
+                    params.set('box_status', mappedStatus);
+                    params.set('exclude_box_status', String(excludeStatus));
+                }
+            }
 
             const res = await fetch(`${endpoint}/packing-lists?${params}`, {
                 headers: getSafeHeader()
@@ -275,12 +293,7 @@ export default function PackingListList() {
         }
     };
 
-    const filteredPackingLists = (packingLists || []).filter((record) => {
-        if (!status || status.length === 0) return true;
-        const meta = getPackingListStatusMeta(record);
-        const inSelected = status.includes(meta.text);
-        return excludeStatus ? !inSelected : inSelected;
-    });
+    const filteredPackingLists = packingLists || [];
     const batchPrintKeyword = batchPrintSearch.trim().toLowerCase();
     const filteredBatchPrintLists = batchPrintKeyword
         ? filteredPackingLists.filter((record) => {
@@ -420,7 +433,7 @@ export default function PackingListList() {
                     pagination={{
                         current: page,
                         pageSize: pageSize,
-                        total: (status && status.length > 0) ? filteredPackingLists.length : total,
+                        total: total,
                         showSizeChanger: true,
                         showQuickJumper: true,
                         showTotal: (total) => `共 ${total} 条`,
