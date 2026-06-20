@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
     Badge,
     Button,
@@ -14,7 +14,6 @@ import {
     Table,
     Tag,
     Timeline,
-    Tooltip,
     Typography
 } from "antd";
 import orderProperty from "../common/orderProperty";
@@ -28,7 +27,8 @@ import ExportButton from "../components/ExportButton";
 import trackStatus from "../common/trackStatus";
 import GoodInput from "../components/GoodName";
 import BoxAssignmentModal from "../components/BoxAssignmentModal";
-import { DeleteOutlined, DollarOutlined, InboxOutlined, PrinterOutlined, QuestionCircleOutlined } from "@ant-design/icons";
+import Transportation from "../components/transportation";
+import { DeleteOutlined, DollarOutlined, InboxOutlined, PrinterOutlined } from "@ant-design/icons";
 import { hasPermission } from "../common/roleConfig";
 
 const passHash = '18667b982b1c774d3c096422e457906afb227cfc7f956d3f4fc1f9bc07b98862';
@@ -49,22 +49,6 @@ const verify = () => {
 }
 
 let focusFlag = '';
-
-function groupTransportationOptions(modes) {
-    const groups = {};
-    (modes || []).forEach((mode) => {
-        const group = mode.channel_group || '其他';
-        if (!groups[group]) groups[group] = [];
-        groups[group].push({
-            value: mode.id,
-            label: mode.name,
-            searchText: mode.name,
-            minPrice: Number(mode.min_price || 0),
-            mode,
-        });
-    });
-    return Object.entries(groups).map(([label, options]) => ({ label, options }));
-}
 
 function base64ToBlob(base64, mimeType) {
     const binary = window.atob(base64);
@@ -175,7 +159,6 @@ export default function OrderDetail() {
     const [quoteSubmitting, setQuoteSubmitting] = useState(false);
     const [quoteHistory, setQuoteHistory] = useState([]);
     const [quotePdfPrinting, setQuotePdfPrinting] = useState(false);
-    const selectedQuoteModeId = Form.useWatch('transportation_mode_id', quoteForm);
 
     // 客户联系信息状态
     const [customerContact, setCustomerContact] = useState({ phone: '', wechat: '' });
@@ -285,12 +268,10 @@ export default function OrderDetail() {
     const canQuote = hasPermission(userRoles, ['salesperson']);
     const canEditSalesman = hasPermission(jwtPayload?.roles, ['admin'])
         || (currentUserId !== undefined && salesman?.id !== undefined && Number(currentUserId) === Number(salesman.id));
-    const selectedQuoteMode = transportationModes.find(item => Number(item.id) === Number(selectedQuoteModeId));
     const finalQuote = quoteHistory.find(item => item.is_final);
-    const quoteTransportationOptions = useMemo(
-        () => groupTransportationOptions(transportationModes),
-        [transportationModes]
-    );
+    const currentTransportation = (descriptionData.transportation || '').trim();
+    const currentQuoteMode = transportationModes.find(item => item.name === currentTransportation);
+    const currentMinPrice = currentQuoteMode ? Number(currentQuoteMode.min_price || 0) : 0;
 
     const fetchTransportationModes = async () => {
         try {
@@ -321,10 +302,10 @@ export default function OrderDetail() {
     };
 
     const openQuoteModal = async () => {
-        const modes = transportationModes.length > 0 ? transportationModes : await fetchTransportationModes();
-        const matched = modes.find(item => item.name === descriptionData.transportation);
+        if (transportationModes.length === 0) {
+            await fetchTransportationModes();
+        }
         quoteForm.setFieldsValue({
-            transportation_mode_id: matched?.id,
             quoted_price: undefined,
             quote_remark: '',
         });
@@ -336,14 +317,12 @@ export default function OrderDetail() {
     const submitQuote = async () => {
         try {
             const values = await quoteForm.validateFields();
-            const selectedMode = transportationModes.find(item => Number(item.id) === Number(values.transportation_mode_id));
             setQuoteSubmitting(true);
             const res = await fetch(`${endpoint}/orders/${order_id}/quotes`, {
                 method: 'POST',
                 headers: { ...getSafeHeader(), 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    ...values,
-                    transportation_name: selectedMode?.name,
+                    quote_remark: values.quote_remark,
                     quoted_price: Number(values.quoted_price || 0),
                 })
             });
@@ -930,40 +909,14 @@ export default function OrderDetail() {
                 width={760}
             >
                 <Form form={quoteForm} layout="vertical">
-                    <Form.Item label="货运渠道" required>
-                        <Space.Compact style={{ width: '100%' }}>
-                            <Form.Item
-                                name="transportation_mode_id"
-                                noStyle
-                                rules={[{ required: true, message: '请选择货运渠道' }]}
-                            >
-                                <Select
-                                    showSearch
-                                    optionFilterProp="searchText"
-                                    optionLabelProp="selectedLabel"
-                                    style={{ width: 'calc(100% - 40px)' }}
-                                    options={quoteTransportationOptions.map(group => ({
-                                        label: group.label,
-                                        options: group.options.map(option => ({
-                                            ...option,
-                                            selectedLabel: option.label,
-                                            label: (
-                                                <Space style={{ width: '100%', justifyContent: 'space-between' }}>
-                                                    <span>{option.label}</span>
-                                                    <Typography.Text type="secondary">
-                                                        最低 {Number(option.minPrice || 0).toFixed(2)}
-                                                    </Typography.Text>
-                                                </Space>
-                                            )
-                                        }))
-                                    }))}
-                                />
-                            </Form.Item>
-                            <Tooltip title={selectedQuoteMode ? `最低报价：${Number(selectedQuoteMode.min_price || 0).toFixed(2)}` : '请选择货运渠道'}>
-                                <Button htmlType="button" icon={<QuestionCircleOutlined />} />
-                            </Tooltip>
-                        </Space.Compact>
-                    </Form.Item>
+                    <Descriptions size="small" bordered style={{ marginBottom: 16 }}>
+                        <Descriptions.Item label="当前运输方式">
+                            {currentTransportation || '-'}
+                        </Descriptions.Item>
+                        <Descriptions.Item label="最低报价">
+                            {currentMinPrice.toFixed(2)}
+                        </Descriptions.Item>
+                    </Descriptions>
                     <Form.Item name="quoted_price" label="报价" rules={[{ required: true, message: '请输入报价' }]}>
                         <InputNumber min={0} precision={2} style={{ width: '100%' }} />
                     </Form.Item>
@@ -1030,9 +983,23 @@ export default function OrderDetail() {
                     if (v.name === 'transportation') {
                         return (
                             <Descriptions.Item key={k} span={v.span || 1} label={v.label.split('/')[0]}>
-                                <Typography.Text copyable={!!descriptionData[v.name]}>
-                                    {descriptionData[v.name]}
-                                </Typography.Text>
+                                {TransportationEditing === 'transportation' ? (
+                                    <Transportation
+                                        onEnter={() => setTransportationEditing("")}
+                                        onBlur={() => setTransportationEditing("")}
+                                        onChange={handleDescriptionDataChange}
+                                        defaultValue={descriptionData[v.name]}
+                                    />
+                                ) : (
+                                    <Typography.Text
+                                        copyable={!!descriptionData[v.name]}
+                                        editable={{
+                                            onStart: () => setTransportationEditing(v.name),
+                                        }}
+                                    >
+                                        {descriptionData[v.name]}
+                                    </Typography.Text>
+                                )}
                             </Descriptions.Item>
                         );
                     }

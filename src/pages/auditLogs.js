@@ -36,18 +36,42 @@ export default function AuditLogs() {
     const [isAdmin, setIsAdmin] = useState(false);
     const navigate = useNavigate();
 
-    const fetchLogs = async () => {
+    const fetchLogs = async (
+        nextPagination = pagination,
+        nextSortField = sortField,
+        nextSortOrder = sortOrder
+    ) => {
         setTableLoading(true);
         try {
-            const response = await fetch(`${endpoint}/audit-logs`, {
+            const requestPagination = { ...pagination, ...nextPagination };
+            const params = new URLSearchParams({
+                p: requestPagination.current,
+                s: requestPagination.pageSize,
+                sf: nextSortField || 'create_date',
+                so: Number(nextSortOrder !== 'ascend'),
+            });
+
+            const response = await fetch(`${endpoint}/audit-logs?${params.toString()}`, {
                 headers: getSafeHeader(),
             });
             const result = await response.json();
-            const data = (result.data || []).map((item, index) => ({ ...item, key: item.id || index }));
+
+            if (result.code !== 200) {
+                message.error(result.msg || '获取审计日志失败');
+                return;
+            }
+
+            const data = (result.data || []).map((item, index) => ({
+                ...item,
+                key: item.id ?? `${requestPagination.current}-${index}`,
+            }));
             setLogs(data);
             setPagination(prev => ({
                 ...prev,
-                total: data.length,
+                ...requestPagination,
+                current: result.page || requestPagination.current,
+                pageSize: result.page_size || requestPagination.pageSize,
+                total: result.total || 0,
             }));
         } catch (error) {
             console.error('获取审计日志失败:', error);
@@ -89,26 +113,11 @@ export default function AuditLogs() {
     }, [navigate]);
 
     const handleTableChange = (newPagination, filters, sorter) => {
-        setPagination({ ...newPagination });
-        if (sorter.field) {
-            setSortField(sorter.field);
-            setSortOrder(sorter.order);
-        }
-    };
-
-    const getSortedData = () => {
-        const sortedData = [...logs];
-        if (sortField && sortOrder) {
-            sortedData.sort((a, b) => {
-                const fieldA = a[sortField] || '';
-                const fieldB = b[sortField] || '';
-                if (sortOrder === 'ascend') {
-                    return fieldA > fieldB ? 1 : -1;
-                }
-                return fieldA < fieldB ? 1 : -1;
-            });
-        }
-        return sortedData;
+        const nextSortField = sorter.field || 'create_date';
+        const nextSortOrder = sorter.order || 'descend';
+        setSortField(nextSortField);
+        setSortOrder(nextSortOrder);
+        fetchLogs(newPagination, nextSortField, nextSortOrder);
     };
 
     const columns = [
@@ -203,8 +212,8 @@ export default function AuditLogs() {
             <Title level={4}>系统审计日志</Title>
             <Table
                 columns={columns}
-                dataSource={getSortedData()}
-                rowKey={(record) => record.key}
+                dataSource={logs}
+                rowKey={(record) => record.id ?? record.key}
                 pagination={pagination}
                 loading={tableLoading}
                 onChange={handleTableChange}

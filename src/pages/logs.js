@@ -22,21 +22,45 @@ export default function () {
     const [isAdmin, setIsAdmin] = useState(false);
     const navigate = useNavigate();
 
-    const fetchLogs = async () => {
+    const fetchLogs = async (
+        nextPagination = pagination,
+        nextSortField = sortField,
+        nextSortOrder = sortOrder
+    ) => {
         setTableLoading(true);
         try {
-            const response = await (await fetch(`${endpoint}/logs`, {
+            const requestPagination = { ...pagination, ...nextPagination };
+            const params = new URLSearchParams({
+                p: requestPagination.current,
+                s: requestPagination.pageSize,
+                sf: nextSortField || 'log_date',
+                so: Number(nextSortOrder !== 'ascend'),
+            });
+
+            const response = await (await fetch(`${endpoint}/logs?${params.toString()}`, {
                 headers: getSafeHeader()
             })).json();
-            console.log(response);
-            const data = response.data.map((v, i) => ({ ...v, key: i })) || [];
+
+            if (response.code !== 200) {
+                message.error(response.msg || '获取日志失败');
+                return;
+            }
+
+            const data = (response.data || []).map((v, i) => ({
+                ...v,
+                key: v.id ?? `${requestPagination.current}-${i}`,
+            }));
             setLogs(data);
-            setPagination({
-                ...pagination,
-                total: data.length,
-            });
+            setPagination(prev => ({
+                ...prev,
+                ...requestPagination,
+                current: response.page || requestPagination.current,
+                pageSize: response.page_size || requestPagination.pageSize,
+                total: response.total || 0,
+            }));
         } catch (error) {
             console.error('获取日志失败:', error);
+            message.error('获取日志失败');
         } finally {
             setTableLoading(false);
         }
@@ -74,43 +98,19 @@ export default function () {
             }
         } else {
             message.error('请先登录系统');
-            console.log("abc");
             setTimeout(() => {
                 navigate('/');
             }, 2000);
         }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [navigate]);
 
     const handleTableChange = (newPagination, filters, sorter) => {
-        setPagination({
-            ...newPagination,
-        });
-
-        if (sorter.field) {
-            setSortField(sorter.field);
-            setSortOrder(sorter.order);
-        }
-    };
-
-    // 本地排序函数
-    const getSortedData = () => {
-        // 复制一份日志数据避免直接修改原数据
-        const sortedData = [...logs];
-
-        if (sortField && sortOrder) {
-            sortedData.sort((a, b) => {
-                const fieldA = a[sortField];
-                const fieldB = b[sortField];
-
-                if (sortOrder === 'ascend') {
-                    return fieldA > fieldB ? 1 : -1;
-                } else {
-                    return fieldA < fieldB ? 1 : -1;
-                }
-            });
-        }
-
-        return sortedData;
+        const nextSortField = sorter.field || 'log_date';
+        const nextSortOrder = sorter.order || 'descend';
+        setSortField(nextSortField);
+        setSortOrder(nextSortOrder);
+        fetchLogs(newPagination, nextSortField, nextSortOrder);
     };
 
     const columns = [
@@ -217,8 +217,8 @@ export default function () {
             <Title level={4}>系统操作日志</Title>
             <Table
                 columns={columns}
-                dataSource={getSortedData()}
-                rowKey={(record) => record.key}
+                dataSource={logs}
+                rowKey={(record) => record.id ?? record.key}
                 pagination={pagination}
                 loading={tableLoading}
                 onChange={handleTableChange}

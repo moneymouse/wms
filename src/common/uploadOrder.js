@@ -27,6 +27,17 @@ function downloadArrayAsText(array, filename='上传结果记录') {
 const {Dragger} = Upload;
 const FileComponent = ({mode}) => {
     const [fileList, setFileList] = React.useState([]);
+    const parseResponseBody = (file) => {
+        if (file.response) return file.response;
+        const raw = file.xhr?.response;
+        if (!raw) return {};
+        try {
+            return JSON.parse(raw);
+        } catch (e) {
+            return {code: file.xhr?.status || 500, msg: raw || '上传失败'};
+        }
+    };
+
     const props = (mode) => ({
         name: 'file',
         multiple: true,
@@ -34,34 +45,34 @@ const FileComponent = ({mode}) => {
         action: `${endpoint}/order/upload/${mode}`,
         async onChange(info) {
             const newFileList = [];
-            let total = 0;
             for (const file of info.fileList) {
                 const status = file.status;
-                if (status === 'done' && file.xhr) {
-                    const responseBody = JSON.parse(file.xhr.response);
-                    responseBody.code !== 200 && await message.error("转单号在17Track注册失败。");
-                    total += Number(responseBody.cargo_count);
-                    const successful_list = responseBody['success_list'].map(item => item[1]);
-                    const cargo_list = Object.values(responseBody['cargo_list']);
+                if ((status === 'done' || status === 'error') && (file.xhr || file.response)) {
+                    const responseBody = parseResponseBody(file);
+                    if (responseBody.code !== 200) {
+                        await message.error(responseBody.msg || `${file.name} 上传失败！`);
+                    }
+                    const successful_list = (responseBody['success_list'] || []).map(item => item[1]);
+                    const cargo_list = Object.values(responseBody['cargo_list'] || {});
                     const successSet = new Set(successful_list);
                     // 因为格式问题或者是未在系统中存储原单号导致录入系统失败的转单号列表
                     const fail_list = cargo_list.filter(item => !successSet.has(item))
                         .map(item => item === false ? "转单号未填" : item);
                     // 订单跟踪失败的列表
-                    const rejected_list = responseBody['code'] === 502 ? responseBody['rejected']
-                        .map(item => item['number']) : [];
+                    const rejected_list = responseBody['code'] === 502 ? (responseBody['rejected'] || [])
+                        .map(item => item['number'] || item) : [];
+                    const error_lines = responseBody.code !== 200 ? [`失败原因: ${responseBody.msg || '上传失败'}`] : [];
 
-                    const result_link = downloadArrayAsText([`上传成功订单数: ${Number(responseBody.cargo_count)}单`,
-                            '上传失败订单:', ...fail_list, '\n跟踪失败订单:', ...rejected_list],
+                    const result_link = downloadArrayAsText([`上传成功订单数: ${Number(responseBody.cargo_count || 0)}单`,
+                            ...error_lines, '上传失败订单:', ...fail_list, '\n跟踪失败订单:', ...rejected_list],
                         `${file.name}上传结果记录`);
 
                     file.status = responseBody.code === 200 && fail_list.length === 0
                         && rejected_list.length === 0 ? 'done' : 'error';
                     file.url = result_link;
                     newFileList.push(file);
-                }
-                if (status === 'error') {
-                    await message.error(`${info.file.name} 上传失败！`);
+                } else if (status === 'error') {
+                    await message.error(`${file.name} 上传失败！`);
                 }
             }
             // if (total > 0) await message.success(`共${total}单上传。`)

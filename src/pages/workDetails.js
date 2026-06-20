@@ -13,7 +13,7 @@ import {
     Statistic
 } from 'antd';
 import { ReloadOutlined } from '@ant-design/icons';
-import { useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { endpoint } from '../config';
 import getSafeHeader from '../common/safeHeader';
 import { hasPermission } from '../common/roleConfig';
@@ -55,8 +55,10 @@ export default function WorkDetails() {
         () => payload?.roles || (payload?.role ? [payload.role] : []),
         [payload]
     );
-    const currentUserId = payload?.user_id;
+    const currentUserId = payload?.user_id || payload?.id;
     const canSelectWorker = hasPermission(userRoles, ['admin', 'finance']);
+    const detailWorkerRoles = detailData?.worker?.roles || [];
+    const showOrderTable = hasPermission(detailWorkerRoles, ['salesperson']) || (detailData?.orders || []).length > 0;
 
     const selectedWorkerOptions = useMemo(
         () => workers.map(worker => ({ label: `${worker.name} (${worker.phone || '-'})`, value: worker.id })),
@@ -87,7 +89,7 @@ export default function WorkDetails() {
 
         (async () => {
             try {
-                const res = await fetch(`${endpoint}/work/workers`, { headers: getSafeHeader() });
+                const res = await fetch(`${endpoint}/work/workers?roles=worker,salesperson`, { headers: getSafeHeader() });
                 const data = await res.json();
                 if (data.code === 200) {
                     const list = data.data || [];
@@ -207,9 +209,42 @@ export default function WorkDetails() {
         }
     ];
 
+    const orderColumns = [
+        {
+            title: '订单号',
+            dataIndex: 'order_id',
+            key: 'order_id',
+            width: 220,
+            render: (value, record) => (
+                record.uid
+                    ? <Link to={`/orders/${record.uid}`}>{value || record.uid}</Link>
+                    : (value || '-')
+            )
+        },
+        {
+            title: '总重量(kg)',
+            dataIndex: 'total_weight',
+            key: 'total_weight',
+            width: 140,
+            align: 'right',
+            render: (value) => Number(value || 0).toFixed(2)
+        },
+        {
+            title: '渠道',
+            dataIndex: 'transportation',
+            key: 'transportation',
+            ellipsis: true,
+            render: (value) => value || '-'
+        }
+    ];
+
     const groups = (detailData?.groups || []).map(group => ({
         ...group,
         key: group.packing_list_uid
+    }));
+    const orders = (detailData?.orders || []).map(order => ({
+        ...order,
+        key: order.uid
     }));
 
     return (
@@ -254,7 +289,7 @@ export default function WorkDetails() {
                 </Row>
             </Card>
 
-            <Card size="small" bodyStyle={{ padding: 0 }}>
+            <Card size="small" bodyStyle={{ padding: 0 }} title="打包数量">
                 <Table
                     rowKey="key"
                     loading={loading}
@@ -276,6 +311,25 @@ export default function WorkDetails() {
                     size="small"
                 />
             </Card>
+
+            {showOrderTable && (
+                <Card
+                    size="small"
+                    bodyStyle={{ padding: 0 }}
+                    title="订单"
+                    style={{ marginTop: 16 }}
+                >
+                    <Table
+                        rowKey="key"
+                        loading={loading}
+                        dataSource={orders}
+                        columns={orderColumns}
+                        pagination={{ pageSize: 20, showSizeChanger: true }}
+                        scroll={{ x: 'max-content' }}
+                        size="small"
+                    />
+                </Card>
+            )}
         </div>
     );
 }
