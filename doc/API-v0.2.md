@@ -106,6 +106,11 @@
 - **URL:** `GET /api/logs`
 - **认证:** 需要
 - **权限:** `admin`
+- **查询参数:**
+  - `p`: 页码，默认 `1`
+  - `s`: 每页条数，默认 `10`，最大 `200`
+  - `sf`: 排序字段，默认 `log_date`
+  - `so`: 排序方向，`1` 倒序，`0` 正序
 - **说明:** 返回日志时会一并包含发起操作的用户姓名和角色，便于在日志页面直接识别操作者。
 
 **响应示例:**
@@ -113,8 +118,12 @@
 ```json
 {
   "code": 200,
+  "total": 123,
+  "page": 1,
+  "page_size": 10,
   "data": [
     {
+      "id": 1,
       "log_date": "2026-03-26 15:00:00",
       "desc": "Create order.",
       "user_name": "张三",
@@ -124,6 +133,46 @@
       "method": "POST",
       "kwargs": {},
       "json": {}
+    }
+  ]
+}
+```
+
+### 5.2 获取审计日志
+
+获取系统审计日志。
+
+- **URL:** `GET /api/audit-logs`
+- **认证:** 需要
+- **权限:** `admin`
+- **查询参数:**
+  - `p`: 页码，默认 `1`
+  - `s`: 每页条数，默认 `10`，最大 `200`
+  - `sf`: 排序字段，默认 `create_date`
+  - `so`: 排序方向，`1` 倒序，`0` 正序
+
+**响应示例:**
+
+```json
+{
+  "code": 200,
+  "total": 50,
+  "page": 1,
+  "page_size": 10,
+  "data": [
+    {
+      "id": 1,
+      "event_type": "order_quote",
+      "target_type": "order",
+      "target_id": "ORDER001",
+      "action": "quote_submit",
+      "operator_name": "张三",
+      "operator_role": "admin",
+      "before_data": null,
+      "after_data": {},
+      "remark": "提交报价",
+      "ip": "192.168.1.1",
+      "create_date": "2026-03-26 15:00:00"
     }
   ]
 }

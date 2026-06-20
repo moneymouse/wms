@@ -227,8 +227,8 @@ class TestEndToEndWorkflows(BaseControllerTest):
 
     def test_complete_batch_waybill_upload_workflow(self, employee_token):
         """测试完整的批量运单上传流程"""
-        with patch("services.cargo_service.parse_waybill_file") as mock_parse, patch(
-            "services.cargo_service.apply_waybill_table"
+        with patch("controllers.cargo_controller.parse_waybill_file") as mock_parse, patch(
+            "controllers.cargo_controller.apply_waybill_table"
         ) as mock_apply, patch(
             "services.cargo_service.generate_excel"
         ) as mock_generate_excel:

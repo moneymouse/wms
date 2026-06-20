@@ -173,8 +173,8 @@ class TestCargoControllerPart2(BaseControllerTest, APITestMixin, FileTestMixin):
             stream=file_obj, filename="waybill.txt", content_type="text/plain"
         )
 
-        with patch("services.cargo_service.parse_waybill_file") as mock_parse, patch(
-            "services.cargo_service.apply_waybill_table"
+        with patch("controllers.cargo_controller.parse_waybill_file") as mock_parse, patch(
+            "controllers.cargo_controller.apply_waybill_table"
         ) as mock_apply:
 
             transfer_map = {
@@ -205,8 +205,8 @@ class TestCargoControllerPart2(BaseControllerTest, APITestMixin, FileTestMixin):
         excel_data = FileFactory.create_waybill_excel_data(waybill_data)
         file_obj = self.create_test_excel_file(excel_data, "waybill.xlsx")
 
-        with patch("services.cargo_service.parse_waybill_file") as mock_parse, patch(
-            "services.cargo_service.apply_waybill_table"
+        with patch("controllers.cargo_controller.parse_waybill_file") as mock_parse, patch(
+            "controllers.cargo_controller.apply_waybill_table"
         ) as mock_apply:
 
             transfer_map = {
@@ -229,8 +229,8 @@ class TestCargoControllerPart2(BaseControllerTest, APITestMixin, FileTestMixin):
         """测试上传转运单时17track错误"""
         file_obj = BytesIO(b"TR001,WB001")
 
-        with patch("services.cargo_service.parse_waybill_file") as mock_parse, patch(
-            "services.cargo_service.apply_waybill_table"
+        with patch("controllers.cargo_controller.parse_waybill_file") as mock_parse, patch(
+            "controllers.cargo_controller.apply_waybill_table"
         ) as mock_apply:
 
             mock_parse.return_value = {"TR001": "WB001"}
@@ -255,8 +255,8 @@ class TestCargoControllerPart2(BaseControllerTest, APITestMixin, FileTestMixin):
         """测试上传转运单时一般错误"""
         file_obj = BytesIO(b"TR001,WB001")
 
-        with patch("services.cargo_service.parse_waybill_file") as mock_parse, patch(
-            "services.cargo_service.apply_waybill_table"
+        with patch("controllers.cargo_controller.parse_waybill_file") as mock_parse, patch(
+            "controllers.cargo_controller.apply_waybill_table"
         ) as mock_apply:
 
             mock_parse.return_value = {"TR001": "WB001"}
@@ -276,6 +276,98 @@ class TestCargoControllerPart2(BaseControllerTest, APITestMixin, FileTestMixin):
             json_data = self.assert_response_json(response, ["code", "msg"])
             assert json_data["code"] == 500
             assert "Register Error" in json_data["msg"]
+
+    def test_upload_waybill_parse_value_error_returns_standard_json(self, employee_token):
+        """测试解析格式错误时返回标准接口错误"""
+        file_obj = BytesIO(b"bad content")
+
+        with patch("controllers.cargo_controller.parse_waybill_file") as mock_parse:
+            mock_parse.side_effect = ValueError("文件格式不正确")
+
+            response = self.client.post(
+                f"{self.base_url}/order/upload/transfer_table",
+                data={"file": (file_obj, "waybill.txt"), "filename": "waybill.txt"},
+                headers={"Authorization": f"Bearer {employee_token}"},
+            )
+
+            self.assert_response_code(response, 400)
+            json_data = self.assert_response_json(
+                response, ["code", "msg", "cargo_count", "success_list", "cargo_list"]
+            )
+            assert json_data["code"] == 400
+            assert json_data["msg"] == "文件格式不正确"
+            assert json_data["cargo_count"] == 0
+            assert json_data["success_list"] == []
+            assert json_data["cargo_list"] == {}
+
+    def test_upload_waybill_missing_filename_returns_standard_json(self, employee_token):
+        """测试缺少filename字段时返回标准接口错误"""
+        file_obj = BytesIO(b"TR001,WB001")
+
+        response = self.client.post(
+            f"{self.base_url}/order/upload/transfer_table",
+            data={"file": (file_obj, "waybill.txt")},
+            headers={"Authorization": f"Bearer {employee_token}"},
+        )
+
+        self.assert_response_code(response, 400)
+        json_data = self.assert_response_json(
+            response, ["code", "msg", "cargo_count", "success_list", "cargo_list"]
+        )
+        assert json_data["code"] == 400
+        assert json_data["msg"] == "文件名不能为空"
+        assert json_data["cargo_count"] == 0
+        assert json_data["success_list"] == []
+        assert json_data["cargo_list"] == {}
+
+    def test_upload_waybill_db_value_error_returns_standard_json(self, employee_token):
+        """测试DB/Service层业务错误时返回标准接口错误"""
+        file_obj = BytesIO(b"TR001,WB001")
+
+        with patch("controllers.cargo_controller.parse_waybill_file") as mock_parse, patch(
+            "controllers.cargo_controller.apply_waybill_table"
+        ) as mock_apply:
+            mock_parse.return_value = {"TR001": "WB001"}
+            mock_apply.side_effect = ValueError("Outbound box waybill cannot be modified")
+
+            response = self.client.post(
+                f"{self.base_url}/order/upload/transfer_table",
+                data={"file": (file_obj, "waybill.txt"), "filename": "waybill.txt"},
+                headers={"Authorization": f"Bearer {employee_token}"},
+            )
+
+            self.assert_response_code(response, 400)
+            json_data = self.assert_response_json(
+                response, ["code", "msg", "cargo_count", "success_list", "cargo_list"]
+            )
+            assert json_data["code"] == 400
+            assert "Outbound box waybill cannot be modified" in json_data["msg"]
+            assert json_data["cargo_count"] == 0
+            assert json_data["success_list"] == []
+            assert json_data["cargo_list"] == {"TR001": "WB001"}
+
+    def test_upload_waybill_unexpected_error_returns_standard_json(self, employee_token):
+        """测试未知异常时返回标准接口错误"""
+        file_obj = BytesIO(b"TR001,WB001")
+
+        with patch("controllers.cargo_controller.parse_waybill_file") as mock_parse:
+            mock_parse.side_effect = RuntimeError("unexpected failure")
+
+            response = self.client.post(
+                f"{self.base_url}/order/upload/transfer_table",
+                data={"file": (file_obj, "waybill.txt"), "filename": "waybill.txt"},
+                headers={"Authorization": f"Bearer {employee_token}"},
+            )
+
+            self.assert_response_code(response, 500)
+            json_data = self.assert_response_json(
+                response, ["code", "msg", "cargo_count", "success_list", "cargo_list"]
+            )
+            assert json_data["code"] == 500
+            assert "上传转单号失败" in json_data["msg"]
+            assert json_data["cargo_count"] == 0
+            assert json_data["success_list"] == []
+            assert json_data["cargo_list"] == {}
 
     def test_upload_waybill_invalid_mode(self, employee_token):
         """测试无效的上传模式"""

@@ -1229,6 +1229,72 @@ x-token: <JWT_TOKEN>
 - `view_single`: 查看单个客户详情
 - `update`: 更新客户联系信息
 
+### 5.2 操作日志列表
+
+- **URL:** `GET /api/logs`
+- **认证:** 需要
+- **权限:** `admin`
+- **查询参数:** `p` 页码、`s` 每页条数、`sf` 排序字段、`so` 排序方向（`1`倒序，`0`正序）
+
+**响应示例:**
+
+```json
+{
+  "code": 200,
+  "total": 123,
+  "page": 1,
+  "page_size": 10,
+  "data": [
+    {
+      "id": 1,
+      "log_date": "2026-03-26 15:00:00",
+      "desc": "Create order.",
+      "user_name": "张三",
+      "user_role": "admin",
+      "pc_name": "WMS-PC",
+      "ip": "192.168.1.1",
+      "method": "POST",
+      "kwargs": {},
+      "json": {}
+    }
+  ]
+}
+```
+
+### 5.3 系统审计日志列表
+
+- **URL:** `GET /api/audit-logs`
+- **认证:** 需要
+- **权限:** `admin`
+- **查询参数:** `p` 页码、`s` 每页条数、`sf` 排序字段、`so` 排序方向（`1`倒序，`0`正序）
+
+**响应示例:**
+
+```json
+{
+  "code": 200,
+  "total": 50,
+  "page": 1,
+  "page_size": 10,
+  "data": [
+    {
+      "id": 1,
+      "event_type": "order_quote",
+      "target_type": "order",
+      "target_id": "ORDER001",
+      "action": "quote_submit",
+      "operator_name": "张三",
+      "operator_role": "admin",
+      "before_data": null,
+      "after_data": {},
+      "remark": "提交报价",
+      "ip": "192.168.1.1",
+      "create_date": "2026-03-26 15:00:00"
+    }
+  ]
+}
+```
+
 ---
 
 ## 6. 其他

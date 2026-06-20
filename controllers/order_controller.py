@@ -428,8 +428,6 @@ def get_order_quotes(uid):
 @allow(role=["salesperson"])
 def create_order_quote(uid):
     body = json.loads(request.data or "{}")
-    transportation_mode_id = body.get("transportation_mode_id")
-    transportation_name = (body.get("transportation_name") or "").strip()
     quoted_price = body.get("quoted_price")
     quote_remark = body.get("quote_remark")
 
@@ -449,29 +447,21 @@ def create_order_quote(uid):
         if order is None:
             return jsonify({"code": 404, "msg": "订单不存在"}), 404
 
+        transportation_name = (order.transportation or "").strip()
         mode = None
-        if transportation_mode_id:
-            mode = (
-                session.query(TransportationModeTable)
-                .filter(TransportationModeTable.id == int(transportation_mode_id))
-                .first()
-            )
-        if mode is None and transportation_name:
+        if transportation_name:
             mode = (
                 session.query(TransportationModeTable)
                 .filter(TransportationModeTable.name == transportation_name)
                 .first()
             )
-        if mode is None and order.transportation:
-            mode = (
-                session.query(TransportationModeTable)
-                .filter(TransportationModeTable.name == order.transportation)
-                .first()
-            )
-        if mode is None:
-            return jsonify({"code": 404, "msg": "运输方式不存在，请先维护渠道成本"}), 404
 
-        status = "adopted" if quoted_price >= float(mode.min_price or 0) else "pending"
+        transportation_mode_id = mode.id if mode else None
+        quote_transportation_name = mode.name if mode else transportation_name
+        channel_cost = float(mode.cost or 0) if mode else 0
+        min_price = float(mode.min_price or 0) if mode else 0
+
+        status = "adopted" if quoted_price >= min_price else "pending"
         is_final = status == "adopted"
         if is_final:
             (
@@ -479,16 +469,16 @@ def create_order_quote(uid):
                 .filter(OrderQuoteVersionTable.order_uid == uid)
                 .update({"is_final": False})
             )
-            order.transportation = mode.name
+            order.transportation = quote_transportation_name
             order.update_date = now
 
         quote = OrderQuoteVersionTable(
             order_uid=uid,
             version_no=_next_quote_version(session, uid),
-            transportation_mode_id=mode.id,
-            transportation_name=mode.name,
-            channel_cost=float(mode.cost or 0),
-            min_price=float(mode.min_price or 0),
+            transportation_mode_id=transportation_mode_id,
+            transportation_name=quote_transportation_name,
+            channel_cost=channel_cost,
+            min_price=min_price,
             quoted_price=quoted_price,
             status=status,
             is_final=is_final,

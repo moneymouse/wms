@@ -1,9 +1,22 @@
 """日志控制器测试"""
 
-import pytest
 from unittest.mock import patch
 
-from tests.base import BaseControllerTest, APITestMixin
+import pytest
+
+from data.DB import AuditLogTable
+from tests.base import APITestMixin, BaseControllerTest
+from utils.audit import load_audit_logs
+from utils.log import OperationLogTable, load_log
+
+
+def paginated_result(items, total=None, page=1, page_size=10):
+    return {
+        "items": items,
+        "total": len(items) if total is None else total,
+        "page": page,
+        "page_size": page_size,
+    }
 
 
 @pytest.mark.unit
@@ -19,115 +32,134 @@ class TestLogController(BaseControllerTest, APITestMixin):
         self.base_url = "/api"
 
     def test_get_logs_success_admin(self, admin_token):
-        """测试管理员成功获取日志"""
+        """测试管理员成功分页获取操作日志"""
         mock_logs = [
             {
-                "timestamp": "2023-01-01 10:00:00",
-                "user": "admin",
-                "action": "Create order",
-                "details": "订单 TEST001 创建成功",
+                "id": 3,
+                "log_date": "2023-01-01 12:00:00",
+                "user_name": "admin",
+                "desc": "Create order",
+                "kwargs": {},
+                "json": {},
             },
             {
-                "timestamp": "2023-01-01 11:00:00",
-                "user": "employee1",
-                "action": "Update cargo",
-                "details": "货物 CARGO001 状态更新",
-            },
-            {
-                "timestamp": "2023-01-01 12:00:00",
-                "user": "store_manager",
-                "action": "Approve user",
-                "details": "用户 user123 审核通过",
+                "id": 2,
+                "log_date": "2023-01-01 11:00:00",
+                "user_name": "employee1",
+                "desc": "Update cargo",
+                "kwargs": {},
+                "json": {},
             },
         ]
 
         with patch(
-            "controllers.log_controller.load_log", return_value=mock_logs
+            "controllers.log_controller.load_log",
+            return_value=paginated_result(mock_logs, total=20, page=1, page_size=10),
         ) as mock_load_log:
             response = self.make_authenticated_request(
                 "GET", f"{self.base_url}/logs", admin_token
             )
 
-            json_data = self.assert_api_success(response, ["data"])
-            assert len(json_data["data"]) == 3
-            assert json_data["data"][0]["action"] == "Create order"
-            assert json_data["data"][1]["user"] == "employee1"
-            assert json_data["data"][2]["details"] == "用户 user123 审核通过"
-
-            # 验证load_log被调用
-            mock_load_log.assert_called_once()
-
-    def test_get_logs_empty_result_admin(self, admin_token):
-        """测试管理员获取空日志"""
-        mock_logs = []
-
-        with patch(
-            "controllers.log_controller.load_log", return_value=mock_logs
-        ) as mock_load_log:
-            response = self.make_authenticated_request(
-                "GET", f"{self.base_url}/logs", admin_token
-            )
-
-            json_data = self.assert_api_success(response, ["data"])
-            assert len(json_data["data"]) == 0
-            mock_load_log.assert_called_once()
-
-    def test_get_logs_large_dataset_admin(self, admin_token):
-        """测试管理员获取大量日志数据"""
-        # 模拟大量日志数据
-        mock_logs = []
-        for i in range(100):
-            mock_logs.append(
-                {
-                    "timestamp": f"2023-01-01 {i//4:02d}:{(i%4)*15:02d}:00",
-                    "user": f"user{i%5}",
-                    "action": f"Action {i%3}",
-                    "details": f"操作详情 {i}",
-                }
-            )
-
-        with patch(
-            "controllers.log_controller.load_log", return_value=mock_logs
-        ) as mock_load_log:
-            response = self.make_authenticated_request(
-                "GET", f"{self.base_url}/logs", admin_token
-            )
-
-            json_data = self.assert_api_success(response, ["data"])
-            assert len(json_data["data"]) == 100
-            mock_load_log.assert_called_once()
-
-    def test_get_logs_with_special_characters_admin(self, admin_token):
-        """测试包含特殊字符的日志"""
-        mock_logs = [
-            {
-                "timestamp": "2023-01-01 10:00:00",
-                "user": "用户@测试",
-                "action": "创建订单",
-                "details": "订单包含特殊字符: <>&\"'",
-            },
-            {
-                "timestamp": "2023-01-01 11:00:00",
-                "user": "测试用户2",
-                "action": "更新货物",
-                "details": 'JSON数据: {"key": "value", "number": 123}',
-            },
-        ]
-
-        with patch(
-            "controllers.log_controller.load_log", return_value=mock_logs
-        ) as mock_load_log:
-            response = self.make_authenticated_request(
-                "GET", f"{self.base_url}/logs", admin_token
-            )
-
-            json_data = self.assert_api_success(response, ["data"])
+            json_data = self.assert_api_success(response, ["data", "total"])
             assert len(json_data["data"]) == 2
+            assert json_data["total"] == 20
+            assert json_data["page"] == 1
+            assert json_data["page_size"] == 10
+            assert json_data["data"][0]["id"] == 3
+            assert json_data["data"][1]["user_name"] == "employee1"
+            mock_load_log.assert_called_once_with(
+                page=1,
+                page_size=10,
+                sort_field="log_date",
+                sort_desc=True,
+            )
 
-            # 验证特殊字符被正确处理
-            assert "用户@测试" in json_data["data"][0]["user"]
-            assert "<>&\"'" in json_data["data"][0]["details"]
-            assert '{"key": "value", "number": 123}' in json_data["data"][1]["details"]
+    def test_get_logs_second_page_admin(self, admin_token):
+        """测试操作日志分页参数会传给读取函数"""
+        mock_logs = [
+            {
+                "id": i,
+                "log_date": f"2023-01-01 10:{i:02d}:00",
+                "desc": f"Action {i}",
+                "kwargs": {},
+                "json": {},
+            }
+            for i in range(10)
+        ]
+
+        with patch(
+            "controllers.log_controller.load_log",
+            return_value=paginated_result(mock_logs, total=100, page=2, page_size=10),
+        ) as mock_load_log:
+            response = self.make_authenticated_request(
+                "GET", f"{self.base_url}/logs?p=2&s=10", admin_token
+            )
+
+            json_data = self.assert_api_success(response, ["data", "total"])
+            assert len(json_data["data"]) == 10
+            assert json_data["total"] == 100
+            assert json_data["page"] == 2
+            mock_load_log.assert_called_once_with(
+                page=2,
+                page_size=10,
+                sort_field="log_date",
+                sort_desc=True,
+            )
+
+    def test_get_logs_sort_and_page_size_are_normalized(self, admin_token):
+        """测试分页参数规范化和正序排序"""
+        with patch(
+            "controllers.log_controller.load_log",
+            return_value=paginated_result([], total=0, page=1, page_size=200),
+        ) as mock_load_log:
+            response = self.make_authenticated_request(
+                "GET",
+                f"{self.base_url}/logs?p=-2&s=999&sf=pc_name&so=0",
+                admin_token,
+            )
+
+            json_data = self.assert_api_success(response, ["data", "total"])
+            assert json_data["data"] == []
+            mock_load_log.assert_called_once_with(
+                page=1,
+                page_size=200,
+                sort_field="pc_name",
+                sort_desc=False,
+            )
+
+    def test_get_audit_logs_success_admin(self, admin_token):
+        """测试管理员成功分页获取审计日志"""
+        mock_logs = [
+            {
+                "id": 1,
+                "event_type": "order_quote",
+                "target_type": "order",
+                "target_id": "ORDER001",
+                "action": "quote_submit",
+                "operator_name": "admin",
+                "before_data": None,
+                "after_data": {},
+                "create_date": "2023-01-01 10:00:00",
+            }
+        ]
+
+        with patch(
+            "controllers.log_controller.load_audit_logs",
+            return_value=paginated_result(mock_logs, total=1, page=1, page_size=10),
+        ) as mock_load_audit_logs:
+            response = self.make_authenticated_request(
+                "GET", f"{self.base_url}/audit-logs?p=1&s=10", admin_token
+            )
+
+            json_data = self.assert_api_success(response, ["data", "total"])
+            assert json_data["data"][0]["event_type"] == "order_quote"
+            assert json_data["total"] == 1
+            mock_load_audit_logs.assert_called_once_with(
+                page=1,
+                page_size=10,
+                sort_field="create_date",
+                sort_desc=True,
+            )
 
     def test_get_logs_requires_auth(self):
         """测试获取日志需要认证"""
@@ -153,30 +185,20 @@ class TestLogController(BaseControllerTest, APITestMixin):
         self, admin_token, store_manager_token, employee_token
     ):
         """测试只有管理员可以访问日志"""
-        # 准备测试数据
-        mock_logs = [
-            {
-                "timestamp": "2023-01-01",
-                "user": "test",
-                "action": "test",
-                "details": "test",
-            }
-        ]
-
-        with patch("controllers.log_controller.load_log", return_value=mock_logs):
-            # 管理员应该可以访问
+        with patch(
+            "controllers.log_controller.load_log",
+            return_value=paginated_result([{"id": 1}], total=1),
+        ):
             response = self.make_authenticated_request(
                 "GET", f"{self.base_url}/logs", admin_token
             )
             self.assert_api_success(response)
 
-            # 店长应该被拒绝
             response = self.make_authenticated_request(
                 "GET", f"{self.base_url}/logs", store_manager_token
             )
             self.assert_response_code(response, 403)
 
-            # 员工应该被拒绝
             response = self.make_authenticated_request(
                 "GET", f"{self.base_url}/logs", employee_token
             )
@@ -186,73 +208,102 @@ class TestLogController(BaseControllerTest, APITestMixin):
         """测试加载日志函数异常"""
         with patch(
             "controllers.log_controller.load_log",
-            side_effect=Exception("读取日志文件失败"),
+            side_effect=Exception("读取日志失败"),
         ):
             response = self.make_authenticated_request(
                 "GET", f"{self.base_url}/logs", admin_token
             )
 
-            # 控制器没有异常处理，Flask 会返回 500
-            assert response.status_code == 500
-
-    def test_get_logs_with_none_values_admin(self, admin_token):
-        """测试包含None值的日志数据"""
-        mock_logs = [
-            {
-                "timestamp": "2023-01-01 10:00:00",
-                "user": None,
-                "action": "系统操作",
-                "details": None,
-            },
-            {
-                "timestamp": None,
-                "user": "test_user",
-                "action": None,
-                "details": "正常详情",
-            },
-        ]
-
-        with patch(
-            "controllers.log_controller.load_log", return_value=mock_logs
-        ) as mock_load_log:
-            response = self.make_authenticated_request(
-                "GET", f"{self.base_url}/logs", admin_token
-            )
-
-            json_data = self.assert_api_success(response, ["data"])
-            assert len(json_data["data"]) == 2
-
-            # 验证None值被正确处理
-            assert json_data["data"][0]["user"] is None
-            assert json_data["data"][0]["details"] is None
-            assert json_data["data"][1]["timestamp"] is None
-            assert json_data["data"][1]["action"] is None
+            self.assert_response_code(response, 500)
 
     def test_get_logs_concurrent_access_admin(self, admin_token):
         """测试并发访问日志（模拟）"""
-        mock_logs = [
-            {
-                "timestamp": "2023-01-01",
-                "user": "concurrent_user",
-                "action": "test",
-                "details": "test",
-            }
-        ]
-
         with patch(
-            "controllers.log_controller.load_log", return_value=mock_logs
+            "controllers.log_controller.load_log",
+            return_value=paginated_result([{"id": 1}], total=1),
         ) as mock_load_log:
-            # 模拟多次并发请求
             responses = []
-            for i in range(3):
+            for _ in range(3):
                 response = self.make_authenticated_request(
                     "GET", f"{self.base_url}/logs", admin_token
                 )
                 responses.append(response)
 
-            # 所有请求都应该成功
             for response in responses:
                 self.assert_api_success(response, ["data"])
 
-            # load_log应该被调用3次
             assert mock_load_log.call_count == 3
+
+
+@pytest.mark.unit
+@pytest.mark.log
+class TestLogReaders:
+    """日志读取函数测试"""
+
+    def test_load_log_uses_sql_pagination(self, setup_test_database):
+        """测试操作日志读取只返回当前页并保留总数"""
+        session = setup_test_database
+        for i in range(1, 26):
+            session.add(
+                OperationLogTable(
+                    ip="127.0.0.1",
+                    pc_name="WMS-PC",
+                    user_name="admin",
+                    user_role="admin",
+                    desc=f"Action {i}",
+                    kwargs="{}",
+                    json_body="{}",
+                    method="POST",
+                    log_date=f"2023-01-01 10:{i:02d}:00",
+                )
+            )
+        session.commit()
+
+        result = load_log(
+            page=2,
+            page_size=10,
+            sort_field="log_date",
+            sort_desc=True,
+        )
+
+        assert result["total"] == 25
+        assert result["page"] == 2
+        assert result["page_size"] == 10
+        assert len(result["items"]) == 10
+        assert result["items"][0]["desc"] == "Action 15"
+        assert result["items"][-1]["desc"] == "Action 6"
+
+    def test_load_audit_logs_uses_sql_pagination(self, setup_test_database):
+        """测试审计日志读取只返回当前页并保留总数"""
+        session = setup_test_database
+        for i in range(1, 13):
+            session.add(
+                AuditLogTable(
+                    event_type="order_quote",
+                    target_type="order",
+                    target_id=f"ORDER{i:03d}",
+                    action="quote_submit",
+                    operator_name="admin",
+                    operator_role="admin",
+                    before_data=None,
+                    after_data="{}",
+                    remark=f"Audit {i}",
+                    ip="127.0.0.1",
+                    create_date=f"2023-01-01 10:{i:02d}:00",
+                )
+            )
+        session.commit()
+
+        result = load_audit_logs(
+            page=1,
+            page_size=5,
+            sort_field="create_date",
+            sort_desc=True,
+        )
+
+        assert result["total"] == 12
+        assert result["page"] == 1
+        assert result["page_size"] == 5
+        assert len(result["items"]) == 5
+        assert result["items"][0]["remark"] == "Audit 12"
+        assert result["items"][-1]["remark"] == "Audit 8"

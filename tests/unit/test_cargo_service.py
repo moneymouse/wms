@@ -6,7 +6,7 @@ from io import BytesIO
 import pandas as pd
 
 from data import cargo_model
-from data.DB import CargoTable
+from data.DB import BoxCostRecordTable, CargoTable, OrderTable
 from data.database import SessionFactory
 from services.cargo_service import (
     get_cargo_with_tracking,
@@ -437,20 +437,30 @@ class TestCargoService(BaseServiceTest, FileTestMixin):
         """测试箱子直接更新运单号后自动变为已出货"""
         session = SessionFactory()
         try:
-            session.add(
-                CargoTable(
-                    uid="box1",
-                    origin_id="ORD001-1",
-                    transfer_id="TR001",
-                    tag="TAG1",
-                    count=1,
-                    weight=1.0,
-                    status=0,
-                    packing_list_uid="pl1",
-                    target_order_uid="order1",
-                    waybill_id="",
-                    create_date="2023-01-01 09:00",
-                )
+            session.add_all(
+                [
+                    OrderTable(
+                        uid="order1",
+                        order_id="ORDER001",
+                        customer_name="客户A",
+                        transportation="",
+                        archive=False,
+                        create_date="2023-01-01 09:00",
+                    ),
+                    CargoTable(
+                        uid="box1",
+                        origin_id="ORD001-1",
+                        transfer_id="TR001",
+                        tag="TAG1",
+                        count=1,
+                        weight=1.0,
+                        status=0,
+                        packing_list_uid="pl1",
+                        target_order_uid="order1",
+                        waybill_id="",
+                        create_date="2023-01-01 09:00",
+                    ),
+                ]
             )
             session.commit()
         finally:
@@ -462,6 +472,58 @@ class TestCargoService(BaseServiceTest, FileTestMixin):
         assert updated["waybill_id"] == "WB001"
         assert updated["status"] == 1
         assert updated["date"] is not None
+
+    def test_cargo_model_update_locks_box_cost_without_transportation(self):
+        """测试订单无运输方式时上传转单号也能锁单，成本记录渠道留空"""
+        session = SessionFactory()
+        try:
+            session.add_all(
+                [
+                    OrderTable(
+                        uid="order-no-transport",
+                        order_id="ORDER-NO-TRANSPORT",
+                        customer_name="客户A",
+                        transportation="",
+                        archive=False,
+                        create_date="2023-01-01 09:00",
+                    ),
+                    CargoTable(
+                        uid="box-no-transport",
+                        origin_id="ORD002-1",
+                        transfer_id="TR002",
+                        tag="TAG2",
+                        count=1,
+                        weight=2.5,
+                        status=0,
+                        packing_list_uid="pl1",
+                        target_order_uid="order-no-transport",
+                        waybill_id="",
+                        create_date="2023-01-01 09:00",
+                    ),
+                ]
+            )
+            session.commit()
+        finally:
+            session.close()
+
+        cargo_model.update("box-no-transport", {"waybill_id": "WB002"})
+
+        session = SessionFactory()
+        try:
+            box = session.query(CargoTable).filter_by(uid="box-no-transport").first()
+            cost_record = (
+                session.query(BoxCostRecordTable)
+                .filter_by(box_uid="box-no-transport")
+                .first()
+            )
+            assert box.status == 1
+            assert cost_record is not None
+            assert cost_record.transportation_mode_id is None
+            assert cost_record.transportation_name == ""
+            assert cost_record.unit_cost == 0
+            assert cost_record.total_cost == 0
+        finally:
+            session.close()
 
     def test_apply_waybill_table_register_error(self):
         """测试17track注册失败"""

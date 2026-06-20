@@ -474,31 +474,30 @@ class CargoModel(MySQLModel):
         if order is None:
             raise ValueError("Target order not found")
         transportation_name = str(order.transportation or "").strip()
-        if not transportation_name:
-            raise ValueError("Order transportation is required before outbound")
-
-        mode = (
-            session.query(TransportationModeTable)
-            .filter(
-                TransportationModeTable.archive == False,  # noqa: E712
-                TransportationModeTable.name == transportation_name,
+        mode = None
+        if transportation_name:
+            mode = (
+                session.query(TransportationModeTable)
+                .filter(
+                    TransportationModeTable.archive == False,  # noqa: E712
+                    TransportationModeTable.name == transportation_name,
+                )
+                .first()
             )
-            .first()
-        )
-        if mode is None:
-            raise ValueError("Transportation cost is not configured")
 
         session.query(BoxCostRecordTable).filter(
             BoxCostRecordTable.box_uid == box.uid
         ).delete()
-        unit_cost = float(mode.cost or 0)
+        unit_cost = 0 if not mode else float(mode.cost)
+        transportation_mode_id = mode.id if mode else None
+        locked_transportation_name = mode.name if mode else transportation_name
         session.add(
             BoxCostRecordTable(
                 box_uid=box.uid,
                 packing_list_uid=box.packing_list_uid,
                 order_uid=box.target_order_uid,
-                transportation_mode_id=mode.id,
-                transportation_name=mode.name,
+                transportation_mode_id=transportation_mode_id,
+                transportation_name=locked_transportation_name,
                 waybill_id=box.waybill_id,
                 weight=weight,
                 unit_cost=unit_cost,

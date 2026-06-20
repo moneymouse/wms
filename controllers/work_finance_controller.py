@@ -2,12 +2,13 @@
 
 from flask import Blueprint, jsonify, request
 
-from Auth import allow, get_token_payload, verify
+from Auth import allow, get_payload_roles, get_token_payload, verify
 from services import work_finance_service
 
 work_finance_bp = Blueprint("work_finance", __name__, url_prefix="/api")
 
-WORK_DETAIL_ROLES = ["admin", "finance", "worker"]
+WORK_DETAIL_ROLES = ["admin", "finance", "worker", "salesperson"]
+WORK_BONUS_ROLES = ["admin", "finance", "worker"]
 FINANCE_ROLES = ["admin", "finance"]
 
 
@@ -15,7 +16,11 @@ FINANCE_ROLES = ["admin", "finance"]
 @verify
 def get_workers():
     """获取操作人员列表（财务/管理员）。"""
-    workers = work_finance_service.get_workers()
+    roles = request.args.get("roles")
+    role_names = (
+        [role.strip() for role in roles.split(",") if role.strip()] if roles else None
+    )
+    workers = work_finance_service.get_workers(role_names=role_names)
     return jsonify({"code": 200, "data": workers})
 
 
@@ -25,16 +30,16 @@ def get_workers():
 def get_work_details():
     """获取工作详情，worker 仅可查看自己。"""
     payload = get_token_payload() or {}
-    role = payload.get("role")
-    current_user_id = payload.get("user_id")
+    roles = get_payload_roles(payload)
+    current_user_id = payload.get("user_id") or payload.get("id")
 
     month = request.args.get("month")
     requested_worker_id = request.args.get("worker_id", type=int)
 
-    if role == "worker":
-        worker_id = current_user_id
-    else:
+    if "admin" in roles or "finance" in roles:
         worker_id = requested_worker_id or current_user_id
+    else:
+        worker_id = current_user_id
 
     if worker_id is None:
         return jsonify({"code": 400, "msg": "worker_id is required"}), 400
@@ -50,7 +55,7 @@ def get_work_details():
 
 @work_finance_bp.get("/work/bonus")
 @verify
-@allow(role=WORK_DETAIL_ROLES)
+@allow(role=WORK_BONUS_ROLES)
 def get_worker_bonus():
     """获取按天、按奖金分项统计的奖金数据。"""
     payload = get_token_payload() or {}
@@ -79,7 +84,7 @@ def get_worker_bonus():
 
 @work_finance_bp.get("/work/bonus-estimate")
 @verify
-@allow(role=WORK_DETAIL_ROLES)
+@allow(role=WORK_BONUS_ROLES)
 def get_bonus_estimate():
     """兼容旧路由：返回新奖金统计结构。"""
     payload = get_token_payload() or {}

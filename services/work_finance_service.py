@@ -13,6 +13,7 @@ from typing import Dict, List, Optional
 from sqlalchemy import func
 
 from data.database import SessionFactory
+from data.DB import CargoTable, OrderTable
 from data.finance import bonus_item_model
 from data.finance.BonusItem import BonusItemTable
 from data.packing.PackingList import BoxTable, BoxWorkerTable, PackingListTable
@@ -33,15 +34,19 @@ def normalize_month(month: Optional[str] = None) -> str:
     return month
 
 
-def get_workers() -> List[dict]:
-    """获取已审核通过的操作人员列表。"""
+def get_workers(role_names: Optional[List[str]] = None) -> List[dict]:
+    """获取已审核通过的人员列表，默认仅返回操作人员。"""
+    if not role_names:
+        role_names = ["worker"]
+
     with SessionFactory() as session:
         records = (
             session.query(UserTable)
             .join(user_roles, UserTable.id == user_roles.c.user_id)
             .join(RoleTable, RoleTable.id == user_roles.c.role_id)
-            .filter(UserTable.status == "approved", RoleTable.name == "worker")
+            .filter(UserTable.status == "approved", RoleTable.name.in_(role_names))
             .order_by(UserTable.name.asc())
+            .distinct()
             .all()
         )
 
@@ -50,6 +55,7 @@ def get_workers() -> List[dict]:
                 "id": record.id,
                 "name": record.name,
                 "phone": record.phone,
+                "roles": [role.name for role in record.roles],
             }
             for record in records
         ]
@@ -173,13 +179,14 @@ def _pick_bonus_item(
 
 
 def get_worker_work_details(worker_id: int, month: Optional[str] = None) -> dict:
-    """获取某个工人的工作详情（按唛头分组）。"""
+    """获取某个员工的工作详情（打包工作 + 业务员订单）。"""
     month = normalize_month(month)
 
     with SessionFactory() as session:
         worker = session.query(UserTable).filter_by(id=worker_id).first()
         if worker is None:
-            raise ValueError("worker not found")
+            raise ValueError("user not found")
+        worker_roles = [role.name for role in worker.roles]
 
         worker_count_subq = (
             session.query(
@@ -284,17 +291,50 @@ def get_worker_work_details(worker_id: int, month: Optional[str] = None) -> dict
             reverse=True,
         )
 
+        order_rows = (
+            session.query(
+                OrderTable,
+                func.coalesce(func.sum(CargoTable.weight), 0).label("cargo_total_weight"),
+            )
+            .outerjoin(
+                CargoTable,
+                (CargoTable.target_order_uid == OrderTable.uid)
+                & (CargoTable.archive == False),
+            )
+            .filter(
+                OrderTable.archive == False,
+                OrderTable.salesman_id == worker_id,
+                OrderTable.create_date.like(f"{month}-%"),
+            )
+            .group_by(OrderTable.uid)
+            .order_by(OrderTable.create_date.desc(), OrderTable.order_id.asc())
+            .all()
+        )
+        orders = [
+            {
+                "uid": order.uid,
+                "order_id": order.order_id,
+                "total_weight": float(cargo_total_weight or 0.0),
+                "transportation": order.transportation,
+                "create_date": order.create_date,
+            }
+            for order, cargo_total_weight in order_rows
+        ]
+
         return {
             "month": month,
             "worker": {
                 "id": worker.id,
                 "name": worker.name,
                 "phone": worker.phone,
+                "roles": worker_roles,
             },
             "groups": groups,
             "items": items,
+            "orders": orders,
             "counts_by_team_size": counts_by_team_size,
             "total_boxes": len(items),
+            "total_orders": len(orders),
             "total_piece_count": sum(
                 int(item.get("piece_count") or 0) for item in items
             ),

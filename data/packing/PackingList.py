@@ -470,21 +470,20 @@ class BoxModel:
         if order is None:
             raise ValueError("Target order not found")
         transportation_name = str(order.transportation or "").strip()
-        if not transportation_name:
-            raise ValueError("Order transportation is required before shipment")
-
-        mode = (
-            session.query(TransportationModeTable)
-            .filter(
-                TransportationModeTable.name == transportation_name,
-                TransportationModeTable.archive == False,  # noqa: E712
+        mode = None
+        if transportation_name:
+            mode = (
+                session.query(TransportationModeTable)
+                .filter(
+                    TransportationModeTable.name == transportation_name,
+                    TransportationModeTable.archive == False,  # noqa: E712
+                )
+                .first()
             )
-            .first()
-        )
-        if mode is None:
-            raise ValueError("Transportation cost is not configured")
 
-        unit_cost = float(mode.cost or 0)
+        unit_cost = 0 if not mode else float(mode.cost)
+        transportation_mode_id = mode.id if mode else None
+        locked_transportation_name = mode.name if mode else transportation_name
         session.query(BoxCostRecordTable).filter(
             BoxCostRecordTable.box_uid == box.uid
         ).delete(synchronize_session=False)
@@ -493,8 +492,8 @@ class BoxModel:
                 box_uid=box.uid,
                 packing_list_uid=box.packing_list_uid,
                 order_uid=box.target_order_uid,
-                transportation_mode_id=mode.id,
-                transportation_name=mode.name,
+                transportation_mode_id=transportation_mode_id,
+                transportation_name=locked_transportation_name,
                 waybill_id=str(box.waybill_id or "").strip(),
                 weight=weight,
                 unit_cost=unit_cost,
@@ -997,7 +996,10 @@ class BoxModel:
 
         s = SessionFactory()
         try:
-            query = s.query(PackingListTable).filter(PackingListTable.archive == False)
+            query = s.query(PackingListTable).filter(
+                PackingListTable.archive == False,
+                PackingListTable.status != "draft",
+            )
             if customer_id is not None:
                 query = query.filter(PackingListTable.customer_id == customer_id)
 
@@ -1007,6 +1009,7 @@ class BoxModel:
                         f"%{mark_search.strip().upper()}%"
                     )
                 )
+                
 
             packing_lists = query.order_by(PackingListTable.create_date.desc()).all()
 

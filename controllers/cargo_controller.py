@@ -1,4 +1,5 @@
 import json
+import logging
 from io import BytesIO
 
 from flask import Blueprint, jsonify, make_response, request, send_file
@@ -16,8 +17,21 @@ from services.cargo_service import (
 from utils.log import log
 
 cargo_bp = Blueprint("cargo", __name__, url_prefix="/api")
+logger = logging.getLogger(__name__)
 
 CARGO_SHIP_ROLES = ["admin", "store_manager", "salesperson", "clerk"]
+
+
+def _waybill_upload_response(code, msg, cargo_count=0, success_list=None, cargo_list=None):
+    return jsonify(
+        {
+            "code": code,
+            "msg": msg,
+            "cargo_count": cargo_count,
+            "success_list": success_list or [],
+            "cargo_list": cargo_list or {},
+        }
+    )
 
 
 def _get_valid_excel_modes():
@@ -239,10 +253,36 @@ def upload_order(mode):
     if mode != "transfer_table":
         return make_response(404)
 
-    fp = request.files["file"]
-    filename = request.form["filename"]
-    transfer_map = parse_waybill_file(fp, filename)
-    register_list, track_err = apply_waybill_table(cargo_model, transfer_map)
+    register_list = []
+    transfer_map = {}
+    try:
+        if "file" not in request.files:
+            return _waybill_upload_response(400, "未找到上传文件"), 400
+
+        fp = request.files["file"]
+        filename = (request.form.get("filename") or "").strip()
+        if not filename:
+            return _waybill_upload_response(400, "文件名不能为空"), 400
+
+        transfer_map = parse_waybill_file(fp, filename)
+        register_list, track_err = apply_waybill_table(cargo_model, transfer_map)
+    except ValueError as e:
+        return (
+            _waybill_upload_response(400, str(e), cargo_list=transfer_map),
+            400,
+        )
+    except Exception as e:
+        logger.exception("upload_order failed")
+        return (
+            _waybill_upload_response(
+                500,
+                f"上传转单号失败: {e}",
+                cargo_count=len(register_list),
+                success_list=register_list,
+                cargo_list=transfer_map,
+            ),
+            500,
+        )
 
     if track_err:
         e_body = track_err.args[0] if track_err.args else {}

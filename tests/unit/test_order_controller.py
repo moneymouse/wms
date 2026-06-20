@@ -7,6 +7,8 @@ from unittest.mock import patch, Mock
 from tests.base import BaseControllerTest, APITestMixin, DatabaseTestMixin
 from tests.factories import OrderFactory, CargoFactory
 from data import RecordExist
+from data.database import SessionFactory
+from data.DB import OrderQuoteVersionTable, OrderTable
 from utils.log import OperationLogTable, SessionFactory as LogSessionFactory
 
 
@@ -200,6 +202,55 @@ class TestOrderController(BaseControllerTest, APITestMixin, DatabaseTestMixin):
             json_data = self.assert_api_success(response)
             assert json_data["msg"] == "success"
             mock_update.assert_called_once_with("test_uid", update_data)
+
+    def test_create_quote_without_configured_transportation_uses_zero_min_price(
+        self, salesperson_token
+    ):
+        """测试未维护渠道成本时仍可按最低报价0提交报价"""
+        session = SessionFactory()
+        try:
+            order = OrderTable(
+                uid="quote-order-no-mode",
+                order_id="ORDER-NO-MODE",
+                customer_name="测试客户",
+                transportation="未维护渠道",
+                archive=False,
+                create_date="2023-01-01 10:00",
+            )
+            session.add(order)
+            session.commit()
+        finally:
+            session.close()
+
+        response = self.make_authenticated_request(
+            "POST",
+            f"{self.base_url}/orders/quote-order-no-mode/quotes",
+            salesperson_token,
+            {"quoted_price": 12.5, "quote_remark": "测试报价"},
+        )
+
+        json_data = self.assert_api_success(response, ["data"])
+        assert json_data["msg"] == "报价已采纳"
+        assert json_data["data"]["transportation_mode_id"] is None
+        assert json_data["data"]["transportation_name"] == "未维护渠道"
+        assert json_data["data"]["channel_cost"] == 0
+        assert json_data["data"]["min_price"] == 0
+        assert json_data["data"]["quoted_price"] == 12.5
+        assert json_data["data"]["status"] == "adopted"
+        assert json_data["data"]["is_final"] is True
+
+        session = SessionFactory()
+        try:
+            quote = (
+                session.query(OrderQuoteVersionTable)
+                .filter(OrderQuoteVersionTable.order_uid == "quote-order-no-mode")
+                .first()
+            )
+            assert quote is not None
+            assert quote.transportation_mode_id is None
+            assert quote.min_price == 0
+        finally:
+            session.close()
 
     def test_delete_single_order_success(self, employee_token):
         """测试成功删除单个订单"""

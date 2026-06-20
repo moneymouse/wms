@@ -8,6 +8,17 @@ from data.database import SessionFactory
 from data.DB import AuditLogTable
 
 
+AUDIT_LOG_SORT_FIELDS = {
+    "id": AuditLogTable.id,
+    "create_date": AuditLogTable.create_date,
+    "event_type": AuditLogTable.event_type,
+    "action": AuditLogTable.action,
+    "target_type": AuditLogTable.target_type,
+    "operator_name": AuditLogTable.operator_name,
+    "operator_role": AuditLogTable.operator_role,
+}
+
+
 def _json_dump(value):
     if value is None:
         return None
@@ -48,33 +59,55 @@ def record_audit(
             session.rollback()
 
 
-def load_audit_logs(limit=500, event_type=None):
+def _parse_json_value(raw):
+    try:
+        return json.loads(raw) if raw else None
+    except Exception:
+        return raw
+
+
+def _serialize_audit_log(row: AuditLogTable) -> dict:
+    return {
+        "id": row.id,
+        "event_type": row.event_type,
+        "target_type": row.target_type,
+        "target_id": row.target_id,
+        "action": row.action,
+        "operator_id": row.operator_id,
+        "operator_name": row.operator_name,
+        "operator_role": row.operator_role,
+        "before_data": _parse_json_value(row.before_data),
+        "after_data": _parse_json_value(row.after_data),
+        "remark": row.remark,
+        "ip": row.ip,
+        "create_date": row.create_date,
+    }
+
+
+def load_audit_logs(
+    page: int = 1,
+    page_size: int = 10,
+    sort_field: str = "create_date",
+    sort_desc: bool = True,
+    event_type=None,
+) -> dict:
     with SessionFactory() as session:
         query = session.query(AuditLogTable)
         if event_type:
             query = query.filter(AuditLogTable.event_type == event_type)
-        rows = query.order_by(AuditLogTable.create_date.desc()).limit(limit).all()
-        result = []
-        for row in rows:
-            def parse(raw):
-                try:
-                    return json.loads(raw) if raw else None
-                except Exception:
-                    return raw
-
-            result.append({
-                "id": row.id,
-                "event_type": row.event_type,
-                "target_type": row.target_type,
-                "target_id": row.target_id,
-                "action": row.action,
-                "operator_id": row.operator_id,
-                "operator_name": row.operator_name,
-                "operator_role": row.operator_role,
-                "before_data": parse(row.before_data),
-                "after_data": parse(row.after_data),
-                "remark": row.remark,
-                "ip": row.ip,
-                "create_date": row.create_date,
-            })
-        return result
+        total = query.count()
+        sort_column = AUDIT_LOG_SORT_FIELDS.get(sort_field, AuditLogTable.create_date)
+        order_by = sort_column.desc() if sort_desc else sort_column.asc()
+        id_order = AuditLogTable.id.desc() if sort_desc else AuditLogTable.id.asc()
+        rows = (
+            query.order_by(order_by, id_order)
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+            .all()
+        )
+        return {
+            "items": [_serialize_audit_log(row) for row in rows],
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+        }

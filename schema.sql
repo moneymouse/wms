@@ -161,6 +161,7 @@ CREATE TABLE IF NOT EXISTS operation_logs (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE INDEX IF NOT EXISTS idx_logs_date ON operation_logs (log_date);
+CREATE INDEX IF NOT EXISTS idx_operation_logs_log_date_id ON operation_logs (log_date, id);
 
 -- -----------------------------------------------------------------------------
 -- users (RBAC user accounts)
