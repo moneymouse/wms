@@ -1,11 +1,13 @@
 import React, { useState, useEffect } from 'react';
-import { Table, Button, Space, message, Card, Tag, Modal, Select, Input, Typography, Tabs, Switch, Upload, Tooltip } from 'antd';
+import { Table, Button, Space, message, Card, Tag, Modal, Select, Input, Typography, Switch, Upload, Tooltip } from 'antd';
 import { CheckOutlined, CloseOutlined, UserOutlined, KeyOutlined, UploadOutlined, PlusOutlined, DeleteOutlined } from '@ant-design/icons';
 import { endpoint } from '../config';
 import getSafeHeader from '../common/safeHeader';
 import EXPORT_FIELDS from '../common/exportFields';
 import * as XLSX from 'xlsx';
 import { useNavigate } from 'react-router-dom';
+import GoodsNameManagement from '../components/GoodsNameManagement';
+import CustomsCodeManagement from '../components/CustomsCodeManagement';
 
 const ROLE_OPTIONS = [
     { value: 'admin', label: '管理员' },
@@ -43,13 +45,6 @@ const AdminPage = () => {
     const [newPassword, setNewPassword] = useState('');
     const [deleteModalVisible, setDeleteModalVisible] = useState(false);
     const [userToDelete, setUserToDelete] = useState(null);
-    // 品名管理相关状态
-    const [goodsNames, setGoodsNames] = useState([]);
-    const [goodsNameLoading, setGoodsNameLoading] = useState(false);
-    const [newCnName, setNewCnName] = useState('');
-    const [newEnName, setNewEnName] = useState('');
-    const [editingGoodsName, setEditingGoodsName] = useState({ id: null, name: '' });
-
     // 运输方式管理相关状态
     const [transportationModes, setTransportationModes] = useState([]);
     const [transportationLoading, setTransportationLoading] = useState(false);
@@ -73,6 +68,7 @@ const AdminPage = () => {
         label: '',
         template_type: 'column',
         single_order_only: false,
+        requires_valid_quote: true,
         mappings: [],
     });
     const [templateFileList, setTemplateFileList] = useState([]);
@@ -116,7 +112,6 @@ const AdminPage = () => {
         fetchUsers();
         fetchPasswordRequests();
         fetchQuoteApprovals();
-        fetchGoodsNames();
         fetchExcelTemplates();
         fetchTransportationModes();
     }, []);
@@ -587,6 +582,7 @@ const AdminPage = () => {
                 label: record.label,
                 template_type: record.template_type,
                 single_order_only: record.single_order_only,
+                requires_valid_quote: record.requires_valid_quote !== false,
                 mappings: [],
             });
             setTemplateFileList([]);
@@ -622,6 +618,7 @@ const AdminPage = () => {
                 label: '',
                 template_type: 'column',
                 single_order_only: false,
+                requires_valid_quote: true,
                 mappings: [],
             });
             setTemplateFileList([]);
@@ -638,6 +635,7 @@ const AdminPage = () => {
             label: '',
             template_type: 'column',
             single_order_only: false,
+            requires_valid_quote: true,
             mappings: [],
         });
         setTemplateFileList([]);
@@ -699,6 +697,7 @@ const AdminPage = () => {
             label: label.trim(),
             template_type: templateForm.template_type,
             single_order_only: templateForm.template_type === 'cell' ? true : single_order_only,
+            requires_valid_quote: templateForm.requires_valid_quote !== false,
             config,
         };
 
@@ -913,125 +912,6 @@ const AdminPage = () => {
             newMappings[index] = { ...newMappings[index], [key]: value };
             return { ...prev, mappings: newMappings };
         });
-    };
-
-    // ==================== 品名管理相关函数 ====================
-
-    const fetchGoodsNames = async () => {
-        setGoodsNameLoading(true);
-        try {
-            const response = await fetch(`${endpoint}/goods-names`, {
-                headers: getSafeHeader()
-            });
-            const result = await response.json();
-            if (result.code === 200) {
-                setGoodsNames(result.data || []);
-            } else {
-                message.error(result.msg || '获取品名列表失败');
-            }
-        } catch (error) {
-            console.error('Fetch goods names error:', error);
-            message.error('获取品名列表失败');
-        } finally {
-            setGoodsNameLoading(false);
-        }
-    };
-
-    const handleAddGoodsName = async (lang) => {
-        const raw = lang === 'cn' ? newCnName : newEnName;
-        const names = raw
-            .split(/[、\n]+/)
-            .map(s => s.trim())
-            .filter(s => s.length > 0);
-        if (names.length === 0) {
-            message.warning('请输入品名');
-            return;
-        }
-        setSubmitting(true);
-        try {
-            const results = await Promise.allSettled(
-                names.map(name =>
-                    fetch(`${endpoint}/goods-names`, {
-                        method: 'POST',
-                        headers: {
-                            ...getSafeHeader(),
-                            'Content-Type': 'application/json'
-                        },
-                        body: JSON.stringify({ lang, name })
-                    }).then(r => r.json())
-                )
-            );
-            const successCount = results.filter(r => r.status === 'fulfilled' && r.value.code === 200).length;
-            const failCount = names.length - successCount;
-            if (successCount > 0) {
-                message.success(`成功添加 ${successCount} 个品名`);
-            }
-            if (failCount > 0) {
-                message.warning(`${failCount} 个品名添加失败（可能已存在）`);
-            }
-            if (lang === 'cn') setNewCnName('');
-            else setNewEnName('');
-            fetchGoodsNames();
-        } catch (error) {
-            console.error('Add goods name error:', error);
-            message.error('添加失败');
-        } finally {
-            setSubmitting(false);
-        }
-    };
-
-    const handleDeleteGoodsName = async (id) => {
-        setSubmitting(true);
-        try {
-            const response = await fetch(`${endpoint}/goods-names/${id}`, {
-                method: 'DELETE',
-                headers: getSafeHeader()
-            });
-            const result = await response.json();
-            if (result.code === 200) {
-                message.success('删除成功');
-                fetchGoodsNames();
-            } else {
-                message.error(result.msg || '删除失败');
-            }
-        } catch (error) {
-            console.error('Delete goods name error:', error);
-            message.error('删除失败');
-        } finally {
-            setSubmitting(false);
-        }
-    };
-
-    const handleUpdateGoodsName = async (id, newName) => {
-        const name = newName.trim();
-        if (!name) {
-            message.warning('品名不能为空');
-            return;
-        }
-        setSubmitting(true);
-        try {
-            const response = await fetch(`${endpoint}/goods-names/${id}`, {
-                method: 'PUT',
-                headers: {
-                    ...getSafeHeader(),
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({ name })
-            });
-            const result = await response.json();
-            if (result.code === 200) {
-                message.success('更新成功');
-                setEditingGoodsName({ id: null, name: '' });
-                fetchGoodsNames();
-            } else {
-                message.error(result.msg || '更新失败');
-            }
-        } catch (error) {
-            console.error('Update goods name error:', error);
-            message.error('更新失败');
-        } finally {
-            setSubmitting(false);
-        }
     };
 
     const columns = [
@@ -1279,6 +1159,10 @@ const AdminPage = () => {
                 />
             </Card>
 
+            <GoodsNameManagement />
+
+            <CustomsCodeManagement />
+
             {/* <Card title="品名管理">
                 <Tabs
                     items={[
@@ -1478,6 +1362,12 @@ const AdminPage = () => {
                                 render: (v) => v ? <Tag color="orange">是</Tag> : <Tag>否</Tag>
                             },
                             {
+                                title: '需有效报价',
+                                dataIndex: 'requires_valid_quote',
+                                key: 'requires_valid_quote',
+                                render: (v) => v ? <Tag color="red">是</Tag> : <Tag color="green">否</Tag>
+                            },
+                            {
                                 title: '操作',
                                 key: 'action',
                                 render: (_, record) => (
@@ -1546,6 +1436,13 @@ const AdminPage = () => {
                             checked={templateForm.single_order_only}
                             onChange={(checked) => setTemplateForm(prev => ({ ...prev, single_order_only: checked }))}
                             disabled={templateForm.template_type === 'cell'}
+                        />
+                    </Space>
+                    <Space>
+                        <span>供应商导出需有效报价：</span>
+                        <Switch
+                            checked={templateForm.requires_valid_quote !== false}
+                            onChange={(checked) => setTemplateForm(prev => ({ ...prev, requires_valid_quote: checked }))}
                         />
                     </Space>
 

@@ -18,9 +18,10 @@ import ForgetPassword from "./pages/forgetPassword";
 import Settings from "./pages/settings";
 import WorkDetails from "./pages/workDetails";
 import BonusEstimate from "./pages/bonusEstimate";
-import FinanceCenter from "./pages/financeCenter";
+import FinanceHub from "./pages/financeHub";
 import CostManagement from "./pages/costManagement";
 import AuditLogs from "./pages/auditLogs";
+import Receipts from "./pages/receipts";
 
 // 移除 LogsRoute 组件，因为权限检查逻辑已经移到 Logs 组件内部
 
@@ -52,7 +53,9 @@ const router = createBrowserRouter([{
     }, {
         path: 'bonus-estimate', element: <BonusEstimate />
     }, {
-        path: 'finance', element: <FinanceCenter />
+        path: 'finance', element: <FinanceHub />
+    }, {
+        path: 'receipts', element: <Receipts />
     }, {
         path: 'cost-management', element: <CostManagement />
     }, {

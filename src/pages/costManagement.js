@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Button, Card, Drawer, Form, Input, InputNumber, Modal, Space, Table, Typography, message } from 'antd';
+import { Button, Card, Drawer, Form, Input, InputNumber, Modal, Space, Table, Tabs, Tag, Typography, message } from 'antd';
 import { EditOutlined, HistoryOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import { endpoint } from '../config';
 import getSafeHeader from '../common/safeHeader';
@@ -17,6 +17,16 @@ export default function CostManagement() {
     const [versionsOpen, setVersionsOpen] = useState(false);
     const [versions, setVersions] = useState([]);
     const [versionsLoading, setVersionsLoading] = useState(false);
+    const [quoteApprovals, setQuoteApprovals] = useState([]);
+    const [quoteApprovalsLoading, setQuoteApprovalsLoading] = useState(false);
+    const [isAdmin] = useState(() => {
+        try {
+            const payload = JSON.parse(atob((localStorage.getItem('jwt') || '').split('.')[1]));
+            return (payload.roles || [payload.role]).includes('admin');
+        } catch (_) {
+            return false;
+        }
+    });
 
     const fetchModes = async () => {
         setLoading(true);
@@ -94,6 +104,44 @@ export default function CostManagement() {
         }
     };
 
+    const fetchQuoteApprovals = async () => {
+        if (!isAdmin) return;
+        setQuoteApprovalsLoading(true);
+        try {
+            const res = await fetch(`${endpoint}/finance/quote-approvals`, { headers: getSafeHeader() });
+            const data = await res.json();
+            if (data.code === 200) setQuoteApprovals(data.data || []);
+            else messageApi.error(data.msg || '获取低价报价失败');
+        } finally {
+            setQuoteApprovalsLoading(false);
+        }
+    };
+
+    // fetchQuoteApprovals intentionally reruns only when admin visibility changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    useEffect(() => { fetchQuoteApprovals(); }, [isAdmin]);
+
+    const reviewQuote = (record, action) => {
+        let reviewRemark = '';
+        Modal.confirm({
+            title: action === 'approve' ? '确认通过低价报价' : '确认驳回报价',
+            content: <Input.TextArea rows={3} placeholder="审核说明" onChange={e => { reviewRemark = e.target.value; }} />,
+            okText: action === 'approve' ? '通过' : '驳回',
+            okButtonProps: { danger: action === 'reject' },
+            onOk: async () => {
+                const res = await fetch(`${endpoint}/finance/quote-approvals/${record.id}`, {
+                    method: 'PUT',
+                    headers: { ...getSafeHeader(), 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action, review_remark: reviewRemark }),
+                });
+                const data = await res.json();
+                if (!res.ok || data.code !== 200) throw new Error(data.msg || '审核失败');
+                messageApi.success('审核完成');
+                fetchQuoteApprovals();
+            }
+        });
+    };
+
     const columns = [
         { title: '渠道', dataIndex: 'name', key: 'name', fixed: 'left', width: 220 },
         { title: '分组', dataIndex: 'channel_group', key: 'channel_group', width: 120 },
@@ -118,13 +166,35 @@ export default function CostManagement() {
         <div style={{ padding: 24 }}>
             {contextHolder}
             <Typography.Title level={3}>成本管理</Typography.Title>
-            <Card>
-                <Space style={{ marginBottom: 12 }}>
-                    <Button type="primary" icon={<PlusOutlined />} onClick={() => openModal(null)}>新增渠道</Button>
-                    <Button icon={<ReloadOutlined />} onClick={fetchModes}>刷新</Button>
-                </Space>
-                <Table rowKey="id" loading={loading} columns={columns} dataSource={modes} scroll={{ x: 1000 }} />
-            </Card>
+            <Tabs items={[
+                {
+                    key: 'cost', label: '渠道成本', children: <Card>
+                        <Space style={{ marginBottom: 12 }}>
+                            <Button type="primary" icon={<PlusOutlined />} onClick={() => openModal(null)}>新增渠道</Button>
+                            <Button icon={<ReloadOutlined />} onClick={fetchModes}>刷新</Button>
+                        </Space>
+                        <Table rowKey="id" loading={loading} columns={columns} dataSource={modes} scroll={{ x: 1000 }} />
+                    </Card>
+                },
+                ...(isAdmin ? [{
+                    key: 'quote-approval', label: `低价报价审核${quoteApprovals.length ? ` (${quoteApprovals.length})` : ''}`, children: <Card>
+                        <Button icon={<ReloadOutlined />} onClick={fetchQuoteApprovals} style={{ marginBottom: 12 }}>刷新</Button>
+                        <Table rowKey="id" loading={quoteApprovalsLoading} dataSource={quoteApprovals} scroll={{ x: 'max-content' }} columns={[
+                            { title: '订单号', dataIndex: 'order_id', width: 190 },
+                            { title: '客户', dataIndex: 'customer_name', width: 150 },
+                            { title: '渠道', dataIndex: 'transportation_name', width: 150 },
+                            { title: '单价p', dataIndex: 'unit_price', width: 100, render: v => Number(v || 0).toFixed(4) },
+                            { title: '最低p', dataIndex: 'min_price', width: 100, render: v => Number(v || 0).toFixed(4) },
+                            { title: '附加费f', dataIndex: 'surcharge', width: 100, render: v => Number(v || 0).toFixed(2) },
+                            { title: '重量(kg)', dataIndex: 'weight_snapshot', width: 110, render: v => Number(v || 0).toFixed(3) },
+                            { title: '应收', dataIndex: 'receivable_amount', width: 110, render: v => Number(v || 0).toFixed(2) },
+                            { title: '状态', render: () => <Tag color="orange">待审核</Tag>, width: 90 },
+                            { title: '报价人', dataIndex: 'quoter_name', width: 110 },
+                            { title: '操作', fixed: 'right', width: 140, render: (_, record) => <Space><Button size="small" type="primary" onClick={() => reviewQuote(record, 'approve')}>通过</Button><Button size="small" danger onClick={() => reviewQuote(record, 'reject')}>驳回</Button></Space> },
+                        ]} />
+                    </Card>
+                }] : [])
+            ]} />
 
             <Modal
                 title={editing ? '调整渠道成本' : '新增渠道成本'}

@@ -41,7 +41,7 @@ export default function BonusEstimate() {
         () => payload?.roles || (payload?.role ? [payload.role] : []),
         [payload]
     );
-    const currentUserId = payload?.user_id;
+    const currentUserId = payload?.user_id || payload?.id;
     const canSelectWorker = hasPermission(userRoles, ['admin', 'finance']);
 
     const selectedWorkerOptions = useMemo(
@@ -57,7 +57,7 @@ export default function BonusEstimate() {
         if (!canSelectWorker) return;
         (async () => {
             try {
-                const res = await fetch(`${endpoint}/work/workers`, { headers: getSafeHeader() });
+                const res = await fetch(`${endpoint}/work/workers?roles=worker,salesperson`, { headers: getSafeHeader() });
                 const data = await res.json();
                 if (data.code === 200) {
                     const list = data.data || [];
@@ -130,12 +130,13 @@ export default function BonusEstimate() {
     }, [bonusData, hasUnmatched]);
 
     const rows = (bonusData?.daily || []).map(dayRow => {
-        console.log(dayRow)
         const row = {
             key: dayRow.date,
             date: dayRow.date,
             total_piece_count: dayRow.total_piece_count || 0,
             total_boxes: dayRow.total_boxes || 0,
+            followup_weight: Number(dayRow.followup_weight || 0).toFixed(3),
+            followup_bonus: Number(dayRow.followup_bonus || 0).toFixed(2),
             estimated_bonus: Number(dayRow.estimated_bonus || 0).toFixed(2)
         };
 
@@ -172,6 +173,20 @@ export default function BonusEstimate() {
             dataIndex: 'total_boxes',
             key: 'total_boxes',
             width: 120,
+            align: 'right'
+        },
+        {
+            title: '跟单重量(kg)',
+            dataIndex: 'followup_weight',
+            key: 'followup_weight',
+            width: 135,
+            align: 'right'
+        },
+        {
+            title: '跟单奖金(元)',
+            dataIndex: 'followup_bonus',
+            key: 'followup_bonus',
+            width: 130,
             align: 'right'
         },
         {
@@ -213,7 +228,7 @@ export default function BonusEstimate() {
 
         csvRows.push([]);
 
-        const header = ['日期', ...itemDefs.map(item => `${item.label}件数`), '汇总件数', '汇总箱数', '预计奖金(元)'];
+        const header = ['日期', ...itemDefs.map(item => `${item.label}件数`), '汇总件数', '汇总箱数', '跟单重量(kg)', '跟单奖金(元)', '预计奖金(元)'];
         csvRows.push(header);
         rows.forEach(row => {
             csvRows.push([
@@ -221,12 +236,17 @@ export default function BonusEstimate() {
                 ...itemDefs.map(item => row[`piece_${item.key}`]),
                 row.total_piece_count,
                 row.total_boxes,
+                row.followup_weight,
+                row.followup_bonus,
                 row.estimated_bonus
             ]);
         });
 
         csvRows.push([]);
         csvRows.push(['总箱数', bonusData?.totals?.total_boxes || 0]);
+        csvRows.push(['跟单订单数', bonusData?.totals?.followup_order_count || 0]);
+        csvRows.push(['跟单总重(kg)', Number(bonusData?.totals?.followup_weight || 0).toFixed(3)]);
+        csvRows.push(['跟单预计奖金', Number(bonusData?.totals?.followup_estimated_bonus || 0).toFixed(2)]);
         // csvRows.push(['总件数', bonusData?.totals?.total_piece_count || 0]);
         csvRows.push(['预计总奖金', Number(bonusData?.totals?.estimated_bonus || 0).toFixed(2)]);
 
@@ -276,6 +296,15 @@ export default function BonusEstimate() {
                 <Row gutter={[8, 16]}>
                     <Col xs={12} sm={8}>
                         <Statistic title="总箱数" value={bonusData?.totals?.total_boxes || 0} />
+                    </Col>
+                    <Col xs={12} sm={8}>
+                        <Statistic title="跟单订单数" value={bonusData?.totals?.followup_order_count || 0} />
+                    </Col>
+                    <Col xs={12} sm={8}>
+                        <Statistic title="跟单总重(kg)" value={Number(bonusData?.totals?.followup_weight || 0).toFixed(3)} />
+                    </Col>
+                    <Col xs={12} sm={8}>
+                        <Statistic title="跟单预计奖金(元)" value={Number(bonusData?.totals?.followup_estimated_bonus || 0).toFixed(2)} />
                     </Col>
                     {/* <Col xs={12} sm={8}>
                         <Statistic title="总件数" value={bonusData?.totals?.total_piece_count || 0} />

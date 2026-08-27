@@ -230,6 +230,20 @@ export default function WorkDetails() {
             render: (value) => Number(value || 0).toFixed(2)
         },
         {
+            title: '报价生效日期',
+            dataIndex: 'quote_effective_date',
+            key: 'quote_effective_date',
+            width: 170,
+            render: value => value || '-'
+        },
+        {
+            title: '报价人',
+            dataIndex: 'quoter_name',
+            key: 'quoter_name',
+            width: 120,
+            render: value => value || '-'
+        },
+        {
             title: '渠道',
             dataIndex: 'transportation',
             key: 'transportation',
@@ -280,6 +294,12 @@ export default function WorkDetails() {
                     <Col xs={12} sm={8}>
                         <Statistic title="总箱数" value={detailData?.total_boxes || 0} />
                     </Col>
+                    <Col xs={12} sm={8}>
+                        <Statistic title="跟单订单数" value={detailData?.followup_order_count || 0} />
+                    </Col>
+                    <Col xs={24} sm={8}>
+                        <Statistic title="当月跟单总重(kg)" value={Number(detailData?.followup_total_weight || 0).toFixed(3)} />
+                    </Col>
                     {/* <Col xs={12} sm={8}>
                         <Statistic title="总件数" value={detailData?.total_piece_count || 0} />
                     </Col> */}
@@ -316,7 +336,7 @@ export default function WorkDetails() {
                 <Card
                     size="small"
                     bodyStyle={{ padding: 0 }}
-                    title="订单"
+                    title="跟单订单（按最终有效报价归属）"
                     style={{ marginTop: 16 }}
                 >
                     <Table

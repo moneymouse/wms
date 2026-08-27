@@ -30,6 +30,7 @@ import BoxAssignmentModal from "../components/BoxAssignmentModal";
 import Transportation from "../components/transportation";
 import { DeleteOutlined, DollarOutlined, InboxOutlined, PrinterOutlined } from "@ant-design/icons";
 import { hasPermission } from "../common/roleConfig";
+import { buildCustomsCodeOptions } from "../common/customsCodeLookup";
 
 const passHash = '18667b982b1c774d3c096422e457906afb227cfc7f956d3f4fc1f9bc07b98862';
 
@@ -159,6 +160,10 @@ export default function OrderDetail() {
     const [quoteSubmitting, setQuoteSubmitting] = useState(false);
     const [quoteHistory, setQuoteHistory] = useState([]);
     const [quotePdfPrinting, setQuotePdfPrinting] = useState(false);
+    const quoteUnitPrice = Form.useWatch('unit_price', quoteForm);
+    const quoteSurcharge = Form.useWatch('surcharge', quoteForm);
+    const [customsCodes, setCustomsCodes] = useState([]);
+    const [customsCodesLoading, setCustomsCodesLoading] = useState(false);
 
     // 客户联系信息状态
     const [customerContact, setCustomerContact] = useState({ phone: '', wechat: '' });
@@ -225,6 +230,31 @@ export default function OrderDetail() {
         })();
     }, [jwtPayload]);
 
+    useEffect(() => {
+        let active = true;
+
+        (async () => {
+            setCustomsCodesLoading(true);
+            try {
+                const response = await fetch(`${endpoint}/customs-codes`, {
+                    headers: getSafeHeader()
+                });
+                const result = await response.json();
+                if (active && result.code === 200) {
+                    setCustomsCodes(result.data || []);
+                }
+            } catch (error) {
+                console.error('获取海关编码失败:', error);
+            } finally {
+                if (active) setCustomsCodesLoading(false);
+            }
+        })();
+
+        return () => {
+            active = false;
+        };
+    }, []);
+
     // 如果当前业务员不在 salesperson 列表中，将其加入选项
     useEffect(() => {
         if (salesman && salesman.id !== undefined && salesman.id !== null) {
@@ -265,9 +295,11 @@ export default function OrderDetail() {
 
     const currentUserId = jwtPayload?.user_id ?? jwtPayload?.id ?? jwtPayload?.uid;
     const userRoles = jwtPayload?.roles || (jwtPayload?.role ? [jwtPayload.role] : []);
-    const canQuote = hasPermission(userRoles, ['salesperson']);
+    const isCurrentSalesman = currentUserId != null && salesman?.id != null
+        && Number(currentUserId) === Number(salesman.id);
+    const canQuote = hasPermission(userRoles, ['salesperson']) && isCurrentSalesman;
     const canEditSalesman = hasPermission(jwtPayload?.roles, ['admin'])
-        || (currentUserId !== undefined && salesman?.id !== undefined && Number(currentUserId) === Number(salesman.id));
+        || isCurrentSalesman;
     const finalQuote = quoteHistory.find(item => item.is_final);
     const currentTransportation = (descriptionData.transportation || '').trim();
     const currentQuoteMode = transportationModes.find(item => item.name === currentTransportation);
@@ -306,7 +338,8 @@ export default function OrderDetail() {
             await fetchTransportationModes();
         }
         quoteForm.setFieldsValue({
-            quoted_price: undefined,
+            unit_price: undefined,
+            surcharge: 0,
             quote_remark: '',
         });
         setQuoteHistory([]);
@@ -323,14 +356,16 @@ export default function OrderDetail() {
                 headers: { ...getSafeHeader(), 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     quote_remark: values.quote_remark,
-                    quoted_price: Number(values.quoted_price || 0),
+                    unit_price: Number(values.unit_price || 0),
+                    surcharge: Number(values.surcharge || 0),
                 })
             });
             const data = await res.json();
             if (data.code === 200) {
                 messageX.success(data.msg || '报价已提交');
                 quoteForm.setFieldsValue({
-                    quoted_price: undefined,
+                    unit_price: undefined,
+                    surcharge: 0,
                     quote_remark: '',
                 });
                 if (data.data?.is_final && data.data?.transportation_name) {
@@ -449,6 +484,10 @@ export default function OrderDetail() {
     const [form] = Form.useForm();
     const [editingKey, setEditingKey] = useState('');
     const [cargoData, setCargoData] = useState([]);
+    const currentQuoteWeight = cargoData.reduce((sum, cargo) => sum + Number(cargo.weight || 0), 0);
+    const quoteReceivablePreview = (
+        currentQuoteWeight * Number(quoteUnitPrice || 0) + Number(quoteSurcharge || 0)
+    );
     const fetchCargoData = async () => {
         const {
             code,
@@ -913,11 +952,20 @@ export default function OrderDetail() {
                         <Descriptions.Item label="当前运输方式">
                             {currentTransportation || '-'}
                         </Descriptions.Item>
-                        <Descriptions.Item label="最低报价">
-                            {currentMinPrice.toFixed(2)}
+                        <Descriptions.Item label="最低单价">
+                            {currentMinPrice.toFixed(4)} CNY/kg
+                        </Descriptions.Item>
+                        <Descriptions.Item label="当前总重">
+                            {currentQuoteWeight.toFixed(3)} kg
+                        </Descriptions.Item>
+                        <Descriptions.Item label="应收账款">
+                            <Typography.Text strong>{quoteReceivablePreview.toFixed(2)} CNY</Typography.Text>
                         </Descriptions.Item>
                     </Descriptions>
-                    <Form.Item name="quoted_price" label="报价" rules={[{ required: true, message: '请输入报价' }]}>
+                    <Form.Item name="unit_price" label="每公斤单价 (CNY/kg)" rules={[{ required: true, message: '请输入每公斤单价' }]}>
+                        <InputNumber min={0} precision={4} style={{ width: '100%' }} />
+                    </Form.Item>
+                    <Form.Item name="surcharge" label="附加费 (CNY)" rules={[{ required: true, message: '请输入附加费' }]}>
                         <InputNumber min={0} precision={2} style={{ width: '100%' }} />
                     </Form.Item>
                     <Form.Item name="quote_remark" label="报价说明">
@@ -927,7 +975,7 @@ export default function OrderDetail() {
                 <Space style={{ marginBottom: 12 }}>
                     <Typography.Text type={finalQuote ? 'success' : 'secondary'}>
                         {finalQuote
-                            ? `当前最终报价：${Number(finalQuote.quoted_price || 0).toFixed(2)} / ${finalQuote.transportation_name}`
+                            ? `${finalQuote.is_effective ? '当前有效报价' : '当前报价需重报'}：${Number(finalQuote.unit_price || 0).toFixed(4)} CNY/kg + ${Number(finalQuote.surcharge || 0).toFixed(2)} CNY，应收 ${Number(finalQuote.receivable_amount || 0).toFixed(2)} CNY`
                             : '暂无最终采纳报价'}
                     </Typography.Text>
                     <Button
@@ -948,9 +996,15 @@ export default function OrderDetail() {
                     columns={[
                         { title: '版本', dataIndex: 'version_no', key: 'version_no', width: 70 },
                         { title: '渠道', dataIndex: 'transportation_name', key: 'transportation_name' },
-                        { title: '报价', dataIndex: 'quoted_price', key: 'quoted_price', width: 90, render: v => Number(v || 0).toFixed(2) },
-                        { title: '最低', dataIndex: 'min_price', key: 'min_price', width: 90, render: v => Number(v || 0).toFixed(2) },
-                        { title: '状态', dataIndex: 'status', key: 'status', width: 110, render: v => <Tag>{v}</Tag> },
+                        { title: '单价', dataIndex: 'unit_price', key: 'unit_price', width: 100, render: v => Number(v || 0).toFixed(4) },
+                        { title: '附加费', dataIndex: 'surcharge', key: 'surcharge', width: 90, render: v => Number(v || 0).toFixed(2) },
+                        { title: '重量', dataIndex: 'weight_snapshot', key: 'weight_snapshot', width: 90, render: v => Number(v || 0).toFixed(3) },
+                        { title: '应收', dataIndex: 'receivable_amount', key: 'receivable_amount', width: 100, render: v => Number(v || 0).toFixed(2) },
+                        { title: '最低p', dataIndex: 'min_price', key: 'min_price', width: 90, render: v => Number(v || 0).toFixed(4) },
+                        {
+                            title: '状态', dataIndex: 'validity_status', key: 'validity_status', width: 110,
+                            render: v => <Tag color={v === 'effective' ? 'green' : v === 'stale' ? 'orange' : v === 'rejected' ? 'red' : 'blue'}>{({ effective: '有效', stale: '重量失效', pending: '待审核', rejected: '已驳回', superseded: '已替代' })[v] || v}</Tag>
+                        },
                         { title: '报价人', dataIndex: 'quoter_name', key: 'quoter_name', width: 100 },
                     ]}
                 />
@@ -1004,8 +1058,44 @@ export default function OrderDetail() {
                         );
                     }
 
+                    if (v.name === 'post_code') {
+                        return (
+                            <Descriptions.Item key={k} span={v.span || 1} label={v.label.split('/')[0]}>
+                                {TransportationEditing === 'post_code' ? (
+                                    <Select
+                                        autoFocus
+                                        showSearch
+                                        allowClear
+                                        loading={customsCodesLoading}
+                                        value={descriptionData[v.name] || undefined}
+                                        options={buildCustomsCodeOptions(customsCodes, '')}
+                                        optionFilterProp="label"
+                                        placeholder="输入品名搜索"
+                                        style={{ width: '100%', minWidth: 0 }}
+                                        popupMatchSelectWidth={false}
+                                        onChange={(value) => {
+                                            handleDescriptionDataChange(value || '');
+                                            setTransportationEditing('');
+                                        }}
+                                        onBlur={() => setTransportationEditing('')}
+                                        notFoundContent={customsCodesLoading ? '加载中...' : '未找到匹配的海关编码'}
+                                    />
+                                ) : (
+                                    <Typography.Text
+                                        copyable={!!descriptionData[v.name]}
+                                        editable={{
+                                            onStart: () => setTransportationEditing(v.name),
+                                        }}
+                                    >
+                                        {descriptionData[v.name]}
+                                    </Typography.Text>
+                                )}
+                            </Descriptions.Item>
+                        );
+                    }
+
                     return v.name === 'en_name' ? (
-                        <Descriptions.Item style={TransportationEditing ? { width: 300 } : {}} key={k} span={v.span || 1}
+                        <Descriptions.Item style={TransportationEditing === 'en_name' ? { width: 300 } : {}} key={k} span={v.span || 1}
                             label={v.label.split('/')[0]}>
                             {TransportationEditing === 'en_name' && v.name === 'en_name' ? (
                                 <GoodInput onEnter={() => setTransportationEditing("")}

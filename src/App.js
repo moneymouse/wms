@@ -17,7 +17,8 @@ import {
     AccountBookOutlined,
     ToolOutlined,
     DollarOutlined,
-    AuditOutlined
+    AuditOutlined,
+    TransactionOutlined
 } from '@ant-design/icons';
 import { Avatar, Button, Layout, Menu, theme, Tooltip, Drawer, Grid } from 'antd';
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
@@ -138,6 +139,11 @@ function App() {
             key: 'bonus',
             icon: <GiftOutlined />,
             label: '奖金',
+        },
+        {
+            key: 'receipts',
+            icon: <TransactionOutlined />,
+            label: '收款管理',
         },
         {
             key: 'finance',

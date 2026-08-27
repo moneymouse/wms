@@ -1,5 +1,5 @@
 import React, {useEffect, useState} from 'react';
-import { Dropdown, Button, message } from 'antd';
+import { Dropdown, message } from 'antd';
 import { DownloadOutlined } from '@ant-design/icons';
 import { endpoint } from '../config.js';
 import getSafeHeader from '../common/safeHeader';
@@ -20,7 +20,11 @@ const ExportButton = ({ selectedKeys, selectedCargos = [], data, onSuccess }) =>
             .then(r => r.json())
             .then(res => {
                 if (res.code === 200) {
-                    const dynamicItems = (res.data || []).map(t => ({ key: t.mode_key, label: t.label }));
+                    const dynamicItems = (res.data || []).map(t => ({
+                        key: t.mode_key,
+                        label: t.label,
+                        requiresValidQuote: t.requires_valid_quote !== false
+                    }));
                     const allItems = [...dynamicItems, ...FIXED_EXPORT_ITEMS];
                     setTemplates(allItems);
                     if (allItems.length > 0 && !allItems.find(i => i.key === exportType)) {
@@ -65,7 +69,7 @@ const ExportButton = ({ selectedKeys, selectedCargos = [], data, onSuccess }) =>
                 const a = document.createElement('a');
                 a.href = fileUrl;
                 const date = new Date();
-                a.download = `客户转单号_${date.getSeconds()}` + '.txt';
+                a.download = `客户转单号_${date.getSeconds()}.txt`;
                 document.body.appendChild(a);
                 a.click();
                 a.remove();
@@ -79,7 +83,17 @@ const ExportButton = ({ selectedKeys, selectedCargos = [], data, onSuccess }) =>
                     headers: getSafeHeader(),
                     method: 'POST'
                 });
-                const { data: { document_id } } = await result.json();
+                const resultData = await result.json();
+                if (!result.ok || resultData.code !== 200) {
+                    const blocked = (resultData?.data?.blocked_orders || [])
+                        .map(item => item.order_id)
+                        .join('、');
+                    throw new Error(blocked
+                        ? `${resultData.msg || '导出失败'}：${blocked}`
+                        : (resultData.msg || '导出失败'));
+                }
+                const document_id = resultData.data?.document_id;
+                if (!document_id) throw new Error('导出文件生成失败');
                 const res = await fetch(`${endpoint}/cargo/excel/${document_id}`, { headers: getSafeHeader() });
                 const blob = await res.blob();
                 const fileUrl = URL.createObjectURL(blob);
@@ -96,7 +110,7 @@ const ExportButton = ({ selectedKeys, selectedCargos = [], data, onSuccess }) =>
             }
         } catch (error) {
             console.log(error);
-            message.error("导出失败");
+            message.error(error?.message || "导出失败");
         } finally {
             setLoading(false);
         }
@@ -122,4 +136,3 @@ const ExportButton = ({ selectedKeys, selectedCargos = [], data, onSuccess }) =>
 };
 
 export default ExportButton;
-

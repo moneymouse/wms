@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import {
     Card,
+    AutoComplete,
     Input,
     InputNumber,
     Select,
@@ -32,6 +33,7 @@ import {
 import { endpoint } from '../config';
 import getSafeHeader from '../common/safeHeader';
 import { hasPermission } from '../common/roleConfig';
+import { buildCustomsCodeOptions, findCustomsCodeForName } from '../common/customsCodeLookup';
 
 const { Title, Text } = Typography;
 const { Option } = Select;
@@ -73,7 +75,11 @@ const getBoxItemDetails = (box) => {
                 const name = (row?.item_name || '').trim();
                 const piece = Number(row?.piece_count || 0);
                 if (!name) return null;
-                return { item_name: name, piece_count: piece > 0 ? piece : 0 };
+                return {
+                    item_name: name,
+                    customs_code: String(row?.customs_code || '').trim(),
+                    piece_count: piece > 0 ? piece : 0,
+                };
             })
             .filter(Boolean);
     }
@@ -81,7 +87,7 @@ const getBoxItemDetails = (box) => {
     const fallbackName = (box?.item_name || '').trim();
     const fallbackPiece = Number(box?.piece_count || 0);
     return fallbackName
-        ? [{ item_name: fallbackName, piece_count: fallbackPiece > 0 ? fallbackPiece : 0 }]
+        ? [{ item_name: fallbackName, customs_code: '', piece_count: fallbackPiece > 0 ? fallbackPiece : 0 }]
         : [];
 };
 
@@ -147,6 +153,7 @@ export default function PackingListDetail() {
     const [loading, setLoading] = useState(true);
     const [workers, setWorkers] = useState([]);
     const [customers, setCustomers] = useState([]);
+    const [customsCodes, setCustomsCodes] = useState([]);
     const [boxForm] = Form.useForm();
     const [addingBox, setAddingBox] = useState(false);
     const [addBoxVisible, setAddBoxVisible] = useState(false);
@@ -167,6 +174,8 @@ export default function PackingListDetail() {
     const [undoShipping, setUndoShipping] = useState(false);
     const [deletingBoxUid, setDeletingBoxUid] = useState(null);
     const [boxEditForm] = Form.useForm();
+    const addBoxItemDetails = Form.useWatch('item_details', boxForm) || [];
+    const editBoxItemDetails = Form.useWatch('item_details', boxEditForm) || [];
 
     const canDeletePackingList = hasPermission(payload?.roles, ['admin', 'store_manager']);
     const canEditPackingListDetail = hasPermission(payload?.roles, ['admin', 'store_manager', 'salesperson']);
@@ -186,6 +195,7 @@ export default function PackingListDetail() {
             handleViewDetail(uid);
             fetchWorkers();
             fetchCustomers();
+            fetchCustomsCodes();
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [uid]);
@@ -220,6 +230,29 @@ export default function PackingListDetail() {
         } catch (error) {
             console.error('获取操作员列表失败:', error);
         }
+    };
+
+    const fetchCustomsCodes = async () => {
+        try {
+            const res = await fetch(`${endpoint}/customs-codes`, {
+                headers: getSafeHeader()
+            });
+            const data = await res.json();
+            if (data.code === 200) setCustomsCodes(data.data || []);
+        } catch (error) {
+            console.error('获取海关编码失败:', error);
+        }
+    };
+
+    const getCustomsCodeOptions = (itemName) => {
+        return buildCustomsCodeOptions(customsCodes, itemName);
+    };
+
+    const handleItemNameChange = (form, index, value) => {
+        form.setFieldValue(
+            ['item_details', index, 'customs_code'],
+            findCustomsCodeForName(customsCodes, value)
+        );
     };
 
     const handleViewDetail = async (detailUid) => {
@@ -290,7 +323,7 @@ export default function PackingListDetail() {
 
     const openAddBoxModal = () => {
         boxForm.setFieldsValue({
-            item_details: [{ item_name: '', piece_count: null }],
+            item_details: [{ item_name: '', customs_code: '', piece_count: null }],
             weight: null,
             worker_ids: [],
             remark: ''
@@ -305,6 +338,7 @@ export default function PackingListDetail() {
             const itemDetails = (values.item_details || [])
                 .map((row) => ({
                     item_name: String(row?.item_name || '').trim(),
+                    customs_code: String(row?.customs_code || '').trim(),
                     piece_count: Number(row?.piece_count || 0)
                 }))
                 .filter((row) => row.item_name && row.piece_count > 0);
@@ -543,7 +577,7 @@ export default function PackingListDetail() {
         setEditingBox(box);
         boxEditForm.setFieldsValue({
             box_number: box.box_number,
-            item_details: itemDetails.length > 0 ? itemDetails : [{ item_name: '', piece_count: 1 }],
+            item_details: itemDetails.length > 0 ? itemDetails : [{ item_name: '', customs_code: '', piece_count: 1 }],
             weight: box.weight ?? undefined,
             remark: box.remark || '',
             transfer_id: box.transfer_id || '',
@@ -576,6 +610,7 @@ export default function PackingListDetail() {
             const details = (values.item_details || [])
                 .map((row) => ({
                     item_name: String(row?.item_name || '').trim(),
+                    customs_code: String(row?.customs_code || '').trim(),
                     piece_count: Number(row?.piece_count || 0)
                 }))
                 .filter((row) => row.item_name && row.piece_count > 0);
@@ -1152,6 +1187,9 @@ export default function PackingListDetail() {
                                                         itemDetails.map((row, itemIdx) => (
                                                             <div key={`${box.uid}-detail-${itemIdx}`}>
                                                                 <Text>{row.item_name}</Text>
+                                                                {row.customs_code && (
+                                                                    <Text type="secondary" style={{ marginLeft: 8 }}>海关编码：{row.customs_code}</Text>
+                                                                )}
                                                                 <Text type="secondary" style={{ marginLeft: 8 }}>x{row.piece_count}</Text>
                                                             </div>
                                                         ))
@@ -1267,7 +1305,7 @@ export default function PackingListDetail() {
                 <Form
                     form={boxForm}
                     layout="vertical"
-                    initialValues={{ item_details: [{ item_name: '', piece_count: null }] }}
+                    initialValues={{ item_details: [{ item_name: '', customs_code: '', piece_count: null }] }}
                 >
                     <Form.Item label="品名与件数" style={{ marginBottom: 12 }}>
                         <Form.List name="item_details">
@@ -1289,7 +1327,22 @@ export default function PackingListDetail() {
                                                 rules={[{ required: true, message: '请输入品名' }]}
                                                 style={{ flex: 1, marginBottom: 0, minWidth: 60 }}
                                             >
-                                                <Input placeholder="品名" />
+                                                <Input
+                                                    placeholder="品名"
+                                                    onChange={event => handleItemNameChange(boxForm, field.name, event.target.value)}
+                                                />
+                                            </Form.Item>
+
+                                            <Form.Item
+                                                {...field}
+                                                name={[field.name, 'customs_code']}
+                                                style={{ width: screens.md ? 210 : 120, marginBottom: 0, minWidth: 90 }}
+                                            >
+                                                <AutoComplete
+                                                    options={getCustomsCodeOptions(addBoxItemDetails[field.name]?.item_name)}
+                                                    placeholder="海关编码"
+                                                    allowClear
+                                                />
                                             </Form.Item>
 
                                             <Form.Item
@@ -1303,7 +1356,7 @@ export default function PackingListDetail() {
                                         </Space>
                                     ))}
 
-                                    <Button type="dashed" icon={<PlusOutlined />} onClick={() => add({ item_name: '', piece_count: null })}>
+                                    <Button type="dashed" icon={<PlusOutlined />} onClick={() => add({ item_name: '', customs_code: '', piece_count: null })}>
                                         新增品名件数
                                     </Button>
                                 </div>
@@ -1493,7 +1546,21 @@ export default function PackingListDetail() {
                                             rules={[{ required: true, message: '请输入品名' }]}
                                             style={{ flex: 1, minWidth: 60, marginBottom: 8 }}
                                         >
-                                            <Input placeholder="品名" />
+                                            <Input
+                                                placeholder="品名"
+                                                onChange={event => handleItemNameChange(boxEditForm, field.name, event.target.value)}
+                                            />
+                                        </Form.Item>
+                                        <Form.Item
+                                            {...field}
+                                            name={[field.name, 'customs_code']}
+                                            style={{ width: screens.md ? 210 : 120, minWidth: 90, marginBottom: 8 }}
+                                        >
+                                            <AutoComplete
+                                                options={getCustomsCodeOptions(editBoxItemDetails[field.name]?.item_name)}
+                                                placeholder="海关编码"
+                                                allowClear
+                                            />
                                         </Form.Item>
                                         <Form.Item
                                             {...field}
@@ -1505,7 +1572,7 @@ export default function PackingListDetail() {
                                         </Form.Item>
                                     </Space>
                                 ))}
-                                <Button type="dashed" onClick={() => add({ item_name: '', piece_count: 1 })} icon={<PlusOutlined />}>
+                                <Button type="dashed" onClick={() => add({ item_name: '', customs_code: '', piece_count: 1 })} icon={<PlusOutlined />}>
                                     添加品名明细
                                 </Button>
                             </>

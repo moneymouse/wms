@@ -11,6 +11,9 @@ const { Title, Text } = Typography;
 const EVENT_LABELS = {
     transportation_cost: '渠道成本',
     order_quote: '订单报价',
+    payment_receipt: '收款单',
+    sales_bonus_rate: '跟单奖金费率',
+    supplier_export: '供应商导出',
 };
 
 const ACTION_COLORS = {
@@ -21,6 +24,10 @@ const ACTION_COLORS = {
     quote_adopt: 'green',
     quote_approve: 'green',
     quote_reject: 'red',
+    receipt_create: 'blue',
+    receipt_approve: 'green',
+    receipt_reject: 'red',
+    export_blocked_invalid_quote: 'red',
 };
 
 export default function AuditLogs() {

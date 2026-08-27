@@ -1,44 +1,96 @@
-import {AutoComplete} from "antd";
-import React, {useState} from "react";
+import { AutoComplete } from 'antd';
+import React, { forwardRef, useEffect, useMemo, useState } from 'react';
 
-const goodList = [{'label': 'CLOTH', 'value': 'CLOTH'}, {
-    'label': 'T-SHIRT', 'value': 'T-SHIRT'
-}, {'label': 'SWEATSHIRT', 'value': 'SWEATSHIRT'}, {'label': 'VEST', 'value': 'VEST'}, {
-    'label': 'DRESS', 'value': 'DRESS'
-}, {'label': 'SUIT', 'value': 'SUIT'}, {'label': 'SCARF', 'value': 'SCARF'}, {
-    'label': 'SHORTS', 'value': 'SHORTS'
-}, {'label': 'SHIRT', 'value': 'SHIRT'}, {'label': 'SWEATER', 'value': 'SWEATER'}, {
-    'label': 'BLAZER', 'value': 'BLAZER'
-}, {'label': 'BAG', 'value': 'BAG'}, {'label': 'HAND BAG', 'value': 'HAND BAG'}, {
-    'label': 'PURSE', 'value': 'PURSE'
-}, {'label': 'WALLET', 'value': 'WALLET'}, {'label': 'BRIEFCASE', 'value': 'BRIEFCASE'}, {
-    'label': 'SHOULDER BAG', 'value': 'SHOULDER BAG'
-}, {'label': 'HOLDALL', 'value': 'HOLDALL'}, {'label': 'BACKPACK', 'value': 'BACKPACK'}, {
-    'label': 'BROOCH', 'value': 'BROOCH'
-}, {'label': 'CUFFINK', 'value': 'CUFFINK'}, {'label': 'PENDANT', 'value': 'PENDANT'}, {
-    'label': 'EARRING', 'value': 'EARRING'
-}, {'label': 'BUCKLE', 'value': 'BUCKLE'}, {'label': 'BUCKLE', 'value': 'BUCKLE'},
-    {'label': 'LABEL', 'value': 'LABEL'}]
+import { endpoint } from '../config';
+import getSafeHeader from '../common/safeHeader';
 
-export default function ({onChange, onBlur, onEnter, defaultValue, ref}) {
-    const [goodOptions, setGoodOptions] = useState([])
+export const fallbackGoodsNames = [
+    'CLOTH', 'T-SHIRT', 'SWEATSHIRT', 'VEST', 'DRESS', 'SUIT', 'SCARF', 'SHORTS',
+    'SHIRT', 'SWEATER', 'BLAZER', 'BAG', 'HAND BAG', 'PURSE', 'WALLET', 'BRIEFCASE',
+    'SHOULDER BAG', 'HOLDALL', 'BACKPACK', 'BROOCH', 'CUFFINK', 'PENDANT', 'EARRING',
+    'BUCKLE', 'LABEL',
+];
 
-    return (<AutoComplete
-        onSearch={(value => {
-            if (value !== '') {
-                const res = goodList.filter(val => val.label.toLowerCase().includes(value.toLowerCase()));
-                setGoodOptions(res)
-            } else {
-                setGoodOptions(goodList)
-            }
+const toOption = name => ({ label: name, value: name });
 
-        })}
-        ref={ref}
-        defaultValue={defaultValue}
-        onSelect={onBlur}
-        style={{width: "100%"}}
-        onBlur={onBlur}
-        onKeyUp={(e) => e.code === 'Enter' && onEnter()}
-        onChange={onChange}
-        options={goodOptions.length === 0 ? goodList : goodOptions}/>)
+export function buildGoodsNameGroups(records) {
+    const groups = new Map();
+    (records || []).forEach(record => {
+        const name = String(record?.name || '').trim();
+        if (!name) return;
+        const category = String(record?.category || '').trim() || '未分类';
+        if (!groups.has(category)) groups.set(category, new Set());
+        groups.get(category).add(name);
+    });
+
+    return Array.from(groups.entries())
+        .sort(([categoryA], [categoryB]) => {
+            if (categoryA === '未分类') return 1;
+            if (categoryB === '未分类') return -1;
+            return categoryA.localeCompare(categoryB, 'zh-CN');
+        })
+        .map(([category, names]) => ({
+            label: category,
+            options: Array.from(names)
+                .sort((nameA, nameB) => nameA.localeCompare(nameB, 'en', { sensitivity: 'base' }))
+                .map(toOption),
+        }));
 }
+
+const fallbackGroups = [{ label: '常用品名', options: fallbackGoodsNames.map(toOption) }];
+
+const GoodName = forwardRef(function GoodName(
+    { onChange, onBlur, onEnter, defaultValue },
+    ref,
+) {
+    const [groups, setGroups] = useState(fallbackGroups);
+    const [searchValue, setSearchValue] = useState('');
+
+    useEffect(() => {
+        let active = true;
+        const loadGoodsNames = async () => {
+            try {
+                const response = await fetch(`${endpoint}/goods-names?lang=en`, {
+                    headers: getSafeHeader(),
+                });
+                const result = await response.json();
+                const loadedGroups = result.code === 200 ? buildGoodsNameGroups(result.data) : [];
+                if (active && loadedGroups.length > 0) setGroups(loadedGroups);
+            } catch (error) {
+                console.error('Fetch English goods names error:', error);
+            }
+        };
+        loadGoodsNames();
+        return () => {
+            active = false;
+        };
+    }, []);
+
+    const options = useMemo(() => {
+        const keyword = searchValue.trim().toLocaleLowerCase();
+        if (!keyword) return groups;
+        return groups
+            .map(group => ({
+                ...group,
+                options: group.options.filter(option => option.value.toLocaleLowerCase().includes(keyword)),
+            }))
+            .filter(group => group.options.length > 0);
+    }, [groups, searchValue]);
+
+    return (
+        <AutoComplete
+            ref={ref}
+            defaultValue={defaultValue}
+            options={options}
+            filterOption={false}
+            onSearch={setSearchValue}
+            onSelect={onBlur}
+            onBlur={onBlur}
+            onKeyUp={event => event.code === 'Enter' && onEnter?.()}
+            onChange={onChange}
+            style={{ width: '100%' }}
+        />
+    );
+});
+
+export default GoodName;
