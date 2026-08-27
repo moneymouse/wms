@@ -18,6 +18,7 @@ from data.user.User import user_model
 from utils.audit import record_audit
 from utils.log import log
 from utils.quote_pdf import build_quote_pdf
+from services import receivable_service
 
 order_bp = Blueprint("order", __name__, url_prefix="/api")
 
@@ -99,27 +100,8 @@ def _current_operator():
     }
 
 
-def _quote_dict(row):
-    return {
-        "id": row.id,
-        "order_uid": row.order_uid,
-        "version_no": row.version_no,
-        "transportation_mode_id": row.transportation_mode_id,
-        "transportation_name": row.transportation_name,
-        "channel_cost": row.channel_cost,
-        "min_price": row.min_price,
-        "quoted_price": row.quoted_price,
-        "status": row.status,
-        "is_final": row.is_final,
-        "quote_remark": row.quote_remark,
-        "review_remark": row.review_remark,
-        "quoter_id": row.quoter_id,
-        "quoter_name": row.quoter_name,
-        "reviewer_id": row.reviewer_id,
-        "reviewer_name": row.reviewer_name,
-        "create_date": row.create_date,
-        "review_date": row.review_date,
-    }
+def _quote_dict(session, row):
+    return receivable_service.quote_to_dict(session, row)
 
 
 def _order_pdf_dict(order):
@@ -420,7 +402,7 @@ def get_order_quotes(uid):
             .order_by(OrderQuoteVersionTable.version_no.desc())
             .all()
         )
-        return jsonify({"code": 200, "data": [_quote_dict(row) for row in rows]})
+        return jsonify({"code": 200, "data": [_quote_dict(session, row) for row in rows]})
 
 
 @order_bp.post("/orders/<string:uid>/quotes")
@@ -428,17 +410,19 @@ def get_order_quotes(uid):
 @allow(role=["salesperson"])
 def create_order_quote(uid):
     body = json.loads(request.data or "{}")
-    quoted_price = body.get("quoted_price")
+    raw_unit_price = body.get("unit_price", body.get("quoted_price"))
+    raw_surcharge = body.get("surcharge", 0)
     quote_remark = body.get("quote_remark")
 
-    if quoted_price is None:
-        return jsonify({"code": 400, "msg": "报价不能为空"}), 400
+    if raw_unit_price is None:
+        return jsonify({"code": 400, "msg": "每公斤单价不能为空"}), 400
     try:
-        quoted_price = float(quoted_price)
-    except (TypeError, ValueError):
-        return jsonify({"code": 400, "msg": "报价格式不正确"}), 400
-    if quoted_price < 0:
-        return jsonify({"code": 400, "msg": "报价不能小于 0"}), 400
+        quote_unit_price = receivable_service.unit_price(raw_unit_price)
+        surcharge = receivable_service.money(raw_surcharge)
+    except ValueError as exc:
+        return jsonify({"code": 400, "msg": str(exc)}), 400
+    if quote_unit_price < 0 or surcharge < 0:
+        return jsonify({"code": 400, "msg": "每公斤单价和附加费不能小于 0"}), 400
 
     operator = _current_operator()
     now = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -446,6 +430,12 @@ def create_order_quote(uid):
         order = session.query(OrderTable).filter(OrderTable.uid == uid).first()
         if order is None:
             return jsonify({"code": 404, "msg": "订单不存在"}), 404
+        if (
+            order.salesman_id is None
+            or operator["id"] is None
+            or str(order.salesman_id) != str(operator["id"])
+        ):
+            return jsonify({"code": 403, "msg": "仅当前订单的业务员可以报价"}), 403
 
         transportation_name = (order.transportation or "").strip()
         mode = None
@@ -460,8 +450,22 @@ def create_order_quote(uid):
         quote_transportation_name = mode.name if mode else transportation_name
         channel_cost = float(mode.cost or 0) if mode else 0
         min_price = float(mode.min_price or 0) if mode else 0
+        weight_snapshot = receivable_service.current_order_weight(session, uid)
+        receivable_amount = receivable_service.calculate_receivable(
+            weight_snapshot, quote_unit_price, surcharge
+        )
+        committed_amount = receivable_service.get_committed_receipt_amount(session, uid)
+        if receivable_amount < committed_amount:
+            return jsonify({
+                "code": 409,
+                "msg": f"新应收 {receivable_amount:.2f} 不能低于已收及待审核金额 {committed_amount:.2f}",
+            }), 409
 
-        status = "adopted" if quoted_price >= min_price else "pending"
+        status = (
+            "adopted"
+            if quote_unit_price >= receivable_service.unit_price(min_price)
+            else "pending"
+        )
         is_final = status == "adopted"
         if is_final:
             (
@@ -479,18 +483,23 @@ def create_order_quote(uid):
             transportation_name=quote_transportation_name,
             channel_cost=channel_cost,
             min_price=min_price,
-            quoted_price=quoted_price,
+            unit_price=quote_unit_price,
+            surcharge=surcharge,
+            weight_snapshot=weight_snapshot,
+            receivable_amount=receivable_amount,
+            quoted_price=float(quote_unit_price),
             status=status,
             is_final=is_final,
             quote_remark=quote_remark,
             quoter_id=operator["id"],
             quoter_name=operator["name"],
             create_date=now,
+            effective_date=now if is_final else None,
         )
         session.add(quote)
         session.commit()
         session.refresh(quote)
-        after_data = _quote_dict(quote)
+        after_data = _quote_dict(session, quote)
         if is_final:
             after_data["order_transportation"] = order.transportation
 
@@ -520,7 +529,7 @@ def get_quote_approvals():
         )
         data = []
         for quote, order in rows:
-            item = _quote_dict(quote)
+            item = _quote_dict(session, quote)
             item.update({
                 "order_id": order.order_id,
                 "customer_name": order.customer_name,
@@ -553,8 +562,10 @@ def review_quote_approval(quote_id):
         if quote.status != "pending":
             return jsonify({"code": 409, "msg": "该报价已审核"}), 409
 
-        before_data = _quote_dict(quote)
+        before_data = _quote_dict(session, quote)
         if action == "approve":
+            if not receivable_service.quote_is_fresh(session, quote):
+                return jsonify({"code": 409, "msg": "订单重量已变化，请业务员重新报价"}), 409
             (
                 session.query(OrderQuoteVersionTable)
                 .filter(OrderQuoteVersionTable.order_uid == quote.order_uid)
@@ -562,6 +573,7 @@ def review_quote_approval(quote_id):
             )
             quote.status = "approved"
             quote.is_final = True
+            quote.effective_date = now
             order = (
                 session.query(OrderTable)
                 .filter(OrderTable.uid == quote.order_uid)
@@ -573,13 +585,14 @@ def review_quote_approval(quote_id):
         else:
             quote.status = "rejected"
             quote.is_final = False
+            quote.effective_date = None
         quote.review_remark = review_remark
         quote.reviewer_id = operator["id"]
         quote.reviewer_name = operator["name"]
         quote.review_date = now
         session.commit()
         session.refresh(quote)
-        after_data = _quote_dict(quote)
+        after_data = _quote_dict(session, quote)
         if action == "approve":
             after_data["order_transportation"] = quote.transportation_name
 
@@ -616,7 +629,7 @@ def get_order_quote_pdf(uid):
         if quote is None:
             return jsonify({"code": 404, "msg": "暂无最终采纳报价"}), 404
 
-        pdf_stream = build_quote_pdf(_order_pdf_dict(order), _quote_dict(quote))
+        pdf_stream = build_quote_pdf(_order_pdf_dict(order), _quote_dict(session, quote))
         encoded = base64.b64encode(pdf_stream.getvalue()).decode("ascii")
         safe_order_id = order.order_id or uid
         return jsonify({

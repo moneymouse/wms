@@ -12,11 +12,12 @@ services:
       - mysql_data:/var/lib/mysql
       # Note: schema.sql removed - Alembic manages database schema
     ports:
-      - "3306:3306"
+      # Only expose MySQL to the server itself. Containers use the internal network.
+      - "127.0.0.1:3306:3306"
     networks:
       - wms_network
     healthcheck:
-      test: [ "CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-proot_password_change_me" ]
+      test: [ "CMD-SHELL", "mysqladmin ping -h localhost -u root -p$${MYSQL_ROOT_PASSWORD} --silent" ]
       interval: 10s
       timeout: 5s
       retries: 10

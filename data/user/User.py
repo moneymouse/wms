@@ -167,7 +167,13 @@ class UserModel:
             if user is None:
                 return False
 
-            from data.DB import OrderTable, CargoTable
+            from data.DB import (
+                CargoTable,
+                OrderQuoteVersionTable,
+                OrderTable,
+                PaymentReceiptTable,
+                SalesFollowupBonusRateTable,
+            )
             from data.packing.PackingList import PackingListTable, BoxWorkerTable
             from data.user.PasswordResetRequest import PasswordResetRequestTable
             from data.finance.BonusItem import BonusItemTable
@@ -185,6 +191,21 @@ class UserModel:
             session.query(BonusRateTable).filter(
                 BonusRateTable.updated_by == user_id
             ).update({"updated_by": None}, synchronize_session=False)
+            session.query(OrderQuoteVersionTable).filter(
+                OrderQuoteVersionTable.quoter_id == user_id
+            ).update({"quoter_id": None}, synchronize_session=False)
+            session.query(OrderQuoteVersionTable).filter(
+                OrderQuoteVersionTable.reviewer_id == user_id
+            ).update({"reviewer_id": None}, synchronize_session=False)
+            session.query(PaymentReceiptTable).filter(
+                PaymentReceiptTable.creator_id == user_id
+            ).update({"creator_id": None}, synchronize_session=False)
+            session.query(PaymentReceiptTable).filter(
+                PaymentReceiptTable.reviewer_id == user_id
+            ).update({"reviewer_id": None}, synchronize_session=False)
+            session.query(SalesFollowupBonusRateTable).filter(
+                SalesFollowupBonusRateTable.creator_id == user_id
+            ).update({"creator_id": None}, synchronize_session=False)
 
             session.query(BoxWorkerTable).filter(
                 BoxWorkerTable.worker_id == user_id

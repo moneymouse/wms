@@ -62,3 +62,28 @@
 
 ## For local information
 load @CLAUDE.local.md
+
+SELECT
+  id,
+  user_name,
+  user_role,
+  `desc`,
+  kwargs,
+  json_body,
+  method,
+  log_date
+FROM operation_logs
+WHERE 
+  `desc` = 'Add box to packing list.'
+  AND log_date >= '2026-06-20 12:29:00'
+  AND log_date <  '2026-06-20 12:35:00';
+
+SELECT
+  uid,
+  packing_list_uid,
+  box_number,
+  item_name,
+  create_date
+FROM cargos
+WHERE uid = '178188662132342846'
+  AND packing_list_uid IS NOT NULL;

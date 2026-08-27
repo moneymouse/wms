@@ -535,6 +535,9 @@ class BoxModel:
             if item_details:
                 for row in item_details:
                     name = str((row or {}).get("item_name") or "").strip()
+                    customs_code = str((row or {}).get("customs_code") or "").strip()
+                    if len(customs_code) > 64:
+                        raise ValueError("customs_code cannot exceed 64 characters")
                     raw_piece = (row or {}).get("piece_count")
                     if not name:
                         continue
@@ -546,7 +549,13 @@ class BoxModel:
                         raise ValueError(
                             "piece_count in item_details must be greater than 0"
                         )
-                    normalized_details.append({"item_name": name, "piece_count": piece})
+                    normalized_details.append(
+                        {
+                            "item_name": name,
+                            "customs_code": customs_code,
+                            "piece_count": piece,
+                        }
+                    )
 
             if normalized_details:
                 final_item_name = "、".join(
@@ -567,7 +576,11 @@ class BoxModel:
 
                 if final_item_name:
                     normalized_details = [
-                        {"item_name": final_item_name, "piece_count": final_piece_count}
+                        {
+                            "item_name": final_item_name,
+                            "customs_code": "",
+                            "piece_count": final_piece_count,
+                        }
                     ]
 
             record = BoxTable(
@@ -673,6 +686,9 @@ class BoxModel:
                 normalized_rows: List[dict] = []
                 for row in normalized_details:
                     name = str((row or {}).get("item_name") or "").strip()
+                    customs_code = str((row or {}).get("customs_code") or "").strip()
+                    if len(customs_code) > 64:
+                        raise ValueError("customs_code cannot exceed 64 characters")
                     if not name:
                         continue
                     raw_piece = (row or {}).get("piece_count")
@@ -684,7 +700,13 @@ class BoxModel:
                         raise ValueError(
                             "piece_count in item_details must be greater than 0"
                         )
-                    normalized_rows.append({"item_name": name, "piece_count": piece})
+                    normalized_rows.append(
+                        {
+                            "item_name": name,
+                            "customs_code": customs_code,
+                            "piece_count": piece,
+                        }
+                    )
 
                 if len(normalized_rows) == 0:
                     raise ValueError("item_details requires at least one valid row")

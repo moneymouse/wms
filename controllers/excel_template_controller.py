@@ -32,6 +32,7 @@ def _template_to_dict(record):
         "config": record.config,
         "template_file": record.template_file,
         "single_order_only": record.single_order_only,
+        "requires_valid_quote": bool(record.requires_valid_quote),
         "create_date": record.create_date,
         "update_date": record.update_date,
     }
@@ -82,6 +83,7 @@ def create_excel_template():
     template_type = (body.get("template_type") or "").strip()
     config = body.get("config") or "{}"
     single_order_only = bool(body.get("single_order_only", False))
+    requires_valid_quote = bool(body.get("requires_valid_quote", True))
 
     if not mode_key:
         return jsonify({"code": 400, "msg": "mode_key 不能为空"}), 400
@@ -100,6 +102,7 @@ def create_excel_template():
         template_type=template_type,
         config=json.dumps(config) if isinstance(config, dict) else str(config),
         single_order_only=single_order_only,
+        requires_valid_quote=requires_valid_quote,
         create_date=now,
         update_date=now,
     )
@@ -127,6 +130,7 @@ def update_excel_template(record_id: int):
     template_type = (body.get("template_type") or "").strip()
     config = body.get("config")
     single_order_only = body.get("single_order_only")
+    requires_valid_quote = body.get("requires_valid_quote")
 
     with SessionFactory() as session:
         record = (
@@ -150,6 +154,9 @@ def update_excel_template(record_id: int):
                 record.single_order_only = bool(single_order_only)
         elif single_order_only is not None:
             record.single_order_only = bool(single_order_only)
+
+        if requires_valid_quote is not None:
+            record.requires_valid_quote = bool(requires_valid_quote)
 
         if config is not None:
             record.config = json.dumps(config) if isinstance(config, dict) else str(config)

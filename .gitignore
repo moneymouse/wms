@@ -1,5 +1,6 @@
 # created by virtualenv automatically
 frontend/
 *.pyc
+*.env
 log/
 .DS_Store

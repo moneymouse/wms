@@ -13,8 +13,10 @@ from controllers.log_controller import log_bp
 from controllers.packing_controller import packing_bp
 from controllers.work_finance_controller import work_finance_bp
 from controllers.goods_name_controller import goods_name_bp
+from controllers.customs_code_controller import customs_code_bp
 from controllers.excel_template_controller import excel_template_bp
 from controllers.transportation_controller import transportation_bp
+from controllers.receivable_controller import receivable_bp
 from services.auth_service import init_admin_user
 
 # ---------------------------------------------------------------------------
@@ -47,8 +49,10 @@ app.register_blueprint(log_bp)
 app.register_blueprint(packing_bp)
 app.register_blueprint(work_finance_bp)
 app.register_blueprint(goods_name_bp)
+app.register_blueprint(customs_code_bp)
 app.register_blueprint(excel_template_bp)
 app.register_blueprint(transportation_bp)
+app.register_blueprint(receivable_bp)
 
 
 # ---------------------------------------------------------------------------

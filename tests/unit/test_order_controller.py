@@ -214,6 +214,7 @@ class TestOrderController(BaseControllerTest, APITestMixin, DatabaseTestMixin):
                 order_id="ORDER-NO-MODE",
                 customer_name="测试客户",
                 transportation="未维护渠道",
+                salesman_id=3,
                 archive=False,
                 create_date="2023-01-01 10:00",
             )

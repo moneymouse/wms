@@ -1,5 +1,7 @@
 """装箱单模型测试"""
 
+from unittest.mock import patch
+
 import pytest
 
 from data.DB import CargoTable
@@ -89,3 +91,57 @@ class TestPackingListModel:
         assert len(result) == 1
         assert result[0]["list_number"] == "DONE-001"
         assert all(group["list_number"] != "DRAFT-001" for group in result)
+
+    def test_box_item_details_preserve_customs_code(self, setup_test_database):
+        session = setup_test_database
+        operator = UserTable(
+            phone="13800000002",
+            name="操作员B",
+            password="hashed-password",
+            status="approved",
+        )
+        session.add(operator)
+        session.commit()
+        session.add(
+            PackingListTable(
+                uid="customs-pl",
+                list_number="CUSTOMS-001",
+                creator_id=operator.id,
+                status="draft",
+                create_date="2026-07-14 10:00",
+            )
+        )
+        session.commit()
+
+        with patch(
+            "data.packing.PackingList.SessionFactory", return_value=session
+        ):
+            created = box_model.create(
+                "customs-pl",
+                "SHOES",
+                2,
+                item_details=[
+                    {
+                        "item_name": "SHOES",
+                        "customs_code": "6404199000",
+                        "piece_count": 2,
+                    }
+                ],
+            )
+            assert created["item_details"][0]["customs_code"] == "6404199000"
+
+            assert box_model.update(
+                created["uid"],
+                {
+                    "item_details": [
+                        {
+                            "item_name": "SHOES",
+                            "customs_code": "6404110000",
+                            "piece_count": 2,
+                        }
+                    ]
+                },
+            )
+            assert box_model.read(created["uid"])["item_details"][0][
+                "customs_code"
+            ] == "6404110000"

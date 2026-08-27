@@ -1297,9 +1297,204 @@ x-token: <JWT_TOKEN>
 
 ---
 
-## 6. 其他
+## 6. 品名管理
 
-### 6.1 获取客户端 IP
+### 6.1 获取品名列表
+
+- **URL:** `GET /api/goods-names`
+- **认证:** 需要
+- **查询参数:** `lang` 可选，取值为 `cn` 或 `en`
+
+响应中的英文品名包含可空的 `category` 子标题字段；空值由前端显示为“未分类”。
+
+```json
+{
+  "code": 200,
+  "data": [
+    {
+      "id": 1,
+      "name": "SHOES",
+      "lang": "en",
+      "category": "鞋包",
+      "create_date": "2026-07-14 10:00",
+      "update_date": "2026-07-14 10:00"
+    }
+  ]
+}
+```
+
+### 6.2 新增、修改和删除品名
+
+- **新增:** `POST /api/goods-names`，管理员权限，请求体为 `{ "name": "SHOES", "lang": "en", "category": "鞋包" }`
+- **修改:** `PUT /api/goods-names/<id>`，管理员权限，请求体为 `{ "name": "TRAINER", "category": "鞋包" }`；未传 `category` 时保留原分类
+- **删除:** `DELETE /api/goods-names/<id>`，管理员权限
+- 同一语言下的品名按名称忽略大小写判重，重复新增或修改返回 `409`
+
+### 6.3 批量导入英文品名
+
+- **URL:** `POST /api/goods-names/import`
+- **认证/权限:** 需要，`admin`
+- **说明:** 在单个事务内导入；文件解析由管理页完成，接口接收解析后的英文品名列表
+
+```json
+{
+  "items": [
+    { "name": "SHOES", "category": "鞋包" },
+    { "name": "TRAINER", "category": "鞋包" }
+  ]
+}
+```
+
+数据库中已有或本批次内重复的英文品名会按名称忽略大小写跳过：
+
+```json
+{
+  "code": 200,
+  "data": {
+    "created_count": 1,
+    "skipped_count": 1,
+    "skipped": [
+      { "name": "SHOES", "category": "鞋包", "reason": "already_exists" }
+    ]
+  }
+}
+```
+
+### 6.4 海关编码映射
+
+- **列表:** `GET /api/customs-codes`，所有已登录用户可访问
+- **新增:** `POST /api/customs-codes`，管理员权限，请求体为 `{ "name": "SHOES", "code": "6404199000" }`
+- **修改:** `PUT /api/customs-codes/<id>`，管理员权限
+- **删除:** `DELETE /api/customs-codes/<id>`，管理员权限
+- 每个品名只保留一条映射，品名匹配忽略大小写
+
+### 6.5 批量导入海关编码
+
+- **URL:** `POST /api/customs-codes/import`
+- **认证/权限:** 需要，`admin`
+- **请求体:** `{ "items": [{ "name": "SHOES", "code": "6404199000" }] }`
+- 已有同名映射且编码变化时更新；编码未变化或文件内同名重复时跳过
+- 响应的 `data` 包含 `created_count`、`updated_count`、`skipped_count` 和 `skipped`
+
+装箱单箱子的 `item_details` 每项支持可选的 `customs_code` 字段：
+
+```json
+{
+  "item_name": "SHOES",
+  "customs_code": "6404199000",
+  "piece_count": 2
+}
+```
+
+---
+
+## 7. 报价、收款与应收账款
+
+所有金额均为 CNY。总金额保留 2 位小数，每公斤单价和跟单奖金费率保留 4 位小数，重量保留 3 位小数。
+
+### 7.1 订单报价
+
+- **列表:** `GET /api/orders/<uid>/quotes`
+- **创建:** `POST /api/orders/<uid>/quotes`，仅允许订单当前 `salesman_id` 对应的 `salesperson`；订单未分配业务员或操作者不是当前业务员时返回 `403`
+- **兼容:** 请求和响应暂时保留 `quoted_price`，其值与 `unit_price` 相同
+
+```json
+{
+  "unit_price": 12.34,
+  "surcharge": 5,
+  "quote_remark": "含偏远附加费"
+}
+```
+
+响应增加 `weight_snapshot`、`current_weight`、`receivable_amount`、`effective_date`、`is_effective` 和 `validity_status`。`receivable_amount` 按 `round(weight_snapshot × unit_price + surcharge, 2)` 计算。低于渠道 `min_price` 的每公斤单价进入 `pending`，附加费不参与最低报价判断。
+
+`validity_status` 取值：`effective`、`pending`、`rejected`、`superseded`、`stale`。订单当前未归档包裹总重与快照相差 0.001kg 或以上时为 `stale`，必须重新报价。
+
+- **待审核报价:** `GET /api/finance/quote-approvals`，权限为 `admin`
+- **审核:** `PUT /api/finance/quote-approvals/<quote_id>`，请求体为 `{ "action": "approve|reject", "review_remark": "..." }`
+- **双语报价单:** `GET /api/orders/<uid>/quote-pdf`
+
+新报价应收低于该订单已审核收款与待审核占用之和时返回 `409`。
+
+### 7.2 可收款订单与收款单
+
+- **可收款订单:** `GET /api/receivables/orders?customer_id=<id>&q=<订单号>`，权限为 `salesperson`、`admin`
+- **创建收款单:** `POST /api/receipts`，权限为 `salesperson`、`admin`
+- **收款单列表:** `GET /api/receipts?p=1&s=20&status=pending&q=<单号或客户>`
+- **收款单详情:** `GET /api/receipts/<id>`
+- **双语 PDF:** `GET /api/receipts/<id>/pdf`
+
+```json
+{
+  "customer_id": 1,
+  "receipt_date": "2026-08-27",
+  "payment_method": "bank_transfer",
+  "remark": "首笔部分收款",
+  "items": [
+    { "order_uid": "ORDER-UID", "amount": 80 }
+  ]
+}
+```
+
+`payment_method` 可取 `cash`、`bank_transfer`、`wechat`、`alipay`、`other`。一张收款单只能包含一个客户的订单；业务员只能登记当前有效报价人为本人的订单，管理员可代登记。待审核金额立即占用可收余额，金额必须大于 0 且不能超额。单号格式为 `RCPT-YYYYMMDD-xxxxxx`。
+
+状态为 `pending`、`approved`、`rejected`。三种状态均可打印，PDF 响应为 Base64 编码，字段 `mime_type` 为 `application/pdf`。
+
+### 7.3 收款审核
+
+- **URL:** `PUT /api/finance/receipts/<id>/review`
+- **权限:** `finance`、`admin`
+- **请求:** `{ "action": "approve|reject", "review_remark": "..." }`
+
+创建人不能审核自己的收款单。驳回必须填写审核意见；驳回单永久保留，原待审核占用自动释放。只有 `approved` 明细计入已收账款。
+
+### 7.4 应收账款台账
+
+- **URL:** `GET /api/finance/accounts-receivable`
+- **权限:** `finance`、`admin`
+- **参数:** `as_of=YYYY-MM-DD`、`customer_id`、`owner_id`、`status=unpaid|partial|paid`、`q`、`p`、`s`
+
+响应 `data.items` 按订单返回负责人、报价生效日、报价重量、应收、已收、未收、待审核占用与结清状态；`data.totals` 返回当前筛选结果的合计。历史口径按报价 `effective_date` 和收款 `review_date` 截止到查询日 23:59:59 计算。
+
+### 7.5 跟单奖金费率
+
+- **列表:** `GET /api/finance/sales-bonus-rates`
+- **新增版本:** `POST /api/finance/sales-bonus-rates`
+- **权限:** `finance`、`admin`
+
+```json
+{
+  "effective_from": "2026-08-01",
+  "rate_per_kg": 0.5,
+  "remark": "八月起执行"
+}
+```
+
+同一生效日期只能有一个版本。历史版本不可覆盖；跟单奖金按报价生效日选择当时有效费率，计算为 `weight_snapshot × rate_per_kg`。
+
+### 7.6 供应商导出报价校验
+
+Excel 模板接口增加布尔字段 `requires_valid_quote`，新增模板默认 `true`。`POST /api/cargo/excel/<mode>` 在生成受限模板前校验整批订单；任一订单无有效报价时整批返回 `409`：
+
+```json
+{
+  "code": 409,
+  "msg": "部分订单尚无有效报价或重量已变化",
+  "data": {
+    "blocked_orders": [
+      { "uid": "ORDER-UID", "order_id": "ERP-001", "reason": "stale" }
+    ]
+  }
+}
+```
+
+硬编码 `kehu` 客户转单号列表不检查报价；前端 `wayBill` 面单导出也不检查报价。受限导出成功或被拦截均写入系统审计日志。
+
+---
+
+## 8. 其他
+
+### 8.1 获取客户端 IP
 
 获取当前请求的客户端 IP 地址。
 
@@ -1320,7 +1515,10 @@ x-token: <JWT_TOKEN>
 | --------------- | -------- | --------------------------------------------- |
 | `admin`         | 管理员   | 所有权限                                      |
 | `store_manager` | 店长     | 除管理员专属外的所有权限，不能分配 admin 角色 |
-| `staff`         | 普通员工 | 基础业务操作                                  |
+| `salesperson`   | 业务员   | 报价、收款登记、本人跟单与奖金查询            |
+| `finance`       | 财务     | 应收台账、收款审核、奖金配置                  |
+| `worker`        | 操作人员 | 本人工作详情和操作奖金查询                    |
+| `clerk`         | 文员     | 基础业务操作                                  |
 
 ---
 
@@ -1336,4 +1534,4 @@ Docker 部署时通过环境变量配置初始管理员：
 
 ---
 
-*文档生成时间: 2026-03-26*
+*文档更新时间: 2026-08-27*

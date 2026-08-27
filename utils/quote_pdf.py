@@ -7,11 +7,12 @@ from reportlab.lib.enums import TA_CENTER, TA_RIGHT
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import mm
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.cidfonts import UnicodeCIDFont
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-pdfmetrics.registerFont(UnicodeCIDFont("STSong-Light"))
+from utils.pdf_fonts import register_pdf_font
+
+
+PDF_FONT = register_pdf_font()
 
 
 def _text(value: Any) -> str:
@@ -38,7 +39,7 @@ def build_quote_pdf(order: Dict[str, Any], quote: Dict[str, Any]) -> BytesIO:
 
     base = ParagraphStyle(
         "Base",
-        fontName="STSong-Light",
+        fontName=PDF_FONT,
         fontSize=11,
         leading=16,
         textColor=colors.HexColor("#333333"),
@@ -60,8 +61,8 @@ def build_quote_pdf(order: Dict[str, Any], quote: Dict[str, Any]) -> BytesIO:
 
     header = Table(
         [[
-            Paragraph(f"<b>订单号:</b> {_text(order.get('order_id'))}", base),
-            Paragraph(f"<b>报价版本:</b> V{_text(quote.get('version_no'))}", right),
+            Paragraph(f"<b>订单号 / Order No.:</b> {_text(order.get('order_id'))}", base),
+            Paragraph(f"<b>报价版本 / Quote Version:</b> V{_text(quote.get('version_no'))}", right),
         ]],
         colWidths=[89 * mm, 89 * mm],
     )
@@ -74,23 +75,33 @@ def build_quote_pdf(order: Dict[str, Any], quote: Dict[str, Any]) -> BytesIO:
     story.append(header)
     story.append(Spacer(1, 8 * mm))
 
+    raw_rows = [
+        ["项目 / Item", "内容 / Details"],
+        ["客户 / Customer", _text(order.get("customer_name")) or "-"],
+        ["收件人 / Receiver", _text(order.get("receiver")) or "-"],
+        ["国家/城市 / Country/City", f"{_text(order.get('country'))} / {_text(order.get('city'))}"],
+        ["地址 / Address", _text(order.get("address")) or "-"],
+        ["货运渠道 / Shipping Channel", _text(quote.get("transportation_name")) or "-"],
+        ["计费重量 / Billing Weight", f"{float(quote.get('weight_snapshot') or 0):.3f} kg"],
+        ["每公斤单价 / Unit Price", f"{float(quote.get('unit_price') or 0):.4f} CNY/kg"],
+        ["附加费 / Surcharge", f"{_money(quote.get('surcharge'))} CNY"],
+        ["应收账款 / Receivable", f"{_money(quote.get('receivable_amount'))} CNY"],
+        ["报价人 / Quoted By", _text(quote.get("quoter_name")) or "-"],
+        ["报价时间 / Quote Time", _text(quote.get("create_date")) or "-"],
+        ["生效时间 / Effective Time", _text(quote.get("effective_date")) or "-"],
+        ["审核人 / Reviewed By", _text(quote.get("reviewer_name")) or "-"],
+    ]
     rows = [
-        ["项目", "内容"],
-        ["客户", _text(order.get("customer_name")) or "-"],
-        ["收件人", _text(order.get("receiver")) or "-"],
-        ["国家/城市", f"{_text(order.get('country'))} / {_text(order.get('city'))}"],
-        ["地址", _text(order.get("address")) or "-"],
-        ["最终货运渠道", _text(quote.get("transportation_name")) or "-"],
-        ["报价金额", _money(quote.get("quoted_price"))],
-        ["报价人", _text(quote.get("quoter_name")) or "-"],
-        ["报价时间", _text(quote.get("create_date")) or "-"],
-        ["审核人", _text(quote.get("reviewer_name")) or "-"],
-        ["审核时间", _text(quote.get("review_date")) or "-"],
+        [
+            Paragraph(f"<b>{left}</b>" if index == 0 else left, base),
+            Paragraph(f"<b>{right_value}</b>" if index == 0 else right_value, base),
+        ]
+        for index, (left, right_value) in enumerate(raw_rows)
     ]
 
-    table = Table(rows, colWidths=[42 * mm, 136 * mm])
+    table = Table(rows, colWidths=[58 * mm, 120 * mm])
     table.setStyle(TableStyle([
-        ("FONTNAME", (0, 0), (-1, -1), "STSong-Light"),
+        ("FONTNAME", (0, 0), (-1, -1), PDF_FONT),
         ("FONTSIZE", (0, 0), (-1, -1), 11),
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f4f6f8")),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#1f497d")),
@@ -103,7 +114,11 @@ def build_quote_pdf(order: Dict[str, Any], quote: Dict[str, Any]) -> BytesIO:
     ]))
     story.append(table)
     story.append(Spacer(1, 10 * mm))
-    story.append(Paragraph("本报价单以系统最终采纳报价为准。", base))
+    story.append(Paragraph(
+        "应收账款 = 计费重量 x 每公斤单价 + 附加费。订单重量变化后需重新报价。 / "
+        "Receivable = billing weight x unit price + surcharge. A new quote is required after any weight change.",
+        base,
+    ))
 
     doc.build(story)
     buffer.seek(0)

@@ -13,12 +13,13 @@ from typing import Dict, List, Optional
 from sqlalchemy import func
 
 from data.database import SessionFactory
-from data.DB import CargoTable, OrderTable
+from data.DB import CargoTable, OrderQuoteVersionTable, OrderTable
 from data.finance import bonus_item_model
 from data.finance.BonusItem import BonusItemTable
 from data.packing.PackingList import BoxTable, BoxWorkerTable, PackingListTable
 from data.user.User import UserTable
 from data.user.Role import RoleTable, user_roles
+from services import receivable_service
 
 
 def normalize_month(month: Optional[str] = None) -> str:
@@ -292,34 +293,31 @@ def get_worker_work_details(worker_id: int, month: Optional[str] = None) -> dict
         )
 
         order_rows = (
-            session.query(
-                OrderTable,
-                func.coalesce(func.sum(CargoTable.weight), 0).label("cargo_total_weight"),
-            )
-            .outerjoin(
-                CargoTable,
-                (CargoTable.target_order_uid == OrderTable.uid)
-                & (CargoTable.archive == False),
-            )
+            session.query(OrderQuoteVersionTable, OrderTable)
+            .join(OrderTable, OrderTable.uid == OrderQuoteVersionTable.order_uid)
             .filter(
-                OrderTable.archive == False,
-                OrderTable.salesman_id == worker_id,
-                OrderTable.create_date.like(f"{month}-%"),
+                OrderTable.archive == False,  # noqa: E712
+                OrderQuoteVersionTable.quoter_id == worker_id,
+                OrderQuoteVersionTable.is_final == True,  # noqa: E712
+                OrderQuoteVersionTable.status.in_(["adopted", "approved"]),
+                OrderQuoteVersionTable.effective_date.like(f"{month}-%"),
             )
-            .group_by(OrderTable.uid)
-            .order_by(OrderTable.create_date.desc(), OrderTable.order_id.asc())
+            .order_by(OrderQuoteVersionTable.effective_date.desc(), OrderTable.order_id.asc())
             .all()
         )
-        orders = [
-            {
+        orders = []
+        for quote, order in order_rows:
+            if not receivable_service.quote_is_fresh(session, quote):
+                continue
+            orders.append({
                 "uid": order.uid,
                 "order_id": order.order_id,
-                "total_weight": float(cargo_total_weight or 0.0),
+                "total_weight": float(quote.weight_snapshot or 0.0),
                 "transportation": order.transportation,
                 "create_date": order.create_date,
-            }
-            for order, cargo_total_weight in order_rows
-        ]
+                "quote_effective_date": quote.effective_date,
+                "quoter_name": quote.quoter_name,
+            })
 
         return {
             "month": month,
@@ -335,6 +333,10 @@ def get_worker_work_details(worker_id: int, month: Optional[str] = None) -> dict
             "counts_by_team_size": counts_by_team_size,
             "total_boxes": len(items),
             "total_orders": len(orders),
+            "followup_order_count": len(orders),
+            "followup_total_weight": round(
+                sum(float(order.get("total_weight") or 0.0) for order in orders), 3
+            ),
             "total_piece_count": sum(
                 int(item.get("piece_count") or 0) for item in items
             ),
@@ -572,6 +574,7 @@ def get_worker_bonus_summary(worker_id: int, month: Optional[str] = None) -> dic
         worker = session.query(UserTable).filter_by(id=worker_id).first()
         if worker is None:
             raise ValueError("worker not found")
+        worker_roles = [role.name for role in worker.roles]
 
         active_items = (
             session.query(BonusItemTable)
@@ -682,6 +685,46 @@ def get_worker_bonus_summary(worker_id: int, month: Optional[str] = None) -> dic
             totals["total_piece_count"] += piece_count
             totals["estimated_bonus"] += box_bonus
 
+        followup = (
+            receivable_service.salesperson_followup_bonus(worker_id, month)
+            if "salesperson" in worker_roles
+            else {
+                "order_count": 0,
+                "total_weight": 0.0,
+                "estimated_bonus": 0.0,
+                "orders": [],
+                "rate_configured": True,
+            }
+        )
+        operation_bonus = round(float(totals["estimated_bonus"]), 2)
+        for order_row in followup["orders"]:
+            day = (order_row.get("effective_date") or "")[:10]
+            if day not in daily_map:
+                daily_map[day] = {
+                    "date": day,
+                    "by_item": {},
+                    "total_boxes": 0,
+                    "total_piece_count": 0,
+                    "estimated_bonus": 0.0,
+                }
+            daily_map[day]["followup_weight"] = round(
+                float(daily_map[day].get("followup_weight") or 0)
+                + float(order_row.get("weight") or 0),
+                3,
+            )
+            daily_map[day]["followup_bonus"] = round(
+                float(daily_map[day].get("followup_bonus") or 0)
+                + float(order_row.get("estimated_bonus") or 0),
+                2,
+            )
+            daily_map[day]["estimated_bonus"] += float(order_row.get("estimated_bonus") or 0)
+
+        totals["operation_estimated_bonus"] = operation_bonus
+        totals["followup_weight"] = followup["total_weight"]
+        totals["followup_order_count"] = followup["order_count"]
+        totals["followup_estimated_bonus"] = followup["estimated_bonus"]
+        totals["estimated_bonus"] += float(followup["estimated_bonus"] or 0)
+
         daily = [daily_map[key] for key in sorted(daily_map.keys())]
 
         for row in daily:
@@ -703,6 +746,7 @@ def get_worker_bonus_summary(worker_id: int, month: Optional[str] = None) -> dic
                 "id": worker.id,
                 "name": worker.name,
                 "phone": worker.phone,
+                "roles": worker_roles,
             },
             "bonus_items": [
                 {
@@ -717,6 +761,7 @@ def get_worker_bonus_summary(worker_id: int, month: Optional[str] = None) -> dic
             ],
             "daily": daily,
             "totals": totals,
+            "followup": followup,
         }
 
 
@@ -730,7 +775,7 @@ def get_bonus_overview(
 ) -> dict:
     """财务视角：按工人汇总当月奖金。"""
     month = normalize_month(month)
-    workers = get_workers()
+    workers = get_workers(role_names=["worker", "salesperson"])
 
     if worker_id is not None:
         workers = [worker for worker in workers if worker["id"] == worker_id]
@@ -751,6 +796,8 @@ def get_bonus_overview(
             "total_boxes": int(summary["totals"].get("total_boxes") or 0),
             "total_piece_count": int(summary["totals"].get("total_piece_count") or 0),
             "estimated_bonus": float(summary["totals"].get("estimated_bonus") or 0.0),
+            "followup_weight": float(summary["totals"].get("followup_weight") or 0.0),
+            "followup_estimated_bonus": float(summary["totals"].get("followup_estimated_bonus") or 0.0),
         }
         items.append(item)
 

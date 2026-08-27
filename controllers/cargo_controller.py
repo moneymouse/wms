@@ -15,6 +15,8 @@ from services.cargo_service import (
     background_register,
 )
 from utils.log import log
+from utils.audit import record_audit
+from services import receivable_service
 
 cargo_bp = Blueprint("cargo", __name__, url_prefix="/api")
 logger = logging.getLogger(__name__)
@@ -48,6 +50,24 @@ def _get_valid_excel_modes():
         )
         modes.update(r.mode_key for r in records)
     return modes
+
+
+def _template_requires_valid_quote(mode):
+    if mode == "kehu":
+        return False
+    from data.database import SessionFactory
+    from data.DB import ExcelTemplateTable
+
+    with SessionFactory() as session:
+        record = (
+            session.query(ExcelTemplateTable)
+            .filter(
+                ExcelTemplateTable.mode_key == mode,
+                ExcelTemplateTable.archive == False,  # noqa: E712
+            )
+            .first()
+        )
+        return bool(record and record.requires_valid_quote)
 
 
 # 获取订单下的货物列表（含实时物流状态）
@@ -232,6 +252,33 @@ def generate_excel_route(mode="jifei"):
     if not uid_list:
         return jsonify({"code": 200})
 
+    requires_valid_quote = _template_requires_valid_quote(mode)
+    if requires_valid_quote:
+        blocked_orders = []
+        for order_uid in uid_list:
+            state = receivable_service.get_order_quote_state(order_uid)
+            if not state.get("is_effective"):
+                order = order_model.read(order_uid) or {}
+                blocked_orders.append({
+                    "uid": order_uid,
+                    "order_id": order.get("order_id") or order_uid,
+                    "reason": state.get("validity_status") or "unquoted",
+                })
+        if blocked_orders:
+            record_audit(
+                event_type="supplier_export",
+                target_type="orders",
+                target_id=",".join(str(item["uid"]) for item in blocked_orders),
+                action="export_blocked_invalid_quote",
+                after_data={"mode": mode, "blocked_orders": blocked_orders},
+                remark="供应商导出因报价无效被拦截",
+            )
+            return jsonify({
+                "code": 409,
+                "msg": "部分订单尚无有效报价或重量已变化",
+                "data": {"blocked_orders": blocked_orders},
+            }), 409
+
     request_cargo_list = request_data.get("cargo_list", None)
     result, err, is_plain_text = generate_excel(
         mode, uid_list, request_cargo_list, order_model, cargo_model
@@ -239,6 +286,15 @@ def generate_excel_route(mode="jifei"):
 
     if err:
         return jsonify({"code": 500, "msg": err})
+    if requires_valid_quote:
+        record_audit(
+            event_type="supplier_export",
+            target_type="orders",
+            target_id=",".join(str(uid) for uid in uid_list),
+            action="export_supplier_orders",
+            after_data={"mode": mode, "order_uids": uid_list},
+            remark="供应商转单文件已导出",
+        )
     if is_plain_text:
         return result  # kehu 模式返回纯文本
     return jsonify({"code": 200, "data": {"document_id": result}})

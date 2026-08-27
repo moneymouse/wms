@@ -8,7 +8,7 @@ from services import work_finance_service
 work_finance_bp = Blueprint("work_finance", __name__, url_prefix="/api")
 
 WORK_DETAIL_ROLES = ["admin", "finance", "worker", "salesperson"]
-WORK_BONUS_ROLES = ["admin", "finance", "worker"]
+WORK_BONUS_ROLES = ["admin", "finance", "worker", "salesperson"]
 FINANCE_ROLES = ["admin", "finance"]
 
 
@@ -59,16 +59,16 @@ def get_work_details():
 def get_worker_bonus():
     """获取按天、按奖金分项统计的奖金数据。"""
     payload = get_token_payload() or {}
-    role = payload.get("role")
-    current_user_id = payload.get("user_id")
+    roles = get_payload_roles(payload)
+    current_user_id = payload.get("user_id") or payload.get("id")
 
     month = request.args.get("month")
     requested_worker_id = request.args.get("worker_id", type=int)
 
-    if role == "worker":
-        worker_id = current_user_id
-    else:
+    if "admin" in roles or "finance" in roles:
         worker_id = requested_worker_id or current_user_id
+    else:
+        worker_id = current_user_id
 
     if worker_id is None:
         return jsonify({"code": 400, "msg": "worker_id is required"}), 400
@@ -88,16 +88,16 @@ def get_worker_bonus():
 def get_bonus_estimate():
     """兼容旧路由：返回新奖金统计结构。"""
     payload = get_token_payload() or {}
-    role = payload.get("role")
-    current_user_id = payload.get("user_id")
+    roles = get_payload_roles(payload)
+    current_user_id = payload.get("user_id") or payload.get("id")
 
     month = request.args.get("month")
     requested_worker_id = request.args.get("worker_id", type=int)
 
-    if role == "worker":
-        worker_id = current_user_id
-    else:
+    if "admin" in roles or "finance" in roles:
         worker_id = requested_worker_id or current_user_id
+    else:
+        worker_id = current_user_id
 
     if worker_id is None:
         return jsonify({"code": 400, "msg": "worker_id is required"}), 400

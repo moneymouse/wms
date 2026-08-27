@@ -54,6 +54,32 @@ def _build_item_qty_text(box: Dict[str, Any]) -> str:
     return f"{fallback_name}*{fallback_qty}" if fallback_name else "-"
 
 
+def _get_box_piece_count(box: Dict[str, Any]) -> int:
+    """Return the quantity represented by the item rows printed for one box."""
+    details = (
+        box.get("item_details") if isinstance(box.get("item_details"), list) else []
+    )
+    detail_piece_count = 0
+    has_valid_detail = False
+
+    for row in details:
+        if not isinstance(row, dict) or not _normalize_text(row.get("item_name")):
+            continue
+        has_valid_detail = True
+        try:
+            detail_piece_count += int(row.get("piece_count") or 0)
+        except (TypeError, ValueError):
+            continue
+
+    if has_valid_detail:
+        return detail_piece_count
+
+    try:
+        return int(box.get("piece_count") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _build_packing_list_story(detail: Dict[str, Any]) -> List[Any]:
     # --- 样式定义 (已调大字体和行距) ---
     base_style = ParagraphStyle(
@@ -129,6 +155,7 @@ def _build_packing_list_story(detail: Dict[str, Any]) -> List[Any]:
     ]
 
     total_weight = 0
+    total_piece_count = 0
     boxes = detail.get("boxes") or []
 
     for box in boxes:
@@ -146,6 +173,7 @@ def _build_packing_list_story(detail: Dict[str, Any]) -> List[Any]:
                 display_weight = _normalize_text(weight_val)
 
         item_qty = _build_item_qty_text(box)
+        total_piece_count += _get_box_piece_count(box)
         remark = _normalize_text(box.get("remark")) or "-"
 
         # 用 base_style 包装，继承了 11.5 的字号和 16 的行距
@@ -159,7 +187,14 @@ def _build_packing_list_story(detail: Dict[str, Any]) -> List[Any]:
         )
 
     # 添加总计行
-    rows.append(["总计 / TOTAL", str(total_weight), "", ""])
+    rows.append(
+        [
+            "总计 / TOTAL",
+            str(total_weight),
+            f"件数合计 / Total Qty: {total_piece_count}",
+            "",
+        ]
+    )
 
     # 表格样式
     table = Table(rows, colWidths=[25 * mm, 30 * mm, 75 * mm, 52 * mm], repeatRows=1)

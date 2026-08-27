@@ -2,7 +2,7 @@ import random
 import time
 from typing import Any
 
-from sqlalchemy import Column, String, Integer, Float, Boolean, Text, ForeignKey, Table
+from sqlalchemy import Column, String, Integer, Float, Boolean, Text, ForeignKey, Table, Numeric
 from sqlalchemy.orm import relationship
 
 from .database import Base, SessionFactory
@@ -614,6 +614,17 @@ class GoodsNameTable(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(256), nullable=False)
     lang = Column(String(16), nullable=False)
+    category = Column(String(128), nullable=True)
+    create_date = Column(String(32))
+    update_date = Column(String(32))
+
+
+class CustomsCodeTable(Base):
+    __tablename__ = "customs_codes"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(256), nullable=False)
+    code = Column(String(64), nullable=False)
     create_date = Column(String(32))
     update_date = Column(String(32))
 
@@ -628,6 +639,7 @@ class ExcelTemplateTable(Base):
     config = Column(Text, nullable=False, default="{}")
     template_file = Column(String(256), nullable=True)
     single_order_only = Column(Boolean, default=False)
+    requires_valid_quote = Column(Boolean, nullable=False, default=True)
     archive = Column(Boolean, default=False)
     create_date = Column(String(32))
     update_date = Column(String(32))
@@ -689,6 +701,10 @@ class OrderQuoteVersionTable(Base):
     transportation_name = Column(String(128), nullable=False, default="")
     channel_cost = Column(Float, nullable=False, default=0)
     min_price = Column(Float, nullable=False, default=0)
+    unit_price = Column(Numeric(14, 4), nullable=False, default=0)
+    surcharge = Column(Numeric(14, 2), nullable=False, default=0)
+    weight_snapshot = Column(Numeric(14, 3), nullable=False, default=0)
+    receivable_amount = Column(Numeric(14, 2), nullable=False, default=0)
     quoted_price = Column(Float, nullable=False, default=0)
     status = Column(String(32), nullable=False, default="adopted")
     is_final = Column(Boolean, nullable=False, default=False)
@@ -700,6 +716,53 @@ class OrderQuoteVersionTable(Base):
     reviewer_name = Column(String(128), nullable=True)
     create_date = Column(String(32))
     review_date = Column(String(32), nullable=True)
+    effective_date = Column(String(32), nullable=True)
+
+
+class PaymentReceiptTable(Base):
+    __tablename__ = "payment_receipts"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    receipt_no = Column(String(32), nullable=True, unique=True)
+    customer_id = Column(Integer, ForeignKey("customers.id"), nullable=False)
+    customer_name = Column(String(256), nullable=False)
+    receipt_date = Column(String(10), nullable=False)
+    payment_method = Column(String(32), nullable=False)
+    remark = Column(String(512), nullable=True)
+    status = Column(String(32), nullable=False, default="pending")
+    creator_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    creator_name = Column(String(128), nullable=False)
+    reviewer_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    reviewer_name = Column(String(128), nullable=True)
+    review_remark = Column(String(512), nullable=True)
+    review_date = Column(String(32), nullable=True)
+    create_date = Column(String(32), nullable=False)
+    update_date = Column(String(32), nullable=False)
+
+
+class PaymentReceiptItemTable(Base):
+    __tablename__ = "payment_receipt_items"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    receipt_id = Column(Integer, ForeignKey("payment_receipts.id"), nullable=False)
+    order_uid = Column(String(32), ForeignKey("orders.uid"), nullable=False)
+    order_id = Column(String(128), nullable=False)
+    receivable_snapshot = Column(Numeric(14, 2), nullable=False)
+    received_before = Column(Numeric(14, 2), nullable=False, default=0)
+    amount = Column(Numeric(14, 2), nullable=False)
+    remaining_after = Column(Numeric(14, 2), nullable=False)
+
+
+class SalesFollowupBonusRateTable(Base):
+    __tablename__ = "sales_followup_bonus_rates"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    rate_per_kg = Column(Numeric(14, 4), nullable=False)
+    effective_from = Column(String(10), nullable=False, unique=True)
+    remark = Column(String(512), nullable=True)
+    creator_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    creator_name = Column(String(128), nullable=True)
+    create_date = Column(String(32), nullable=False)
 
 
 class AuditLogTable(Base):
