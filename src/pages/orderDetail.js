@@ -20,7 +20,7 @@ import orderProperty from "../common/orderProperty";
 // import crypto from 'crypto';
 import Input from "antd/es/input/Input";
 import { endpoint } from "../config.js";
-import { useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import getSafeHeader from '../common/safeHeader';
 import styles from './orderDetail.module.css';
 import ExportButton from "../components/ExportButton";
@@ -31,8 +31,27 @@ import Transportation from "../components/transportation";
 import { DeleteOutlined, DollarOutlined, InboxOutlined, PrinterOutlined } from "@ant-design/icons";
 import { hasPermission } from "../common/roleConfig";
 import { buildCustomsCodeOptions } from "../common/customsCodeLookup";
+import FeatureTour from "../components/FeatureTour";
+import { COST_QUOTE_RECEIPT_TOUR, getCostQuoteReceiptChapter } from "../common/featureTourConfig";
+import {
+    clearFeatureTourFlow,
+    getCurrentTourUser,
+    readFeatureTourFlow,
+    saveFeatureTourChapterState,
+    saveFeatureTourFlow,
+} from "../common/featureTourState";
 
 const passHash = '18667b982b1c774d3c096422e457906afb227cfc7f956d3f4fc1f9bc07b98862';
+const quoteTourChapter = getCostQuoteReceiptChapter('quote');
+const workflowStartTourChapter = getCostQuoteReceiptChapter('workflowStart');
+const quoteTourTargets = {
+    entry: '[data-tour="quote-entry"]',
+    summary: '[data-tour="quote-summary"]',
+    pricing: '[data-tour="quote-pricing"]',
+    submit: '[data-tour="quote-submit"]',
+    history: '[data-tour="quote-history"]',
+    receiptMenu: '.tour-receipts-menu',
+};
 
 const verify = () => {
     // const now_time = (new Date()).getTime()
@@ -140,6 +159,11 @@ const EditableCell = (props) => {
 export default function OrderDetail() {
     // const _orderProperty = [...orderProperty];
     const { order_id } = useParams()
+    const navigate = useNavigate();
+    const { userId: tourUserId } = getCurrentTourUser();
+    const initialTourFlow = readFeatureTourFlow(tourUserId);
+    const forceQuoteTour = initialTourFlow?.campaignId === COST_QUOTE_RECEIPT_TOUR.id
+        && initialTourFlow.stage === 'quote';
 
     //message
     const [messageX, messageComponent] = message.useMessage();
@@ -304,6 +328,11 @@ export default function OrderDetail() {
     const currentTransportation = (descriptionData.transportation || '').trim();
     const currentQuoteMode = transportationModes.find(item => item.name === currentTransportation);
     const currentMinPrice = currentQuoteMode ? Number(currentQuoteMode.min_price || 0) : 0;
+    const quoteTourSteps = quoteTourChapter.steps.map(step => ({
+        ...step,
+        target: () => document.querySelector(quoteTourTargets[step.key]),
+    }));
+    const quoteManualTourSteps = quoteTourSteps.filter(step => !step.autoOnly);
 
     const fetchTransportationModes = async () => {
         try {
@@ -346,6 +375,53 @@ export default function OrderDetail() {
         setQuoteModalOpen(true);
         fetchQuoteHistory();
     };
+
+    const handleQuoteTourStepChange = async (nextStep, previousStep, mode) => {
+        const activeSteps = mode === 'manual' ? quoteManualTourSteps : quoteTourSteps;
+        const stepKey = activeSteps[nextStep]?.key;
+        if (stepKey === 'receiptMenu') {
+            setQuoteModalOpen(false);
+            saveFeatureTourChapterState({
+                userId: tourUserId,
+                campaignId: COST_QUOTE_RECEIPT_TOUR.id,
+                chapterId: quoteTourChapter.id,
+                version: quoteTourChapter.version,
+                status: 'completed',
+            });
+            saveFeatureTourChapterState({
+                userId: tourUserId,
+                campaignId: COST_QUOTE_RECEIPT_TOUR.id,
+                chapterId: workflowStartTourChapter.id,
+                version: workflowStartTourChapter.version,
+                status: 'completed',
+            });
+            saveFeatureTourFlow({
+                userId: tourUserId,
+                campaignId: COST_QUOTE_RECEIPT_TOUR.id,
+                stage: 'receipt-navigation',
+            });
+            return;
+        }
+        if (nextStep === 0) {
+            setQuoteModalOpen(false);
+            return;
+        }
+        if (!quoteModalOpen) await openQuoteModal();
+    };
+
+    useEffect(() => {
+        if (!forceQuoteTour || !descriptionData.order_id || currentUserId == null || salesmanLoading) return;
+        if (canQuote) return;
+
+        messageX.warning('这笔订单不是由你负责的，请选择由你负责的订单继续报价引导');
+        saveFeatureTourFlow({
+            userId: tourUserId,
+            campaignId: COST_QUOTE_RECEIPT_TOUR.id,
+            stage: 'select-quote-order',
+        });
+        navigate('/orders');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [canQuote, currentUserId, descriptionData.order_id, forceQuoteTour, salesmanLoading]);
 
     const submitQuote = async () => {
         try {
@@ -932,9 +1008,45 @@ export default function OrderDetail() {
                         onClick={handleRemoveSalesman}>移除</Button>
                 )}
                 {canQuote && !salesmanEditing && (
-                    <Button size="middle" type="primary" icon={<DollarOutlined />} onClick={openQuoteModal}>
+                    <Button data-tour="quote-entry" size="middle" type="primary" icon={<DollarOutlined />} onClick={openQuoteModal}>
                         报价
                     </Button>
+                )}
+                {canQuote && !salesmanEditing && (
+                    <FeatureTour
+                        chapter={quoteTourChapter}
+                        steps={quoteTourSteps}
+                        autoSteps={quoteTourSteps}
+                        manualSteps={quoteManualTourSteps}
+                        eligible={canQuote}
+                        autoEnabled={false}
+                        forceAutoStart={forceQuoteTour}
+                        onStart={(mode) => {
+                            if (mode === 'auto') {
+                                saveFeatureTourFlow({
+                                    userId: tourUserId,
+                                    campaignId: COST_QUOTE_RECEIPT_TOUR.id,
+                                    stage: 'quote',
+                                });
+                            }
+                        }}
+                        onStepChange={handleQuoteTourStepChange}
+                        onTourEnd={(status, mode) => {
+                            setQuoteModalOpen(false);
+                            if (mode !== 'auto') return;
+                            if (status === 'completed') {
+                                saveFeatureTourFlow({
+                                    userId: tourUserId,
+                                    campaignId: COST_QUOTE_RECEIPT_TOUR.id,
+                                    stage: 'receipt-entry',
+                                });
+                                navigate('/receipts');
+                            } else {
+                                clearFeatureTourFlow(tourUserId);
+                            }
+                        }}
+                        triggerAriaLabel="打开报价操作引导"
+                    />
                 )}
             </Space>
             <Modal
@@ -946,9 +1058,10 @@ export default function OrderDetail() {
                 okText="提交报价"
                 cancelText="取消"
                 width={760}
+                okButtonProps={{ 'data-tour': 'quote-submit' }}
             >
                 <Form form={quoteForm} layout="vertical">
-                    <Descriptions size="small" bordered style={{ marginBottom: 16 }}>
+                    <Descriptions data-tour="quote-summary" size="small" bordered style={{ marginBottom: 16 }}>
                         <Descriptions.Item label="当前运输方式">
                             {currentTransportation || '-'}
                         </Descriptions.Item>
@@ -962,15 +1075,17 @@ export default function OrderDetail() {
                             <Typography.Text strong>{quoteReceivablePreview.toFixed(2)} CNY</Typography.Text>
                         </Descriptions.Item>
                     </Descriptions>
-                    <Form.Item name="unit_price" label="每公斤单价 (CNY/kg)" rules={[{ required: true, message: '请输入每公斤单价' }]}>
-                        <InputNumber min={0} precision={4} style={{ width: '100%' }} />
-                    </Form.Item>
-                    <Form.Item name="surcharge" label="附加费 (CNY)" rules={[{ required: true, message: '请输入附加费' }]}>
-                        <InputNumber min={0} precision={2} style={{ width: '100%' }} />
-                    </Form.Item>
-                    <Form.Item name="quote_remark" label="报价说明">
-                        <Input.TextArea rows={3} />
-                    </Form.Item>
+                    <div data-tour="quote-pricing">
+                        <Form.Item name="unit_price" label="每公斤单价 (CNY/kg)" rules={[{ required: true, message: '请输入每公斤单价' }]}>
+                            <InputNumber min={0} precision={4} style={{ width: '100%' }} />
+                        </Form.Item>
+                        <Form.Item name="surcharge" label="附加费 (CNY)" rules={[{ required: true, message: '请输入附加费' }]}>
+                            <InputNumber min={0} precision={2} style={{ width: '100%' }} />
+                        </Form.Item>
+                        <Form.Item name="quote_remark" label="报价说明">
+                            <Input.TextArea rows={3} />
+                        </Form.Item>
+                    </div>
                 </Form>
                 <Space style={{ marginBottom: 12 }}>
                     <Typography.Text type={finalQuote ? 'success' : 'secondary'}>
@@ -987,13 +1102,14 @@ export default function OrderDetail() {
                         打印报价单
                     </Button>
                 </Space>
-                <Typography.Title level={5}>报价版本</Typography.Title>
-                <Table
-                    size="small"
-                    rowKey="id"
-                    dataSource={quoteHistory}
-                    pagination={false}
-                    columns={[
+                <div data-tour="quote-history">
+                    <Typography.Title level={5}>报价版本</Typography.Title>
+                    <Table
+                        size="small"
+                        rowKey="id"
+                        dataSource={quoteHistory}
+                        pagination={false}
+                        columns={[
                         { title: '版本', dataIndex: 'version_no', key: 'version_no', width: 70 },
                         { title: '渠道', dataIndex: 'transportation_name', key: 'transportation_name' },
                         { title: '单价', dataIndex: 'unit_price', key: 'unit_price', width: 100, render: v => Number(v || 0).toFixed(4) },
@@ -1006,8 +1122,9 @@ export default function OrderDetail() {
                             render: v => <Tag color={v === 'effective' ? 'green' : v === 'stale' ? 'orange' : v === 'rejected' ? 'red' : 'blue'}>{({ effective: '有效', stale: '重量失效', pending: '待审核', rejected: '已驳回', superseded: '已替代' })[v] || v}</Tag>
                         },
                         { title: '报价人', dataIndex: 'quoter_name', key: 'quoter_name', width: 100 },
-                    ]}
-                />
+                        ]}
+                    />
+                </div>
             </Modal>
             <Descriptions style={{ marginBottom: '2rem' }} bordered>
                 {orderProperty.map((v, k) => {

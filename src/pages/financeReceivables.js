@@ -7,6 +7,14 @@ import { PrinterOutlined, ReloadOutlined } from '@ant-design/icons';
 
 import { endpoint } from '../config';
 import getSafeHeader from '../common/safeHeader';
+import FeatureTour from '../components/FeatureTour';
+import { COST_QUOTE_RECEIPT_TOUR, getCostQuoteReceiptChapter } from '../common/featureTourConfig';
+import {
+    clearFeatureTourFlow,
+    getCurrentTourUser,
+    readFeatureTourFlow,
+    saveFeatureTourFlow,
+} from '../common/featureTourState';
 
 const { Text } = Typography;
 const STATUS = {
@@ -18,6 +26,18 @@ const RECEIPT_STATUS = {
     pending: { label: '待审核', color: 'orange' },
     approved: { label: '已生效', color: 'green' },
     rejected: { label: '已驳回', color: 'red' },
+};
+const receivableLedgerTourChapter = getCostQuoteReceiptChapter('receivableLedger');
+const receiptAuditTourChapter = getCostQuoteReceiptChapter('receiptAudit');
+const receivableLedgerTourTargets = {
+    filters: '[data-tour="receivable-filters"]',
+    totals: '[data-tour="receivable-totals"]',
+    ledger: '[data-tour="receivable-ledger"]',
+};
+const receiptAuditTourTargets = {
+    filter: '[data-tour="audit-filter"]',
+    details: '[data-tour="audit-table"]',
+    review: '[data-tour="audit-review-modal"]',
 };
 
 function today() {
@@ -46,6 +66,14 @@ export function ReceivableLedger() {
     const [owners, setOwners] = useState([]);
     const [data, setData] = useState({ items: [], totals: {}, total: 0, page: 1, page_size: 20 });
     const [loading, setLoading] = useState(false);
+    const { userId: tourUserId } = getCurrentTourUser();
+    const tourFlow = readFeatureTourFlow(tourUserId);
+    const continuingLedgerFlow = tourFlow?.campaignId === COST_QUOTE_RECEIPT_TOUR.id
+        && tourFlow.stage === 'receivable-ledger';
+    const receivableLedgerTourSteps = receivableLedgerTourChapter.steps.map(step => ({
+        ...step,
+        target: () => document.querySelector(receivableLedgerTourTargets[step.key]),
+    }));
 
     useEffect(() => {
         Promise.all([
@@ -100,7 +128,21 @@ export function ReceivableLedger() {
     return (
         <div>
             {contextHolder}
-            <Card size="small" style={{ marginBottom: 16 }}>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 4 }}>
+                <FeatureTour
+                    chapter={receivableLedgerTourChapter}
+                    steps={receivableLedgerTourSteps}
+                    autoEnabled={false}
+                    forceAutoStart={continuingLedgerFlow}
+                    onTourEnd={(status, mode) => {
+                        if (mode === 'auto' && continuingLedgerFlow) {
+                            clearFeatureTourFlow(tourUserId);
+                        }
+                    }}
+                    triggerAriaLabel="打开应收账款操作引导"
+                />
+            </div>
+            <Card data-tour="receivable-filters" size="small" style={{ marginBottom: 16 }}>
                 <Space wrap>
                     <Input type="date" value={asOf} onChange={e => setAsOf(e.target.value)} style={{ width: 150 }} />
                     <Input value={query} onChange={e => setQuery(e.target.value)} placeholder="订单号/客户" style={{ width: 190 }} onPressEnter={() => fetchLedger()} />
@@ -110,7 +152,7 @@ export function ReceivableLedger() {
                     <Button type="primary" icon={<ReloadOutlined />} onClick={() => fetchLedger()}>查询</Button>
                 </Space>
             </Card>
-            <Card size="small" style={{ marginBottom: 16 }}>
+            <Card data-tour="receivable-totals" size="small" style={{ marginBottom: 16 }}>
                 <Row gutter={[16, 16]}>
                     <Col xs={12} md={6}><Statistic title="应收账款" value={Number(data.totals?.receivable_amount || 0).toFixed(2)} suffix="CNY" /></Col>
                     <Col xs={12} md={6}><Statistic title="已收账款" value={Number(data.totals?.received_amount || 0).toFixed(2)} suffix="CNY" valueStyle={{ color: '#15803d' }} /></Col>
@@ -118,7 +160,7 @@ export function ReceivableLedger() {
                     <Col xs={12} md={6}><Statistic title="待审核占用" value={Number(data.totals?.pending_amount || 0).toFixed(2)} suffix="CNY" /></Col>
                 </Row>
             </Card>
-            <Card size="small" bodyStyle={{ padding: 0 }}>
+            <Card data-tour="receivable-ledger" size="small" bodyStyle={{ padding: 0 }}>
                 <Table
                     rowKey="order_uid"
                     loading={loading}
@@ -142,6 +184,16 @@ export function ReceiptAudit() {
     const [reviewing, setReviewing] = useState(null);
     const [reviewRemark, setReviewRemark] = useState('');
     const [submitting, setSubmitting] = useState(false);
+    const { userId: tourUserId } = getCurrentTourUser();
+    const tourFlow = readFeatureTourFlow(tourUserId);
+    const continuingAuditFlow = tourFlow?.campaignId === COST_QUOTE_RECEIPT_TOUR.id
+        && tourFlow.stage === 'receipt-audit';
+    const receiptAuditTourSteps = receiptAuditTourChapter.steps.map(step => ({
+        ...step,
+        target: () => document.querySelector(receiptAuditTourTargets[step.key])
+            || document.querySelector('[data-tour="audit-review-action"]')
+            || document.querySelector('[data-tour="audit-table"]'),
+    }));
 
     const fetchReceipts = async () => {
         setLoading(true);
@@ -198,6 +250,19 @@ export function ReceiptAudit() {
         }
     };
 
+    const handleReceiptAuditTourStepChange = async (nextStep) => {
+        const stepKey = receiptAuditTourChapter.steps[nextStep]?.key;
+        if (stepKey === 'review') {
+            const pendingReceipt = receipts.find(receipt => receipt.status === 'pending');
+            if (pendingReceipt) {
+                setReviewRemark('');
+                setReviewing(pendingReceipt);
+            }
+        } else if (reviewing) {
+            setReviewing(null);
+        }
+    };
+
     const columns = useMemo(() => [
         { title: '收款单号', dataIndex: 'receipt_no', key: 'receipt_no', width: 210 },
         { title: '客户', dataIndex: 'customer_name', key: 'customer_name', width: 150 },
@@ -210,7 +275,7 @@ export function ReceiptAudit() {
             title: '操作', key: 'action', fixed: 'right', width: 160,
             render: (_, record) => <Space>
                 <Button size="small" icon={<PrinterOutlined />} onClick={() => print(record)}>打印</Button>
-                {record.status === 'pending' && <Button size="small" type="primary" onClick={() => { setReviewing(record); setReviewRemark(''); }}>审核</Button>}
+                {record.status === 'pending' && <Button data-tour="audit-review-action" size="small" type="primary" onClick={() => { setReviewing(record); setReviewRemark(''); }}>审核</Button>}
             </Space>
         },
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -219,8 +284,31 @@ export function ReceiptAudit() {
     return (
         <div>
             {contextHolder}
-            <Card size="small" bodyStyle={{ padding: 0 }}>
-                <div style={{ padding: 12 }}>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 4 }}>
+                <FeatureTour
+                    chapter={receiptAuditTourChapter}
+                    steps={receiptAuditTourSteps}
+                    autoEnabled={false}
+                    forceAutoStart={continuingAuditFlow}
+                    onStepChange={handleReceiptAuditTourStepChange}
+                    onTourEnd={(status, mode) => {
+                        setReviewing(null);
+                        if (mode !== 'auto' || !continuingAuditFlow) return;
+                        if (status === 'completed') {
+                            saveFeatureTourFlow({
+                                userId: tourUserId,
+                                campaignId: COST_QUOTE_RECEIPT_TOUR.id,
+                                stage: 'receivable-ledger',
+                            });
+                        } else {
+                            clearFeatureTourFlow(tourUserId);
+                        }
+                    }}
+                    triggerAriaLabel="打开收款审核操作引导"
+                />
+            </div>
+            <Card data-tour="audit-table" size="small" bodyStyle={{ padding: 0 }}>
+                <div data-tour="audit-filter" style={{ padding: 12 }}>
                     <Space>
                         <Select value={status} onChange={setStatus} style={{ width: 130 }} options={[{ value: 'pending', label: '待审核' }, { value: 'approved', label: '已生效' }, { value: 'rejected', label: '已驳回' }, { value: '', label: '全部' }]} />
                         <Button icon={<ReloadOutlined />} onClick={fetchReceipts}>刷新</Button>
@@ -251,12 +339,14 @@ export function ReceiptAudit() {
                     <Button key="approve" type="primary" loading={submitting} onClick={() => review('approve')}>审核通过</Button>,
                 ]}
             >
-                {reviewing && <Space direction="vertical" style={{ width: '100%' }}>
-                    <Text>客户：{reviewing.customer_name}</Text>
-                    <Text>收款金额：{Number(reviewing.total_amount || 0).toFixed(2)} CNY</Text>
-                    <Text>创建人：{reviewing.creator_name}</Text>
-                    <Input.TextArea rows={3} value={reviewRemark} onChange={e => setReviewRemark(e.target.value)} placeholder="审核意见（驳回时必填）" />
-                </Space>}
+                {reviewing && <div data-tour="audit-review-modal">
+                    <Space direction="vertical" style={{ width: '100%' }}>
+                        <Text>客户：{reviewing.customer_name}</Text>
+                        <Text>收款金额：{Number(reviewing.total_amount || 0).toFixed(2)} CNY</Text>
+                        <Text>创建人：{reviewing.creator_name}</Text>
+                        <Input.TextArea rows={3} value={reviewRemark} onChange={e => setReviewRemark(e.target.value)} placeholder="审核意见（驳回时必填）" />
+                    </Space>
+                </div>}
             </Modal>
         </div>
     );

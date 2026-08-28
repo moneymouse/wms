@@ -5,6 +5,12 @@ import FinanceCenter from './financeCenter';
 import { ReceiptAudit, ReceivableLedger } from './financeReceivables';
 import { endpoint } from '../config';
 import getSafeHeader from '../common/safeHeader';
+import { COST_QUOTE_RECEIPT_TOUR } from '../common/featureTourConfig';
+import {
+    FEATURE_TOUR_FLOW_EVENT,
+    getCurrentTourUser,
+    readFeatureTourFlow,
+} from '../common/featureTourState';
 
 
 function SalesBonusRates() {
@@ -67,9 +73,27 @@ function SalesBonusRates() {
 }
 
 export default function FinanceHub() {
+    const { userId: tourUserId } = getCurrentTourUser();
+    const initialTourFlow = readFeatureTourFlow(tourUserId);
+    const [activeTab, setActiveTab] = useState(
+        initialTourFlow?.campaignId === COST_QUOTE_RECEIPT_TOUR.id
+            && initialTourFlow.stage === 'receipt-audit'
+            ? 'audit'
+            : 'receivable'
+    );
+
+    useEffect(() => {
+        const handleTourFlowChange = (event) => {
+            if (event.detail?.stage === 'receipt-audit') setActiveTab('audit');
+            if (event.detail?.stage === 'receivable-ledger') setActiveTab('receivable');
+        };
+        window.addEventListener(FEATURE_TOUR_FLOW_EVENT, handleTourFlowChange);
+        return () => window.removeEventListener(FEATURE_TOUR_FLOW_EVENT, handleTourFlowChange);
+    }, []);
+
     return <div style={{ padding: 24 }}>
         <Typography.Title level={3}>财务中心</Typography.Title>
-        <Tabs items={[
+        <Tabs activeKey={activeTab} onChange={setActiveTab} items={[
             { key: 'receivable', label: '应收账款台账', children: <ReceivableLedger /> },
             { key: 'audit', label: '收款审核', children: <ReceiptAudit /> },
             { key: 'bonus', label: '奖金管理', children: <><SalesBonusRates /><FinanceCenter /></> },

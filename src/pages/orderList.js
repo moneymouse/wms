@@ -6,11 +6,29 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { endpoint } from "../config.js";
 import getSafeHeader from '../common/safeHeader';
 import ExportButton from '../components/ExportButton';
+import FeatureTour from '../components/FeatureTour';
+import { COST_QUOTE_RECEIPT_TOUR, getCostQuoteReceiptChapter } from '../common/featureTourConfig';
+import {
+    clearFeatureTourFlow,
+    getCurrentTourUser,
+    readFeatureTourFlow,
+    saveFeatureTourFlow,
+} from '../common/featureTourState';
+
+const selectQuoteOrderTourChapter = getCostQuoteReceiptChapter('selectQuoteOrder');
 
 export default function OrderList() {
     const [orderData, setOrderData] = useState([]);
     const [cargo, setCargo] = useState({});
     const navigate = useNavigate();
+    const { userId: tourUserId } = getCurrentTourUser();
+    const tourFlow = readFeatureTourFlow(tourUserId);
+    const selectingQuoteOrder = tourFlow?.campaignId === COST_QUOTE_RECEIPT_TOUR.id
+        && tourFlow.stage === 'select-quote-order';
+    const selectQuoteOrderTourSteps = selectQuoteOrderTourChapter.steps.map(step => ({
+        ...step,
+        target: () => document.querySelector('[data-tour="workflow-order-list"]'),
+    }));
     const [searchParams, setSearchParams] = useSearchParams();
     const [pagination, setPagination] = useState({
         pageSize: 20,
@@ -98,7 +116,7 @@ export default function OrderList() {
             render: (text, record, i) => {
                 if (property.name === 'order_id') {
                     return text && <Typography.Text copyable key={i}>
-                        <Button type='link' onClick={() => navigate(record.uid)}>{text}</Button>
+                        <Button type='link' onClick={() => openOrder(record.uid)}>{text}</Button>
                     </Typography.Text>
                 }
                 return text && <Typography.Text copyable key={i}>{text}</Typography.Text>
@@ -115,9 +133,7 @@ export default function OrderList() {
         align: 'center',
         render: (_, record) => (
             <Space>
-                <Button type="link" size="small" onClick={() => {
-                    navigate(record.uid);
-                }}>详情</Button>
+                <Button type="link" size="small" onClick={() => openOrder(record.uid)}>详情</Button>
                 {/*<Button type="link" size="small" onClick={() => navigate(`/?orderId=${record.order_id}`)}>新建</Button>*/}
             </Space>
         ),
@@ -295,6 +311,17 @@ export default function OrderList() {
         setTableLoading(false);
     };
 
+    function openOrder(orderUid) {
+        if (selectingQuoteOrder) {
+            saveFeatureTourFlow({
+                userId: tourUserId,
+                campaignId: COST_QUOTE_RECEIPT_TOUR.id,
+                stage: 'quote',
+            });
+        }
+        navigate(orderUid);
+    }
+
     return (
         <>
             <Typography.Title level={4} style={{ marginBottom: '2rem' }}>订单列表/Orders List</Typography.Title>
@@ -338,30 +365,44 @@ export default function OrderList() {
                 </Space>
             </Row>
 
-            <Table loading={tableLoading}
-                rowSelection={{ type: 'checkbox', onChange: handleSelectedChange, selectedRowKeys: selectedKeys }}
-                columns={columns} dataSource={orderData}
-                scroll={{ x: 3600, y: 600 }}
-                defaultSortOrder={['order_date', 'descend']}
-                pagination={pagination}
-                expandable={
-                    {
-                        expendedRowRender(record) {
-                            console.log('a')
-                            const columns = {
-                                key: 'uid',
-                                title: '转单号',
-                                dataIndex: 'transfer_id',
-                                render: (text, record, i) => text &&
-                                    <Typography.Text copyable key={i}>{text}</Typography.Text>
-                            }
-                            const data = cargo[record.key].map((v, i) => ({ ...v, key: i })) || [];
-                            return <Table columns={columns} dataSource={data} pagination={false} />;
-                        },
-                        defaultExpandAllRows: true
+            <div data-tour="workflow-order-list">
+                <Table loading={tableLoading}
+                    rowSelection={{ type: 'checkbox', onChange: handleSelectedChange, selectedRowKeys: selectedKeys }}
+                    columns={columns} dataSource={orderData}
+                    scroll={{ x: 3600, y: 600 }}
+                    defaultSortOrder={['order_date', 'descend']}
+                    pagination={pagination}
+                    expandable={
+                        {
+                            expendedRowRender(record) {
+                                console.log('a')
+                                const columns = {
+                                    key: 'uid',
+                                    title: '转单号',
+                                    dataIndex: 'transfer_id',
+                                    render: (text, record, i) => text &&
+                                        <Typography.Text copyable key={i}>{text}</Typography.Text>
+                                }
+                                const data = cargo[record.key].map((v, i) => ({ ...v, key: i })) || [];
+                                return <Table columns={columns} dataSource={data} pagination={false} />;
+                            },
+                            defaultExpandAllRows: true
+                        }
                     }
-                }
-                onChange={handleTableChange}
+                    onChange={handleTableChange}
+                />
+            </div>
+            <FeatureTour
+                chapter={selectQuoteOrderTourChapter}
+                steps={selectQuoteOrderTourSteps}
+                autoEnabled={false}
+                forceAutoStart={selectingQuoteOrder}
+                showTrigger={false}
+                persistOnFinish={false}
+                persistOnDismiss={false}
+                onTourEnd={(status) => {
+                    if (status === 'dismissed') clearFeatureTourFlow(tourUserId);
+                }}
             />
         </>
     )

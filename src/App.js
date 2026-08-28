@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
     MenuFoldOutlined,
     MenuUnfoldOutlined,
@@ -18,15 +18,31 @@ import {
     ToolOutlined,
     DollarOutlined,
     AuditOutlined,
-    TransactionOutlined
+    TransactionOutlined,
+    QuestionCircleOutlined
 } from '@ant-design/icons';
-import { Avatar, Button, Layout, Menu, theme, Tooltip, Drawer, Grid } from 'antd';
+import { Avatar, Button, Layout, Menu, theme, Tooltip, Drawer, Grid, Modal, Popover, Space, Tour } from 'antd';
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import { LogIcon } from "./pages/logs";
 import { menuPermissions, routePermissions, hasPermission, getLandingPage, ROLE_LABEL_MAP } from "./common/roleConfig";
+import {
+    COST_QUOTE_RECEIPT_TOUR,
+    getCostQuoteReceiptChapter,
+    getCostQuoteReceiptOnboardingFlow,
+} from "./common/featureTourConfig";
+import {
+    FEATURE_TOUR_FLOW_EVENT,
+    getCurrentTourUser,
+    readFeatureTourFlow,
+    readFeatureTourState,
+    saveFeatureTourChapterState,
+    saveFeatureTourFlow,
+    shouldAutoShowFeatureTour,
+} from "./common/featureTourState";
 
 const { Header, Sider, Content } = Layout;
 const { useBreakpoint } = Grid;
+const workflowStartTourChapter = getCostQuoteReceiptChapter('workflowStart');
 
 function App() {
     const screens = useBreakpoint();
@@ -36,12 +52,28 @@ function App() {
     const [collapsed, setCollapsed] = useState(true);
     const [userRoles, setUserRoles] = useState([]);
     const [username, setUsername] = useState('');
+    const [featurePromptOpen, setFeaturePromptOpen] = useState(false);
+    const [featureHelpHintOpen, setFeatureHelpHintOpen] = useState(false);
+    const [featureCenterOpen, setFeatureCenterOpen] = useState(false);
+    const checkedFeaturePromptUser = useRef(null);
     const {
         token: { colorBgContainer },
     } = theme.useToken();
 
     const { pathname } = useLocation();
     const navigate = useNavigate();
+    const { userId: tourUserId } = getCurrentTourUser();
+    const onboardingFlow = getCostQuoteReceiptOnboardingFlow(userRoles);
+
+    useEffect(() => {
+        const handleTourFlowChange = (event) => {
+            if (isMobile && event.detail?.stage === 'receipt-navigation') {
+                setDrawerVisible(true);
+            }
+        };
+        window.addEventListener(FEATURE_TOUR_FLOW_EVENT, handleTourFlowChange);
+        return () => window.removeEventListener(FEATURE_TOUR_FLOW_EVENT, handleTourFlowChange);
+    }, [isMobile]);
 
     const getSelectedMenuKey = () => {
         const currentPath = pathname.replace(/^\//, '');
@@ -90,6 +122,59 @@ function App() {
             navigate("/login")
         }
     }, [pathname, navigate]);
+
+    useEffect(() => {
+        if (!tourUserId || !onboardingFlow) return;
+        if (checkedFeaturePromptUser.current === tourUserId) return;
+        checkedFeaturePromptUser.current = tourUserId;
+
+        const activeFlow = readFeatureTourFlow(tourUserId);
+        if (activeFlow?.campaignId === COST_QUOTE_RECEIPT_TOUR.id) return;
+
+        const state = readFeatureTourState(tourUserId);
+        if (shouldAutoShowFeatureTour({
+            campaign: COST_QUOTE_RECEIPT_TOUR,
+            chapter: workflowStartTourChapter,
+            state,
+            userRoles,
+        })) {
+            setFeaturePromptOpen(true);
+        }
+    }, [onboardingFlow, tourUserId, userRoles]);
+
+    const saveFeaturePromptDecision = (status) => {
+        saveFeatureTourChapterState({
+            userId: tourUserId,
+            campaignId: COST_QUOTE_RECEIPT_TOUR.id,
+            chapterId: workflowStartTourChapter.id,
+            version: workflowStartTourChapter.version,
+            status,
+        });
+    };
+
+    const startCostQuoteReceiptTour = () => {
+        if (!onboardingFlow) return;
+        saveFeaturePromptDecision('completed');
+        setFeaturePromptOpen(false);
+        setFeatureHelpHintOpen(false);
+        setFeatureCenterOpen(false);
+        saveFeatureTourFlow({
+            userId: tourUserId,
+            campaignId: COST_QUOTE_RECEIPT_TOUR.id,
+            stage: onboardingFlow.startStage,
+        });
+        navigate(onboardingFlow.startPath, {
+            state: { featureTourCampaign: COST_QUOTE_RECEIPT_TOUR.id },
+        });
+        if (isMobile) setDrawerVisible(false);
+    };
+
+    const postponeCostQuoteReceiptTour = () => {
+        saveFeaturePromptDecision('dismissed');
+        setFeaturePromptOpen(false);
+        if (isMobile) setDrawerVisible(true);
+        window.setTimeout(() => setFeatureHelpHintOpen(true), isMobile ? 350 : 0);
+    };
 
     const handleLogout = () => {
         localStorage.removeItem('jwt');
@@ -144,6 +229,7 @@ function App() {
             key: 'receipts',
             icon: <TransactionOutlined />,
             label: '收款管理',
+            className: 'tour-receipts-menu',
         },
         {
             key: 'finance',
@@ -205,6 +291,18 @@ function App() {
                 mode="inline"
                 selectedKeys={[getSelectedMenuKey()]}
                 onClick={({ key }) => {
+                    if (key === 'receipts') {
+                        const { userId } = getCurrentTourUser();
+                        const flow = readFeatureTourFlow(userId);
+                        if (flow?.campaignId === COST_QUOTE_RECEIPT_TOUR.id
+                            && flow.stage === 'receipt-navigation') {
+                            saveFeatureTourFlow({
+                                userId,
+                                campaignId: COST_QUOTE_RECEIPT_TOUR.id,
+                                stage: 'receipt-entry',
+                            });
+                        }
+                    }
                     navigate(key);
                     if (isMobile) setDrawerVisible(false);
                 }}
@@ -239,38 +337,97 @@ function App() {
                         </div>
                     )}
                 </div>
-                <Tooltip title="退出登录" placement={(!isMobile && collapsed) ? "right" : "top"}>
-                    <Button
-                        type="text"
-                        icon={<LogoutOutlined />}
-                        onClick={handleLogout}
-                        style={{
-                            color: 'rgba(255,255,255,0.65)',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            width: 32,
-                            height: 32,
-                            padding: 0,
-                            flexShrink: 0,
-                            borderRadius: '6px'
-                        }}
-                        onMouseEnter={(e) => {
-                            e.currentTarget.style.color = '#ff4d4f';
-                            e.currentTarget.style.backgroundColor = 'rgba(255,77,79,0.15)';
-                        }}
-                        onMouseLeave={(e) => {
-                            e.currentTarget.style.color = 'rgba(255,255,255,0.65)';
-                            e.currentTarget.style.backgroundColor = 'transparent';
-                        }}
-                    />
-                </Tooltip>
+                <Space direction={(!isMobile && collapsed) ? 'vertical' : 'horizontal'} size={8}>
+                    {onboardingFlow && (
+                        <Popover
+                            open={featureCenterOpen}
+                            onOpenChange={setFeatureCenterOpen}
+                            trigger="click"
+                            placement={(!isMobile && collapsed) ? 'rightBottom' : 'topRight'}
+                            title="新功能引导"
+                            content={(
+                                <div style={{ width: 240 }}>
+                                    <div style={{ marginBottom: 10, color: 'rgba(0,0,0,0.65)' }}>
+                                        {onboardingFlow.description}
+                                    </div>
+                                    <Button type="primary" block onClick={startCostQuoteReceiptTour}>
+                                        开始“{COST_QUOTE_RECEIPT_TOUR.name}”引导
+                                    </Button>
+                                </div>
+                            )}
+                        >
+                            <Tooltip title="新功能引导" placement={(!isMobile && collapsed) ? "right" : "top"}>
+                                <Button
+                                    className="tour-new-feature-help"
+                                    aria-label="打开新功能引导中心"
+                                    type="text"
+                                    icon={<QuestionCircleOutlined />}
+                                    onClick={() => setFeatureHelpHintOpen(false)}
+                                    style={{ color: 'rgba(255,255,255,0.72)', width: 32, height: 32, padding: 0 }}
+                                />
+                            </Tooltip>
+                        </Popover>
+                    )}
+                    <Tooltip title="退出登录" placement={(!isMobile && collapsed) ? "right" : "top"}>
+                        <Button
+                            type="text"
+                            icon={<LogoutOutlined />}
+                            onClick={handleLogout}
+                            style={{
+                                color: 'rgba(255,255,255,0.65)',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                width: 32,
+                                height: 32,
+                                padding: 0,
+                                flexShrink: 0,
+                                borderRadius: '6px'
+                            }}
+                            onMouseEnter={(e) => {
+                                e.currentTarget.style.color = '#ff4d4f';
+                                e.currentTarget.style.backgroundColor = 'rgba(255,77,79,0.15)';
+                            }}
+                            onMouseLeave={(e) => {
+                                e.currentTarget.style.color = 'rgba(255,255,255,0.65)';
+                                e.currentTarget.style.backgroundColor = 'transparent';
+                            }}
+                        />
+                    </Tooltip>
+                </Space>
             </div>
         </>
     );
 
     return (
         <Layout>
+            <Modal
+                open={featurePromptOpen}
+                title={`发现新功能：${COST_QUOTE_RECEIPT_TOUR.name}`}
+                onCancel={postponeCostQuoteReceiptTour}
+                maskClosable={false}
+                footer={[
+                    <Button key="later" onClick={postponeCostQuoteReceiptTour}>稍后了解</Button>,
+                    <Button key="start" type="primary" onClick={startCostQuoteReceiptTour}>立即了解</Button>,
+                ]}
+            >
+                <p>{COST_QUOTE_RECEIPT_TOUR.summary}</p>
+                <p>{onboardingFlow?.description}</p>
+            </Modal>
+            <Tour
+                open={featureHelpHintOpen}
+                disabledInteraction={false}
+                onClose={() => setFeatureHelpHintOpen(false)}
+                onFinish={() => setFeatureHelpHintOpen(false)}
+                steps={[
+                    {
+                        target: () => document.querySelector('.tour-new-feature-help'),
+                        title: '稍后从这里开始',
+                        description: '点击菜单栏问号，可以随时打开新功能引导中心并启动完整流程。',
+                        nextButtonProps: { children: '知道了' },
+                    },
+                ]}
+            />
             {!isMobile ? (
                 <Sider
                     trigger={null}

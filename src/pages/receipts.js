@@ -5,9 +5,18 @@ import {
 } from 'antd';
 import { CopyOutlined, PrinterOutlined, ReloadOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
+import { useNavigate } from 'react-router-dom';
 
 import { endpoint } from '../config';
 import getSafeHeader from '../common/safeHeader';
+import FeatureTour from '../components/FeatureTour';
+import { COST_QUOTE_RECEIPT_TOUR, getCostQuoteReceiptChapter } from '../common/featureTourConfig';
+import {
+    clearFeatureTourFlow,
+    getCurrentTourUser,
+    readFeatureTourFlow,
+    saveFeatureTourFlow,
+} from '../common/featureTourState';
 
 const { Title, Text } = Typography;
 const PAYMENT_METHODS = [
@@ -21,6 +30,13 @@ const STATUS_LABELS = {
     pending: { label: '待审核', color: 'orange' },
     approved: { label: '已生效', color: 'green' },
     rejected: { label: '已驳回', color: 'red' },
+};
+const receiptEntryTourChapter = getCostQuoteReceiptChapter('receiptEntry');
+const receiptEntryTourTargets = {
+    basics: '[data-tour="receipt-basics"]',
+    orders: '[data-tour="receipt-orders"]',
+    submit: '[data-tour="receipt-submit"]',
+    records: '[data-tour="receipt-records"]',
 };
 
 function base64ToBlob(base64, mimeType) {
@@ -51,6 +67,7 @@ async function printReceipt(receiptId, messageApi) {
 }
 
 export default function Receipts() {
+    const navigate = useNavigate();
     const [messageApi, contextHolder] = message.useMessage();
     const [form] = Form.useForm();
     const [activeTab, setActiveTab] = useState('entry');
@@ -63,6 +80,10 @@ export default function Receipts() {
     const [receipts, setReceipts] = useState([]);
     const [loadingReceipts, setLoadingReceipts] = useState(false);
     const [pagination, setPagination] = useState({ current: 1, pageSize: 20, total: 0 });
+    const { userId: tourUserId, roles: tourUserRoles } = getCurrentTourUser();
+    const tourFlow = readFeatureTourFlow(tourUserId);
+    const continuingReceiptFlow = tourFlow?.campaignId === COST_QUOTE_RECEIPT_TOUR.id
+        && ['receipt-navigation', 'receipt-entry'].includes(tourFlow.stage);
 
     useEffect(() => {
         fetch(`${endpoint}/customer_list`, { headers: getSafeHeader() })
@@ -127,6 +148,15 @@ export default function Receipts() {
         () => selectedKeys.reduce((sum, uid) => sum + Number(amounts[uid] || 0), 0),
         [selectedKeys, amounts]
     );
+    const receiptEntryTourSteps = receiptEntryTourChapter.steps.map(step => ({
+        ...step,
+        target: () => document.querySelector(receiptEntryTourTargets[step.key]),
+    }));
+
+    const handleReceiptTourStepChange = async (nextStep) => {
+        const targetTab = receiptEntryTourChapter.steps[nextStep]?.tab;
+        if (targetTab && targetTab !== activeTab) setActiveTab(targetTab);
+    };
 
     const submitReceipt = async () => {
         try {
@@ -233,14 +263,49 @@ export default function Receipts() {
     return (
         <div style={{ padding: '8px 16px' }}>
             {contextHolder}
-            <Title level={4}>收款管理 / Payment Receipts</Title>
+            <div data-tour="receipt-page-title" style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 8 }}>
+                <Title level={4} style={{ margin: 0 }}>收款管理 / Payment Receipts</Title>
+                <FeatureTour
+                    chapter={receiptEntryTourChapter}
+                    steps={receiptEntryTourSteps}
+                    autoEnabled={false}
+                    forceAutoStart={continuingReceiptFlow}
+                    onStart={(mode) => {
+                        if (mode === 'auto' && continuingReceiptFlow) {
+                            saveFeatureTourFlow({
+                                userId: tourUserId,
+                                campaignId: COST_QUOTE_RECEIPT_TOUR.id,
+                                stage: 'receipt-entry',
+                            });
+                        }
+                    }}
+                    onStepChange={handleReceiptTourStepChange}
+                    onTourEnd={(status, mode) => {
+                        if (mode === 'auto' && continuingReceiptFlow) {
+                            if (status === 'completed' && tourUserRoles.includes('admin')) {
+                                saveFeatureTourFlow({
+                                    userId: tourUserId,
+                                    campaignId: COST_QUOTE_RECEIPT_TOUR.id,
+                                    stage: 'receipt-audit',
+                                });
+                                navigate('/finance', {
+                                    state: { featureTourCampaign: COST_QUOTE_RECEIPT_TOUR.id },
+                                });
+                            } else {
+                                clearFeatureTourFlow(tourUserId);
+                            }
+                        }
+                    }}
+                    triggerAriaLabel="打开收款登记操作引导"
+                />
+            </div>
             <Tabs activeKey={activeTab} onChange={setActiveTab} items={[
                 {
                     key: 'entry',
                     label: '收款登记',
                     children: (
                         <>
-                            <Card size="small" style={{ marginBottom: 16 }}>
+                            <Card data-tour="receipt-basics" size="small" style={{ marginBottom: 16 }}>
                                 <Form form={form} layout="vertical">
                                     <Row gutter={16}>
                                         <Col xs={24} md={8}>
@@ -270,7 +335,7 @@ export default function Receipts() {
                                     <Form.Item name="remark" label="备注"><Input.TextArea rows={2} /></Form.Item>
                                 </Form>
                             </Card>
-                            <Card size="small" bodyStyle={{ padding: 0 }} title="选择未结清订单">
+                            <Card data-tour="receipt-orders" size="small" bodyStyle={{ padding: 0 }} title="选择未结清订单">
                                 <Table
                                     rowKey="uid"
                                     loading={loadingOrders}
@@ -282,7 +347,7 @@ export default function Receipts() {
                                     size="small"
                                 />
                             </Card>
-                            <Space style={{ marginTop: 16 }}>
+                            <Space data-tour="receipt-submit" style={{ marginTop: 16 }}>
                                 <Button type="primary" loading={submitting} disabled={!selectedKeys.length} onClick={submitReceipt}>生成并提交收款单</Button>
                                 <Text type="secondary">待审核金额会占用订单可收余额；财务审核通过后计入已收。</Text>
                             </Space>
@@ -293,7 +358,7 @@ export default function Receipts() {
                     key: 'list',
                     label: '收款单记录',
                     children: (
-                        <Card size="small" bodyStyle={{ padding: 0 }}>
+                        <Card data-tour="receipt-records" size="small" bodyStyle={{ padding: 0 }}>
                             <div style={{ padding: 12 }}><Button icon={<ReloadOutlined />} onClick={() => fetchReceipts()}>刷新</Button></div>
                             <Table
                                 rowKey="id"
