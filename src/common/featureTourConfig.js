@@ -22,9 +22,9 @@ export const COST_QUOTE_RECEIPT_TOUR = {
         },
         admin: {
             role: 'admin',
-            startStage: 'receipt-entry',
-            startPath: '/receipts',
-            description: '依次了解收款登记、收款审核和应收账款台账。',
+            startStage: 'select-quote-order',
+            startPath: '/orders',
+            description: '选择一笔由你负责的订单，依次了解订单报价和收款登记。',
         },
     },
     chapters: {
@@ -103,8 +103,8 @@ export const COST_QUOTE_RECEIPT_TOUR = {
                 {
                     key: 'basics',
                     tab: 'entry',
-                    title: '填写收款基本信息',
-                    description: '先选择客户、收款日期和付款方式。选择客户后会加载其未结清订单。',
+                    title: '筛选未结清订单',
+                    description: '按客户和订单创建日期范围筛选未结清订单，默认显示全部日期。管理员还可以按业务员（报价负责人）筛选。',
                 },
                 {
                     key: 'orders',
@@ -116,7 +116,7 @@ export const COST_QUOTE_RECEIPT_TOUR = {
                     key: 'submit',
                     tab: 'entry',
                     title: '生成收款单',
-                    description: '提交后待审核金额会暂时占用订单的可收余额，财务审核通过后才计入已收。',
+                    description: '点击“生成并提交收款单”，在弹窗中填写收款日期、收款方式、结清状态和备注。本次收款后剩余应收合计小于30元时默认已结清，可以手动修改；财务审核通过后生效，结清差额不计入实际收入。',
                 },
                 {
                     key: 'records',
@@ -179,7 +179,7 @@ export function getCostQuoteReceiptChapter(chapterName) {
 
 export function getCostQuoteReceiptOnboardingFlow(userRoles) {
     const roles = Array.isArray(userRoles) ? userRoles : [userRoles];
-    const priority = ['admin', 'finance', 'salesperson'];
+    const priority = ['salesperson', 'admin', 'finance'];
     const role = priority.find(item => roles.includes(item));
     return role ? COST_QUOTE_RECEIPT_TOUR.onboardingFlows[role] : null;
 }

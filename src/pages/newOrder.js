@@ -1,10 +1,10 @@
 import React, { useEffect, useState } from 'react'
 import { useSearchParams } from "react-router-dom";
-import { AutoComplete, Button, Col, Form, Input, List, message, Modal, Row, Select, Space, Typography } from 'antd';
+import { AutoComplete, Button, Col, Form, Input, InputNumber, List, message, Modal, Row, Select, Space, Typography } from 'antd';
 import { endpoint } from "../config"
 import countryList from "../common/countryList";
 import getSafeHeader from "../common/safeHeader";
-import { BookOutlined, CloseOutlined, DeleteOutlined, PlusOutlined } from "@ant-design/icons";
+import { BookOutlined, CloseOutlined, DeleteOutlined, DollarOutlined, PlusOutlined } from "@ant-design/icons";
 import genWayBill from "../common/genWayBill";
 import styles from './newOrder.module.css';
 import Transportation from "../components/transportation";
@@ -14,6 +14,45 @@ const { Item } = Form;
 
 // 定义localStorage的键名
 const FORM_STORAGE_KEY = 'newOrderFormData';
+
+function normalizeZipCode(value) {
+    return String(value ?? '').trim().replace(/\s+/g, ' ');
+}
+
+export function buildUniqueZipCodeOptions(receivers = []) {
+    const unique = new Map();
+    receivers.forEach((receiver) => {
+        const zipCode = normalizeZipCode(receiver?.zip_code);
+        if (!zipCode) return;
+        const key = zipCode.toLocaleUpperCase();
+        if (!unique.has(key)) {
+            unique.set(key, { label: zipCode, value: zipCode });
+        }
+    });
+    return Array.from(unique.values()).sort((left, right) => (
+        left.value.localeCompare(right.value, undefined, { numeric: true, sensitivity: 'base' })
+    ));
+}
+
+export function filterReceiversByZipCode(receivers = [], query = '') {
+    const normalizedQuery = normalizeZipCode(query).toLocaleUpperCase();
+    if (!normalizedQuery) return receivers;
+    return receivers.filter((receiver) => (
+        normalizeZipCode(receiver?.zip_code).toLocaleUpperCase().includes(normalizedQuery)
+    ));
+}
+
+export function buildCreateOrderPayload(values, quoteDraft, currentUserId) {
+    const submitValues = { ...values };
+    submitValues.en_name = (submitValues.en_name || '').toUpperCase();
+    submitValues.salesman_id = values.salesman_id === undefined || values.salesman_id === null || values.salesman_id === ''
+        ? (currentUserId !== undefined && currentUserId !== null ? Number(currentUserId) : undefined)
+        : Number(values.salesman_id);
+    if (quoteDraft) {
+        submitValues.quote = quoteDraft;
+    }
+    return submitValues;
+}
 
 export default function NewOrder() {
 
@@ -35,11 +74,14 @@ export default function NewOrder() {
     const [jwtPayload, setJwtPayload] = useState({});
     const [salesmanOptions, setSalesmanOptions] = useState([]);
     const [salesmanLoading, setSalesmanLoading] = useState(false);
+    const [quoteDraft, setQuoteDraft] = useState(null);
+    const [quoteModalOpen, setQuoteModalOpen] = useState(false);
 
     const [customerNameOptions, setCustomerNameOptions] = useState([]);
     const [selectedCustomerName, setSelectedCustomerName] = useState('');
 
     const [form] = Form.useForm();
+    const [quoteForm] = Form.useForm();
 
     // modal
     const [modalVisible, setModalVisible] = useState(false);
@@ -48,7 +90,7 @@ export default function NewOrder() {
     const [modalCustomerName, setModalCustomerName] = useState(''); // 存储选中客户的Name（用于显示和设置表单）
     const [ReceiverList, setReceiverList] = useState([]);
     const [zipCodeList, setZipCodeList] = useState([]);
-    const [zipCodeFilter, setZipCodeFilter] = useState(null);
+    const [zipCodeFilter, setZipCodeFilter] = useState('');
 
     // 创建客户模态框
     const [createCustomerVisible, setCreateCustomerVisible] = useState(false);
@@ -60,10 +102,12 @@ export default function NewOrder() {
 
     async function handleModalOpen() {
         await updateCustomerName()
+        setZipCodeFilter('');
         setModalVisible(true);
     }
 
     function handleModalClose() {
+        setZipCodeFilter('');
         setModalVisible(false);
     }
 
@@ -122,14 +166,14 @@ export default function NewOrder() {
         // value是customer_id，option.label是customer_name
         setModalCustomerId(value);
         setModalCustomerName(option?.label || '');
+        setZipCodeFilter('');
         try {
             const res = await (await fetch(`${endpoint}/receiver_info_list/${value}`, {
                 headers: getSafeHeader()
             })).json();
-
-            setZipCodeList(res.data
-                .sort((v1, v2) => Number(v1['zip_code']) - Number(v2['zip_code'])).map((v, index) => ({ label: v['zip_code'], value: v['zip_code'] })))
-            setReceiverList(res.data);
+            const receivers = Array.isArray(res.data) ? res.data : [];
+            setZipCodeList(buildUniqueZipCodeOptions(receivers));
+            setReceiverList(receivers);
         } catch (err) {
             messageX.error("获取列表失败")
         }
@@ -139,7 +183,50 @@ export default function NewOrder() {
     // 保存表单数据到localStorage
     const saveFormToLocalStorage = () => {
         const currentValues = form.getFieldsValue();
-        localStorage.setItem(FORM_STORAGE_KEY, JSON.stringify(currentValues));
+        localStorage.setItem(FORM_STORAGE_KEY, JSON.stringify({
+            ...currentValues,
+            quote: quoteDraft
+        }));
+    };
+
+    const openQuoteModal = () => {
+        quoteForm.setFieldsValue(quoteDraft || {
+            unit_price: undefined,
+            surcharge: 0,
+            quote_remark: ''
+        });
+        setQuoteModalOpen(true);
+    };
+
+    const saveQuoteDraft = async () => {
+        try {
+            const values = await quoteForm.validateFields();
+            const nextQuote = {
+                unit_price: Number(values.unit_price),
+                surcharge: Number(values.surcharge || 0),
+                quote_remark: (values.quote_remark || '').trim()
+            };
+            setQuoteDraft(nextQuote);
+            localStorage.setItem(FORM_STORAGE_KEY, JSON.stringify({
+                ...form.getFieldsValue(),
+                quote: nextQuote
+            }));
+            setQuoteModalOpen(false);
+            messageX.success('报价已保存，将在创建订单时一并提交。');
+        } catch (error) {
+            if (!error?.errorFields) {
+                messageX.error('保存报价失败。');
+                console.error('保存报价时发生错误:', error);
+            }
+        }
+    };
+
+    const clearQuoteDraft = () => {
+        setQuoteDraft(null);
+        quoteForm.resetFields();
+        localStorage.setItem(FORM_STORAGE_KEY, JSON.stringify(form.getFieldsValue()));
+        setQuoteModalOpen(false);
+        messageX.success('报价已移除。');
     };
 
     // 从localStorage加载已保存的表单数据或根据templateOrderId加载模板数据
@@ -199,6 +286,8 @@ export default function NewOrder() {
     const handleClearForm = () => {
         form.resetFields();
         setSelectedCustomerName('');
+        setQuoteDraft(null);
+        quoteForm.resetFields();
         if (currentUserId !== undefined && currentUserId !== null) {
             form.setFieldValue('salesman_id', Number(currentUserId));
         }
@@ -211,7 +300,9 @@ export default function NewOrder() {
         if (savedFormData) {
             try {
                 const parsedData = JSON.parse(savedFormData);
-                form.setFieldsValue(parsedData);
+                const { quote: savedQuote, ...savedOrder } = parsedData;
+                form.setFieldsValue(savedOrder);
+                setQuoteDraft(savedQuote || null);
                 if (parsedData.customer_id) {
                     setSelectedCustomerName(parsedData.customer_name || '');
                     handleSelect(parsedData.customer_id);
@@ -226,15 +317,7 @@ export default function NewOrder() {
     const handleFinish = async (values) => {
         setLoading(true)
         try {
-            const submitValues = { ...values };
-            submitValues.en_name = (submitValues.en_name || '').toUpperCase();
-
-            const selectedSalesmanId = submitValues.salesman_id === undefined || submitValues.salesman_id === null || submitValues.salesman_id === ''
-                ? (currentUserId !== undefined && currentUserId !== null ? Number(currentUserId) : undefined)
-                : Number(submitValues.salesman_id);
-
-            // 创建订单接口不接收业务员字段，创建后通过二次请求设置负责人
-            delete submitValues.salesman_id;
+            const submitValues = buildCreateOrderPayload(values, quoteDraft, currentUserId);
 
             const res = await (await fetch(`${endpoint}/create`, {
                 headers: getSafeHeader(),
@@ -242,37 +325,15 @@ export default function NewOrder() {
                 body: JSON.stringify(submitValues)
             })).json();
             if (res['code'] === 200) {
-                if (selectedSalesmanId !== undefined && !Number.isNaN(selectedSalesmanId)) {
-                    const orderUid = res?.uid || res?.data?.uid || res?.order_uid || res?.data?.order_uid;
-                    if (orderUid) {
-                        try {
-                            const setRes = await (await fetch(`${endpoint}/orders/${orderUid}/salesman`, {
-                                method: 'PUT',
-                                headers: {
-                                    ...getSafeHeader(),
-                                    'Content-Type': 'application/json'
-                                },
-                                body: JSON.stringify({ user_id: selectedSalesmanId })
-                            })).json();
-                            if (setRes?.code !== 200) {
-                                messageX.warning('订单已创建，但业务员设置失败，请在订单详情中修改。');
-                            }
-                        } catch (e) {
-                            console.error('设置业务员失败:', e);
-                            messageX.warning('订单已创建，但业务员设置失败，请在订单详情中修改。');
-                        }
-                    } else {
-                        messageX.warning('订单已创建，但接口未返回uid，无法自动设置业务员。');
-                    }
-                }
-
                 // Reset form to initial state.
                 form.resetFields();
                 setSelectedCustomerName('');
+                setQuoteDraft(null);
+                quoteForm.resetFields();
                 if (currentUserId !== undefined && currentUserId !== null) {
                     form.setFieldValue('salesman_id', Number(currentUserId));
                 }
-                messageX.success('创建成功！');
+                messageX.success(res.msg || '创建成功！');
 
                 // 清空localStorage中保存的表单数据
                 localStorage.removeItem(FORM_STORAGE_KEY);
@@ -376,7 +437,7 @@ export default function NewOrder() {
                 {/*        </Item>*/}
                 {/*    </Col>*/}
                 {/*</Row>*/}
-                <Row gutter={16}>
+                <Row gutter={16} align="bottom">
                     <Col span={8}>
                         <Item name={'salesman_id'} label={'业务员/Salesman'} rules={[{ required: true }]}>
                             <Select
@@ -388,6 +449,17 @@ export default function NewOrder() {
                                     (option?.label || '').toLowerCase().includes(input.toLowerCase())
                                 }
                             />
+                        </Item>
+                    </Col>
+                    <Col>
+                        <Item>
+                            <Button
+                                type="primary"
+                                icon={<DollarOutlined />}
+                                onClick={openQuoteModal}
+                            >
+                                报价
+                            </Button>
                         </Item>
                     </Col>
                 </Row>
@@ -614,6 +686,39 @@ export default function NewOrder() {
                     </Col>
                 </Row>
             </Form>
+            <Modal
+                title="订单报价"
+                open={quoteModalOpen}
+                onCancel={() => setQuoteModalOpen(false)}
+                onOk={saveQuoteDraft}
+                okText="保存报价"
+                cancelText="取消"
+            >
+                <Form form={quoteForm} layout="vertical">
+                    <Form.Item
+                        name="unit_price"
+                        label="每公斤单价 (CNY/kg)"
+                        rules={[{ required: true, message: '请输入每公斤单价' }]}
+                    >
+                        <InputNumber min={0} precision={4} style={{ width: '100%' }} />
+                    </Form.Item>
+                    <Form.Item
+                        name="surcharge"
+                        label="附加费 (CNY)"
+                        rules={[{ required: true, message: '请输入附加费' }]}
+                    >
+                        <InputNumber min={0} precision={2} style={{ width: '100%' }} />
+                    </Form.Item>
+                    <Form.Item name="quote_remark" label="报价说明">
+                        <Input.TextArea rows={3} />
+                    </Form.Item>
+                </Form>
+                {quoteDraft && (
+                    <Button type="link" danger style={{ paddingInline: 0 }} onClick={clearQuoteDraft}>
+                        移除报价
+                    </Button>
+                )}
+            </Modal>
             <Modal open={modalVisible} onOk={handleModalClose} onCancel={handleModalClose} footer={null}
                 title={'通讯录'}>
                 <Row align="middle">
@@ -648,10 +753,19 @@ export default function NewOrder() {
                             邮编
                         </Col>
                         <Col span={12}>
-                            <Select
+                            <AutoComplete
                                 style={{ width: '100%' }}
-                                onSelect={(value) => { setZipCodeFilter(value) }}
-                                options={zipCodeList} />
+                                allowClear
+                                value={zipCodeFilter}
+                                onChange={setZipCodeFilter}
+                                options={zipCodeList}
+                                filterOption={(inputValue, option) => (
+                                    normalizeZipCode(option?.value)
+                                        .toLocaleUpperCase()
+                                        .includes(normalizeZipCode(inputValue).toLocaleUpperCase())
+                                )}
+                                placeholder="输入或选择邮编"
+                            />
                         </Col>
                     </Row>
                 }
@@ -679,6 +793,8 @@ export default function NewOrder() {
                                         setModalCustomerId(null);
                                         setModalCustomerName('');
                                         setReceiverList([]);
+                                        setZipCodeList([]);
+                                        setZipCodeFilter('');
                                         await updateCustomerName();
                                     } else {
                                         messageX.error('删除失败');
@@ -695,7 +811,7 @@ export default function NewOrder() {
                 <Typography.Title level={5}>收件地址列表</Typography.Title>
                 <List
                     itemLayout="vertical"
-                    dataSource={zipCodeFilter ? ReceiverList.filter(e => e['zip_code'] === zipCodeFilter) : ReceiverList}
+                    dataSource={filterReceiversByZipCode(ReceiverList, zipCodeFilter)}
                     renderItem={(item) => (
                         <List.Item key={item['receiver_id']} style={{ cursor: 'pointer' }} >
 

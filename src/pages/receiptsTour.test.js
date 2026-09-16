@@ -1,6 +1,6 @@
 import React from 'react';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { MemoryRouter } from 'react-router-dom';
 
 import Receipts from './receipts';
 
@@ -60,6 +60,47 @@ afterEach(() => {
     jest.restoreAllMocks();
 });
 
+test('the receipt page loads all salesperson receivables without a customer filter', async () => {
+    render(<MemoryRouter><Receipts /></MemoryRouter>);
+
+    await waitFor(() => expect(global.fetch.mock.calls.some(([url]) => (
+        url.includes('/receivables/orders')
+        && url.includes('p=1')
+        && url.includes('s=20')
+        && !url.includes('customer_id=')
+    ))).toBe(true));
+});
+
+test('an unsettled order number links to its order detail page', async () => {
+    global.fetch = jest.fn(url => Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve(url.includes('/receivables/orders')
+            ? {
+                code: 200,
+                data: [{
+                    uid: 'order-uid-1',
+                    order_id: 'ORDER-1',
+                    customer_id: 1,
+                    customer_name: '客户A',
+                    billing_weight: 1,
+                    receivable_amount: 100,
+                    approved_received: 0,
+                    pending_amount: 0,
+                    available_amount: 100,
+                }],
+                page: 1,
+                page_size: 20,
+                total: 1,
+            }
+            : { code: 200, data: [] }),
+    }));
+
+    render(<MemoryRouter><Receipts /></MemoryRouter>);
+
+    expect(await screen.findByRole('link', { name: 'ORDER-1' }))
+        .toHaveAttribute('href', '/orders/order-uid-1');
+});
+
 test('the receipt tour changes to the records tab without submitting data', async () => {
     const { container } = render(<MemoryRouter><Receipts /></MemoryRouter>);
     await waitFor(() => expect(global.fetch).toHaveBeenCalled());
@@ -84,7 +125,7 @@ test('the receipt page does not start the full onboarding workflow by itself', a
     expect(window.sessionStorage.getItem('wms:tour-flow:7')).toBeNull();
 });
 
-test('admin continues from receipt entry to finance audit', async () => {
+test('admin business onboarding ends after receipt entry instead of continuing to finance', async () => {
     const payload = window.btoa(JSON.stringify({ user_id: 8, roles: ['admin'] }));
     window.localStorage.setItem('jwt', `header.${payload}.signature`);
     window.sessionStorage.setItem('wms:tour-flow:8', JSON.stringify({
@@ -92,19 +133,9 @@ test('admin continues from receipt entry to finance audit', async () => {
         stage: 'receipt-entry',
     }));
 
-    render(
-        <MemoryRouter initialEntries={['/receipts']}>
-            <Routes>
-                <Route path="/receipts" element={<Receipts />} />
-                <Route path="/finance" element={<div>财务中心页</div>} />
-            </Routes>
-        </MemoryRouter>
-    );
+    render(<MemoryRouter><Receipts /></MemoryRouter>);
 
     fireEvent.click(await screen.findByRole('button', { name: '完成自动收款引导' }));
 
-    expect(await screen.findByText('财务中心页')).toBeInTheDocument();
-    expect(JSON.parse(window.sessionStorage.getItem('wms:tour-flow:8'))).toMatchObject({
-        stage: 'receipt-audit',
-    });
+    expect(window.sessionStorage.getItem('wms:tour-flow:8')).toBeNull();
 });

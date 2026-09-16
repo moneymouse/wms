@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 
 import OrderDetail from './orderDetail';
@@ -46,7 +46,7 @@ beforeEach(() => {
             if (url.includes('/salesman')) {
                 return Promise.resolve({ code: 200, data: { id: 99, name: '其他业务员' } });
             }
-            if (url.includes('/users/salespersons') || url.includes('/customs-codes')) {
+            if (url.includes('/users/salespersons') || url.includes('/customs-codes') || url.includes('/transportation-modes')) {
                 return Promise.resolve({ code: 200, data: [] });
             }
             if (url.includes('/cargo?')) {
@@ -83,4 +83,89 @@ test('an ineligible quote workflow returns to order selection so the user can co
     await waitFor(() => expect(JSON.parse(window.sessionStorage.getItem('wms:tour-flow:7'))).toMatchObject({
         stage: 'select-quote-order',
     }));
+});
+
+test('a receipt-locked order keeps quote history viewable but blocks new quotes and other receivable-basis changes', async () => {
+    window.sessionStorage.clear();
+    global.fetch = jest.fn(url => Promise.resolve({
+        ok: true,
+        json: () => {
+            if (url.includes('/salesman')) {
+                return Promise.resolve({ code: 200, data: { id: 7, name: '业务员' } });
+            }
+            if (url.includes('/users/salespersons') || url.includes('/customs-codes') || url.includes('/transportation-modes')) {
+                return Promise.resolve({ code: 200, data: [] });
+            }
+            if (url.includes('/cargo?')) {
+                return Promise.resolve({
+                    code: 200,
+                    data: [{
+                        uid: 'cargo-1',
+                        transfer_id: 'ORIG-1',
+                        waybill_id: '',
+                        tag: 'TAG-1',
+                        count: 1,
+                        real_en_name: 'SHOES',
+                        weight: 10.5,
+                        price: 1,
+                        status: 0,
+                    }],
+                });
+            }
+            if (url.includes('/quotes')) {
+                return Promise.resolve({
+                    code: 200,
+                    data: [{
+                        id: 1,
+                        version_no: 1,
+                        transportation_name: '历史渠道',
+                        unit_price: 12,
+                        surcharge: 0,
+                        weight_snapshot: 10.5,
+                        receivable_amount: 132,
+                        validity_status: 'effective',
+                        is_final: true,
+                        is_effective: true,
+                        quoter_name: '业务员',
+                    }],
+                });
+            }
+            return Promise.resolve({
+                code: 200,
+                data: {
+                    uid: 'order-uid',
+                    order_id: 'ORDER-1',
+                    transportation: '',
+                    salesman: { id: 7, name: '业务员' },
+                    customer_ids: [],
+                    receipt_locked: true,
+                },
+            });
+        },
+    }));
+
+    render(
+        <MemoryRouter initialEntries={['/orders/order-uid']}>
+            <Routes>
+                <Route path="/orders/:order_id" element={<OrderDetail />} />
+            </Routes>
+        </MemoryRouter>
+    );
+
+    expect(await screen.findByText('收据生成，订单锁定')).toBeInTheDocument();
+    const quoteButton = screen.getByRole('button', { name: /报价/ });
+    expect(quoteButton).not.toBeDisabled();
+    fireEvent.click(quoteButton);
+    expect(await screen.findByText('订单已锁定，当前仅可查看历史报价')).toBeInTheDocument();
+    expect(await screen.findByText('历史渠道')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '提交报价' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: /关\s*闭/ }));
+    expect(screen.getByRole('button', { name: /添\s*加/ })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /从装箱单分配/ })).toBeDisabled();
+    expect(await screen.findByRole('button', { name: '移除' })).toBeDisabled();
+
+    const editButtons = screen.getAllByRole('button', { name: /编\s*辑/ });
+    fireEvent.click(editButtons[editButtons.length - 1]);
+    expect(await screen.findByDisplayValue('ORIG-1')).toBeInTheDocument();
+    expect(screen.queryByDisplayValue('10.5')).not.toBeInTheDocument();
 });

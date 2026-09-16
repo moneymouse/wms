@@ -12,7 +12,8 @@ import {
     Collapse,
     Tag,
     Alert,
-    Input
+    Input,
+    Pagination
 } from 'antd';
 import { InboxOutlined } from '@ant-design/icons';
 import { endpoint } from '../config';
@@ -50,21 +51,28 @@ export default function BoxAssignmentModal({
 
     // 选中的箱子
     const [selectedBoxes, setSelectedBoxes] = useState([]);
+    const [selectedBoxWeights, setSelectedBoxWeights] = useState({});
     const [markSearch, setMarkSearch] = useState('');
+    const [pagination, setPagination] = useState({ current: 1, pageSize: 10, total: 0, totalBoxes: 0 });
 
     // 加载未分配的箱子
     useEffect(() => {
-        if (visible) {
-            fetchUnassignedBoxes();
-        }
+        if (!visible) return undefined;
+        const timer = window.setTimeout(
+            () => fetchUnassignedBoxes(1, markSearch),
+            markSearch ? 300 : 0
+        );
+        return () => window.clearTimeout(timer);
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [visible, customerId]);
+    }, [visible, customerId, markSearch]);
 
     // 重置选中状态
     useEffect(() => {
         if (!visible) {
             setSelectedBoxes([]);
+            setSelectedBoxWeights({});
             setMarkSearch('');
+            setPagination({ current: 1, pageSize: 10, total: 0, totalBoxes: 0 });
         }
     }, [visible]);
 
@@ -122,10 +130,15 @@ export default function BoxAssignmentModal({
         );
     };
 
-    const fetchUnassignedBoxes = async () => {
+    const fetchUnassignedBoxes = async (page = 1, search = markSearch) => {
         setLoading(true);
         try {
-            const params = new URLSearchParams({ valid_only: 'true' });
+            const params = new URLSearchParams({
+                valid_only: 'true',
+                p: String(page),
+                s: String(pagination.pageSize),
+            });
+            if ((search || '').trim()) params.set('q', search.trim());
             // if (customerId) {
             //     params.set('customer_id', String(customerId));
             // }
@@ -136,8 +149,23 @@ export default function BoxAssignmentModal({
             const data = await res.json();
 
             if (data.code === 200) {
-                console.log(data.data)
-                setPackingGroups(data.data || []);
+                const payload = Array.isArray(data.data)
+                    ? {
+                        items: data.data,
+                        total: data.data.length,
+                        total_boxes: data.data.reduce((sum, group) => sum + (group.boxes?.length || 0), 0),
+                        page,
+                        page_size: pagination.pageSize,
+                    }
+                    : (data.data || {});
+                setPackingGroups(payload.items || []);
+                setPagination(prev => ({
+                    ...prev,
+                    current: payload.page || page,
+                    pageSize: payload.page_size || prev.pageSize,
+                    total: payload.total || 0,
+                    totalBoxes: payload.total_boxes || 0,
+                }));
             } else {
                 messageApi.error(data.msg || '获取数据失败');
             }
@@ -160,6 +188,14 @@ export default function BoxAssignmentModal({
                 // 移除所有箱子
                 return prev.filter(uid => !boxUids.includes(uid));
             }
+        });
+        setSelectedBoxWeights(prev => {
+            const next = { ...prev };
+            boxes.forEach(box => {
+                if (checked) next[box.uid] = Number(box.weight || 0);
+                else delete next[box.uid];
+            });
+            return next;
         });
     };
 
@@ -226,25 +262,12 @@ export default function BoxAssignmentModal({
 
     // 计算选中箱子的总重量
     const calculateSelectedWeight = () => {
-        let total = 0;
-        packingGroups.forEach(group => {
-            group.boxes.forEach(box => {
-                if (selectedBoxes.includes(box.uid)) {
-                    total += box.weight || 0;
-                }
-            });
-        });
-        return total.toFixed(2);
+        return Object.values(selectedBoxWeights)
+            .reduce((total, value) => total + Number(value || 0), 0)
+            .toFixed(2);
     };
 
-    // 获取所有箱子数量
-    const getTotalBoxCount = () => {
-        return packingGroups.reduce((sum, group) => sum + group.boxes.length, 0);
-    };
-
-    const filteredGroups = packingGroups.filter(group =>
-        getGroupMark(group).toUpperCase().includes((markSearch || '').trim().toUpperCase())
-    );
+    const filteredGroups = packingGroups;
 
     return (
         <Modal
@@ -269,50 +292,43 @@ export default function BoxAssignmentModal({
         >
             {contextHolder}
 
-            {loading ? (
-                <div style={{ textAlign: 'center', padding: '40px 0' }}>
-                    <Spin size="large" />
-                </div>
-            ) : packingGroups.length === 0 ? (
-                <Empty
-                    image={Empty.PRESENTED_IMAGE_SIMPLE}
-                    description="没有未分配的有效箱子"
-                >
-                    <Text type="secondary">
-                        提示：只有已称重的箱子才会显示在这里
-                    </Text>
-                </Empty>
-            ) : (
-                <>
-                    <Alert
-                        message={`共 ${getTotalBoxCount()} 个可分配箱子（当前筛选 ${filteredGroups.length} 个唛头），已选择 ${selectedBoxes.length} 个，总重量 ${calculateSelectedWeight()} kg`}
-                        type="info"
-                        showIcon
-                        style={{ marginBottom: 16 }}
-                    />
+            <Alert
+                message={`共 ${pagination.totalBoxes} 个可分配箱子（${pagination.total} 个唛头），已选择 ${selectedBoxes.length} 个，总重量 ${calculateSelectedWeight()} kg`}
+                type="info"
+                showIcon
+                style={{ marginBottom: 16 }}
+            />
 
-                    <Input.Search
-                        placeholder="搜索唛头"
-                        allowClear
-                        value={markSearch}
-                        onChange={(e) => setMarkSearch(e.target.value)}
-                        style={{ marginBottom: 12 }}
-                    />
+            <Input.Search
+                placeholder="搜索唛头"
+                allowClear
+                value={markSearch}
+                onChange={(e) => setMarkSearch(e.target.value)}
+                style={{ marginBottom: 12 }}
+            />
 
-                    {filteredGroups.length === 0 ? (
-                        <Empty
-                            image={Empty.PRESENTED_IMAGE_SIMPLE}
-                            description="未找到匹配的唛头"
-                        />
-                    ) : (
-                        <Collapse
-                            defaultActiveKey={filteredGroups.map(g => g.packing_list_uid)}
-                            style={{
-                                maxHeight: '50vh',
-                                overflowY: 'auto',
-                                paddingRight: 8
-                            }}
-                        >
+            <Spin spinning={loading}>
+                {filteredGroups.length === 0 ? (
+                    <Empty
+                        image={Empty.PRESENTED_IMAGE_SIMPLE}
+                        description={markSearch ? '未找到匹配的唛头' : '没有未分配的有效箱子'}
+                    >
+                        {!markSearch && (
+                            <Text type="secondary">
+                                提示：只有已称重的箱子才会显示在这里
+                            </Text>
+                        )}
+                    </Empty>
+                ) : (
+                    <Collapse
+                        key={`${pagination.current}-${markSearch}`}
+                        defaultActiveKey={filteredGroups.map(g => g.packing_list_uid)}
+                        style={{
+                            maxHeight: '50vh',
+                            overflowY: 'auto',
+                            paddingRight: 8
+                        }}
+                    >
                             {filteredGroups.map(group => (
                                 <Panel
                                     key={group.packing_list_uid}
@@ -348,6 +364,15 @@ export default function BoxAssignmentModal({
                                                 setSelectedBoxes([...otherSelected, ...keys.filter(
                                                     key => group.boxes.find(b => b.uid === key)
                                                 )]);
+                                                setSelectedBoxWeights(prev => {
+                                                    const next = { ...prev };
+                                                    group.boxes.forEach(box => { delete next[box.uid]; });
+                                                    keys.forEach(key => {
+                                                        const box = group.boxes.find(item => item.uid === key);
+                                                        if (box) next[key] = Number(box.weight || 0);
+                                                    });
+                                                    return next;
+                                                });
                                             }
                                         }}
                                         columns={[
@@ -392,10 +417,19 @@ export default function BoxAssignmentModal({
                                     />
                                 </Panel>
                             ))}
-                        </Collapse>
-                    )}
-                </>
-            )}
+                    </Collapse>
+                )}
+                {pagination.total > pagination.pageSize && (
+                    <Pagination
+                        current={pagination.current}
+                        pageSize={pagination.pageSize}
+                        total={pagination.total}
+                        showSizeChanger={false}
+                        onChange={(page) => fetchUnassignedBoxes(page, markSearch)}
+                        style={{ marginTop: 16, textAlign: 'right' }}
+                    />
+                )}
+            </Spin>
         </Modal>
     );
 }

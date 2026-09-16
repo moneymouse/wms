@@ -169,8 +169,12 @@ test('the campaign chooses the correct first workflow stage for each role', () =
         startPath: '/finance',
     });
     expect(getCostQuoteReceiptOnboardingFlow(['admin'])).toMatchObject({
-        startStage: 'receipt-entry',
-        startPath: '/receipts',
+        startStage: 'select-quote-order',
+        startPath: '/orders',
+    });
+    expect(getCostQuoteReceiptOnboardingFlow(['admin', 'salesperson'])).toMatchObject({
+        role: 'salesperson',
+        startStage: 'select-quote-order',
     });
     expect(getCostQuoteReceiptOnboardingFlow(['worker'])).toBeNull();
 });

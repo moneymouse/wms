@@ -37,6 +37,7 @@ export default function OrderList() {
         current: Number(searchParams.get('p') || 1),
         total: 0
     });
+
     let flag = false;
 
     async function fetchOrderData(_pagination = {}, sorter = {}, query = searchParams.get('q') || '') {
@@ -331,7 +332,7 @@ export default function OrderList() {
                         <Input.TextArea
                             rows={1}
                             onChange={handleSearch}
-                            placeholder={"订单号/客户名/收件人名/国家"}
+                            placeholder={"订单号/客户名/收件人名/业务员/国家"}
                             defaultValue={keyword}
                             style={{ width: '20rem' }}
                         />

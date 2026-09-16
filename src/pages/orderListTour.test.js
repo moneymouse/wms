@@ -64,6 +64,7 @@ test('selecting an order advances the first-time workflow to quote before naviga
 
     expect(await screen.findByText('请选择由你负责的订单')).toBeInTheDocument();
     expect(screen.getByText('由你负责的订单', { selector: 'strong' })).toBeInTheDocument();
+    expect(screen.getByPlaceholderText('订单号/客户名/收件人名/业务员/国家')).toBeInTheDocument();
     fireEvent.click(await screen.findByRole('button', { name: 'ORDER-1' }));
 
     expect(await screen.findByText('订单详情页')).toBeInTheDocument();

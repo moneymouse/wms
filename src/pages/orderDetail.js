@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import {
+    Alert,
     Badge,
     Button,
     Descriptions,
@@ -40,10 +41,16 @@ import {
     saveFeatureTourChapterState,
     saveFeatureTourFlow,
 } from "../common/featureTourState";
+import { calculateOrderBillingWeight, calculateReceivable } from "../common/receivable";
 
 const passHash = '18667b982b1c774d3c096422e457906afb227cfc7f956d3f4fc1f9bc07b98862';
 const quoteTourChapter = getCostQuoteReceiptChapter('quote');
 const workflowStartTourChapter = getCostQuoteReceiptChapter('workflowStart');
+const RECEIPT_LOCK_BLOCKER_LABELS = {
+    pending_receipt: '存在待审核收款单',
+    approved_receipt: '存在已审核收款单',
+    bonus_assigned: '存在已分配奖金的包裹',
+};
 const quoteTourTargets = {
     entry: '[data-tour="quote-entry"]',
     summary: '[data-tour="quote-summary"]',
@@ -184,6 +191,14 @@ export default function OrderDetail() {
     const [quoteSubmitting, setQuoteSubmitting] = useState(false);
     const [quoteHistory, setQuoteHistory] = useState([]);
     const [quotePdfPrinting, setQuotePdfPrinting] = useState(false);
+    const [unlockForm] = Form.useForm();
+    const [unlockModalOpen, setUnlockModalOpen] = useState(false);
+    const [unlockSubmitting, setUnlockSubmitting] = useState(false);
+    const [relockSubmitting, setRelockSubmitting] = useState(false);
+    const [form] = Form.useForm();
+    const [editingKey, setEditingKey] = useState('');
+    const [cargoData, setCargoData] = useState([]);
+    const [selectedKeys, setSelectedKeys] = useState([]);
     const quoteUnitPrice = Form.useWatch('unit_price', quoteForm);
     const quoteSurcharge = Form.useWatch('surcharge', quoteForm);
     const [customsCodes, setCustomsCodes] = useState([]);
@@ -322,8 +337,26 @@ export default function OrderDetail() {
     const isCurrentSalesman = currentUserId != null && salesman?.id != null
         && Number(currentUserId) === Number(salesman.id);
     const canQuote = hasPermission(userRoles, ['salesperson']) && isCurrentSalesman;
+    const isAdmin = hasPermission(userRoles, ['admin']);
     const canEditSalesman = hasPermission(jwtPayload?.roles, ['admin'])
         || isCurrentSalesman;
+    const receiptLock = descriptionData.receipt_lock;
+    const receiptRevisionSupported = ['none', 'locked', 'revision_open'].includes(receiptLock?.status);
+    const receiptLockStatus = receiptRevisionSupported
+        ? receiptLock.status
+        : (descriptionData.receipt_locked ? 'locked' : 'none');
+    // receipt_lock was added after receipt_locked. Keep the legacy field as a fallback
+    // so this page continues to work during a staggered frontend/backend rollout.
+    const receiptLocked = receiptLockStatus === 'locked';
+    const receiptRevisionOpen = receiptLockStatus === 'revision_open';
+    const receiptLockBlockers = Array.isArray(receiptLock?.blockers) ? receiptLock.blockers : [];
+    const receiptUnlockEligible = receiptRevisionSupported
+        && receiptLock?.unlock_eligible === true
+        && receiptLockBlockers.length === 0;
+    const receiptRevision = receiptLock?.revision || {};
+    const blockerSummary = receiptLockBlockers
+        .map(blocker => RECEIPT_LOCK_BLOCKER_LABELS[blocker] || blocker)
+        .join('、');
     const finalQuote = quoteHistory.find(item => item.is_final);
     const currentTransportation = (descriptionData.transportation || '').trim();
     const currentQuoteMode = transportationModes.find(item => item.name === currentTransportation);
@@ -360,6 +393,82 @@ export default function OrderDetail() {
             console.error('获取报价历史失败:', error);
         }
         return [];
+    };
+
+    const applyReceiptLock = (nextReceiptLock, fallbackStatus, fallbackRevision = null) => {
+        const normalizedReceiptLock = nextReceiptLock?.status
+            ? nextReceiptLock
+            : {
+                ...(receiptLock || {}),
+                status: fallbackStatus,
+                revision: fallbackRevision,
+            };
+        setDescriptionData(prev => ({
+            ...prev,
+            receipt_locked: normalizedReceiptLock.status === 'locked',
+            receipt_lock: normalizedReceiptLock,
+        }));
+    };
+
+    const handleReceiptUnlock = async () => {
+        try {
+            const values = await unlockForm.validateFields();
+            const reason = values.reason.trim();
+            setUnlockSubmitting(true);
+            const response = await fetch(`${endpoint}/orders/${order_id}/receipt-unlock`, {
+                method: 'POST',
+                headers: { ...getSafeHeader(), 'Content-Type': 'application/json' },
+                body: JSON.stringify({ reason }),
+            });
+            const result = await response.json();
+            if (result.code !== 200) {
+                messageX.error(result.msg || '订单解锁失败');
+                return;
+            }
+
+            applyReceiptLock(result.data, 'revision_open', {
+                reason,
+                opened_by_id: currentUserId,
+                opened_by_name: jwtPayload?.name,
+                opened_at: new Date().toISOString(),
+            });
+            setUnlockModalOpen(false);
+            unlockForm.resetFields();
+            messageX.success(result.msg || '订单已进入修订状态');
+        } catch (error) {
+            if (error?.errorFields) return;
+            console.error('订单解锁失败:', error);
+            messageX.error(error?.message || '订单解锁失败');
+        } finally {
+            setUnlockSubmitting(false);
+        }
+    };
+
+    const handleReceiptRelock = async () => {
+        setRelockSubmitting(true);
+        try {
+            const response = await fetch(`${endpoint}/orders/${order_id}/receipt-relock`, {
+                method: 'POST',
+                headers: { ...getSafeHeader(), 'Content-Type': 'application/json' },
+                body: JSON.stringify({}),
+            });
+            const result = await response.json();
+            if (result.code !== 200) {
+                messageX.error(result.msg || '重新锁定订单失败');
+                return;
+            }
+
+            applyReceiptLock(result.data, 'locked');
+            setEditingKey('');
+            setQuoteModalOpen(false);
+            setBoxAssignmentVisible(false);
+            messageX.success(result.msg || '订单已重新锁定');
+        } catch (error) {
+            console.error('重新锁定订单失败:', error);
+            messageX.error(error?.message || '重新锁定订单失败');
+        } finally {
+            setRelockSubmitting(false);
+        }
     };
 
     const openQuoteModal = async () => {
@@ -420,10 +529,14 @@ export default function OrderDetail() {
             stage: 'select-quote-order',
         });
         navigate('/orders');
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [canQuote, currentUserId, descriptionData.order_id, forceQuoteTour, salesmanLoading]);
 
     const submitQuote = async () => {
+        if (receiptLocked) {
+            messageX.warning('订单已锁定，只能查看历史报价');
+            return;
+        }
         try {
             const values = await quoteForm.validateFields();
             setQuoteSubmitting(true);
@@ -557,13 +670,16 @@ export default function OrderDetail() {
     };
 
     //纸箱表格
-    const [form] = Form.useForm();
-    const [editingKey, setEditingKey] = useState('');
-    const [cargoData, setCargoData] = useState([]);
     const currentQuoteWeight = cargoData.reduce((sum, cargo) => sum + Number(cargo.weight || 0), 0);
-    const quoteReceivablePreview = (
-        currentQuoteWeight * Number(quoteUnitPrice || 0) + Number(quoteSurcharge || 0)
+    const currentBillingWeight = calculateOrderBillingWeight(cargoData.map(cargo => cargo.weight));
+    const quoteReceivablePreview = calculateReceivable(
+        currentBillingWeight,
+        quoteUnitPrice,
+        quoteSurcharge
     );
+    const displayedQuoteReceivable = receiptLocked && finalQuote
+        ? Number(finalQuote.receivable_amount || 0)
+        : quoteReceivablePreview;
     const fetchCargoData = async () => {
         const {
             code,
@@ -820,7 +936,7 @@ export default function OrderDetail() {
                             okText="确认移除"
                             cancelText="取消"
                         >
-                            <Button type={'text'} danger>移除</Button>
+                            <Button type={'text'} danger disabled={receiptLocked}>移除</Button>
                         </Popconfirm>
                         <Button type={'text'} style={{ color: "#1677FF" }} disabled={editingKey !== ''}
                             onClick={() => edit(record)}>
@@ -840,12 +956,13 @@ export default function OrderDetail() {
                 const outboundLockedWaybill = ['transfer_id', 'waybill_id'].includes(col.dataIndex)
                     && record.packing_list_uid
                     && (Number(record.status) === 1 || String(record.status).toLowerCase() === 'outbound');
+                const receiptLockedWeight = receiptLocked && col.dataIndex === 'weight';
                 return {
                     record,
                     // inputType: col.dataIndex === 'age' ? 'number' : 'text',
                     dataIndex: col.dataIndex,
                     title: col.title,
-                    editing: isEditing(record) && !outboundLockedWaybill,
+                    editing: isEditing(record) && !outboundLockedWaybill && !receiptLockedWeight,
                     onEnter: async (flag) => {
                         await save(record.uid);
                         focusFlag = flag;
@@ -864,7 +981,7 @@ export default function OrderDetail() {
                         await save(record.uid);
                     },
                     onClick: () => {
-                        if (outboundLockedWaybill) return;
+                        if (outboundLockedWaybill || receiptLockedWeight) return;
                         edit(record);
                     }
                 }
@@ -887,17 +1004,22 @@ export default function OrderDetail() {
             return;
         }
 
-        await (await fetch(`${endpoint}/cargo/unbind`, {
+        const result = await (await fetch(`${endpoint}/cargo/unbind`, {
             headers: getSafeHeader(),
             body: JSON.stringify({ cargo_id_list: record_ids }),
             method: 'POST'
         })).json();
+        if (result.code !== 200) {
+            messageX.error(result.msg || '移除包裹失败');
+            return;
+        }
 
         // 更新页面：移除当前订单列表中已解绑包裹
-        setCargoData(prevState => prevState.filter(item => !record_ids.includes(item.key)));
-        setSelectedKeys(prevState => prevState.filter(key => !record_ids.includes(key)));
+        const successIds = result.data?.success || [];
+        setCargoData(prevState => prevState.filter(item => !successIds.includes(item.key)));
+        setSelectedKeys(prevState => prevState.filter(key => !successIds.includes(key)));
 
-        messageX.success(`已从订单移除 ${record_ids.length} 个包裹`);
+        messageX.success(`已从订单移除 ${successIds.length} 个包裹`);
     }
 
     const [count, setCount] = useState(1);//包装箱添加计数
@@ -908,12 +1030,16 @@ export default function OrderDetail() {
             return
         }
         // console.log(count);
-        const timestamp = (new Date()).getTime().toString(16);
-        const { data, cargo_id_list } = await (await fetch(`${endpoint}/orders/${order_id}/add_cargo`, {
+        const result = await (await fetch(`${endpoint}/orders/${order_id}/add_cargo`, {
             headers: getSafeHeader(),
             body: JSON.stringify({ cargo_count: count }),
             method: 'POST'
         })).json()
+        if (result.code !== 200) {
+            messageX.error(result.msg || '添加包裹失败');
+            return;
+        }
+        const { data } = result;
         setCount(1);
         const data_with_key = data.map(r => ({ ...r, key: r.uid }));
         setCargoData(prevState => [...prevState, ...data_with_key]);
@@ -941,7 +1067,6 @@ export default function OrderDetail() {
     }
 
     // 选择打印
-    const [selectedKeys, setSelectedKeys] = useState([]);
     // 打印
     const handlePrint = () => {
         window.open(`${endpoint}/cargo/pdf/${selectedKeys.join('_')}`);
@@ -953,102 +1078,182 @@ export default function OrderDetail() {
         <>
             {messageComponent}
             <Typography.Title level={4} style={{ marginBottom: '2rem' }}>订单详情/Order Detail</Typography.Title>
-            <Space style={{ marginBottom: '1rem' }} align="center" wrap size="small">
-                <Typography.Text strong>业务员：</Typography.Text>
-                {!salesmanEditing ? (
-                    <Input
-                        readOnly
-                        style={{ width: 240, height: 32 }}
-                        value={salesman ? `${salesman.name || '-'}${salesman.phone ? ` / ${salesman.phone}` : ''}` : '未分配'}
-                    />
-                ) : (
-                    salesmanOptions.length > 0 ? (
-                        <Select
-                            style={{ width: 240 }}
-                            size="middle"
-                            placeholder="选择业务员"
-                            loading={salesmanUsersLoading || salesmanLoading}
-                            value={salesmanEditorValue}
-                            onChange={(value) => setSalesmanEditorValue(value)}
-                            options={salesmanOptions}
+            {receiptLocked && (
+                <Space style={{ marginBottom: '1rem' }} align="center" wrap size="small">
+                    <Tag color="green">收据生成，订单锁定</Tag>
+                    {isAdmin && receiptRevisionSupported && (
+                        <Button
+                            danger
+                            disabled={!receiptUnlockEligible}
+                            onClick={() => setUnlockModalOpen(true)}
+                        >
+                            解锁订单
+                        </Button>
+                    )}
+                    {isAdmin && receiptRevisionSupported && !receiptUnlockEligible && (
+                        <Typography.Text type="danger">
+                            暂不能解锁：{blockerSummary || '当前订单不满足解锁条件'}
+                        </Typography.Text>
+                    )}
+                </Space>
+            )}
+            {receiptRevisionOpen && (
+                <Space style={{ marginBottom: '1rem' }} align="center" wrap size="small">
+                    <Tag color="orange">订单修订中</Tag>
+                    <Typography.Text>原因：{receiptRevision.reason || '-'}</Typography.Text>
+                    <Typography.Text type="secondary">
+                        开启人：{receiptRevision.opened_by_name || '-'}
+                        {receiptRevision.opened_at ? ` / ${receiptRevision.opened_at}` : ''}
+                    </Typography.Text>
+                    {isAdmin && (
+                        <Popconfirm
+                            title="完成订单修订"
+                            description="重新锁定后，重量、包裹增删/归属和报价将再次不可修改。"
+                            okText="完成并锁定"
+                            cancelText="继续修订"
+                            onConfirm={handleReceiptRelock}
+                        >
+                            <Button type="primary" loading={relockSubmitting}>完成修订并锁定</Button>
+                        </Popconfirm>
+                    )}
+                </Space>
+            )}
+            <Modal
+                title="解锁订单并开始修订"
+                open={unlockModalOpen}
+                onCancel={() => {
+                    setUnlockModalOpen(false);
+                    unlockForm.resetFields();
+                }}
+                onOk={handleReceiptUnlock}
+                confirmLoading={unlockSubmitting}
+                okText="确认解锁"
+                cancelText="取消"
+                destroyOnHidden
+            >
+                <Alert
+                    type="warning"
+                    showIcon
+                    message="解锁后可修改计费基础"
+                    description="原收款单不会被修改或删除。完成修订后请重新锁定订单，或通过复制已驳回收款单创建新收款单。"
+                    style={{ marginBottom: 16 }}
+                />
+                <Form form={unlockForm} layout="vertical" preserve={false}>
+                    <Form.Item
+                        name="reason"
+                        label="解锁原因"
+                        rules={[
+                            { required: true, whitespace: true, message: '请填写解锁原因' },
+                            { max: 512, message: '解锁原因不能超过 512 个字符' },
+                        ]}
+                    >
+                        <Input.TextArea
+                            rows={4}
+                            maxLength={512}
+                            showCount
+                            placeholder="请说明填写错误或业务变更内容"
+                        />
+                    </Form.Item>
+                </Form>
+            </Modal>
+            <div>
+                <Space style={{ marginBottom: '1rem' }} align="center" wrap size="small">
+                    <Typography.Text strong>业务员：</Typography.Text>
+                    {!salesmanEditing ? (
+                        <Input
+                            readOnly
+                            style={{ width: 240, height: 32 }}
+                            value={salesman ? `${salesman.name || '-'}${salesman.phone ? ` / ${salesman.phone}` : ''}` : '未分配'}
                         />
                     ) : (
-                        <InputNumber
-                            min={1}
-                            placeholder="输入业务员ID"
-                            style={{ width: 240, height: 32 }}
-                            value={salesmanEditorValue}
-                            onChange={(value) => setSalesmanEditorValue(value)}
-                        />
-                    )
-                )}
-                {canEditSalesman && !salesmanEditing && (
-                    <Button
-                        size="middle"
-                        onClick={() => {
+                        salesmanOptions.length > 0 ? (
+                            <Select
+                                style={{ width: 240 }}
+                                size="middle"
+                                placeholder="选择业务员"
+                                loading={salesmanUsersLoading || salesmanLoading}
+                                value={salesmanEditorValue}
+                                onChange={(value) => setSalesmanEditorValue(value)}
+                                options={salesmanOptions}
+                            />
+                        ) : (
+                            <InputNumber
+                                min={1}
+                                placeholder="输入业务员ID"
+                                style={{ width: 240, height: 32 }}
+                                value={salesmanEditorValue}
+                                onChange={(value) => setSalesmanEditorValue(value)}
+                            />
+                        )
+                    )}
+                    {canEditSalesman && !salesmanEditing && (
+                        <Button
+                            size="middle"
+                            onClick={() => {
+                                setSalesmanEditorValue(salesman?.id ?? undefined);
+                                setSalesmanEditing(true);
+                            }}
+                        >
+                            编辑
+                        </Button>
+                    )}
+                    {canEditSalesman && salesmanEditing && (
+                        <Button size="middle" type="primary" loading={salesmanSaving}
+                            onClick={() => handleSaveSalesman(salesmanEditorValue)}>保存</Button>
+                    )}
+                    {canEditSalesman && salesmanEditing && (
+                        <Button size="middle" onClick={() => {
                             setSalesmanEditorValue(salesman?.id ?? undefined);
-                            setSalesmanEditing(true);
-                        }}
-                    >
-                        编辑
-                    </Button>
-                )}
-                {canEditSalesman && salesmanEditing && (
-                    <Button size="middle" type="primary" loading={salesmanSaving}
-                        onClick={() => handleSaveSalesman(salesmanEditorValue)}>保存</Button>
-                )}
-                {canEditSalesman && salesmanEditing && (
-                    <Button size="middle" onClick={() => {
-                        setSalesmanEditorValue(salesman?.id ?? undefined);
-                        setSalesmanEditing(false);
-                    }}>取消</Button>
-                )}
-                {canEditSalesman && salesmanEditing && (
-                    <Button size="middle" danger loading={salesmanSaving}
-                        onClick={handleRemoveSalesman}>移除</Button>
-                )}
-                {canQuote && !salesmanEditing && (
-                    <Button data-tour="quote-entry" size="middle" type="primary" icon={<DollarOutlined />} onClick={openQuoteModal}>
-                        报价
-                    </Button>
-                )}
-                {canQuote && !salesmanEditing && (
-                    <FeatureTour
-                        chapter={quoteTourChapter}
-                        steps={quoteTourSteps}
-                        autoSteps={quoteTourSteps}
-                        manualSteps={quoteManualTourSteps}
-                        eligible={canQuote}
-                        autoEnabled={false}
-                        forceAutoStart={forceQuoteTour}
-                        onStart={(mode) => {
-                            if (mode === 'auto') {
-                                saveFeatureTourFlow({
-                                    userId: tourUserId,
-                                    campaignId: COST_QUOTE_RECEIPT_TOUR.id,
-                                    stage: 'quote',
-                                });
-                            }
-                        }}
-                        onStepChange={handleQuoteTourStepChange}
-                        onTourEnd={(status, mode) => {
-                            setQuoteModalOpen(false);
-                            if (mode !== 'auto') return;
-                            if (status === 'completed') {
-                                saveFeatureTourFlow({
-                                    userId: tourUserId,
-                                    campaignId: COST_QUOTE_RECEIPT_TOUR.id,
-                                    stage: 'receipt-entry',
-                                });
-                                navigate('/receipts');
-                            } else {
-                                clearFeatureTourFlow(tourUserId);
-                            }
-                        }}
-                        triggerAriaLabel="打开报价操作引导"
-                    />
-                )}
-            </Space>
+                            setSalesmanEditing(false);
+                        }}>取消</Button>
+                    )}
+                    {canEditSalesman && salesmanEditing && (
+                        <Button size="middle" danger loading={salesmanSaving}
+                            onClick={handleRemoveSalesman}>移除</Button>
+                    )}
+                    {canQuote && !salesmanEditing && (
+                        <Button data-tour="quote-entry" size="middle" type="primary" icon={<DollarOutlined />} onClick={openQuoteModal}>
+                            报价
+                        </Button>
+                    )}
+                    {canQuote && !salesmanEditing && (
+                        <FeatureTour
+                            chapter={quoteTourChapter}
+                            steps={quoteTourSteps}
+                            autoSteps={quoteTourSteps}
+                            manualSteps={quoteManualTourSteps}
+                            eligible={canQuote && !receiptLocked}
+                            autoEnabled={false}
+                            forceAutoStart={forceQuoteTour}
+                            onStart={(mode) => {
+                                if (mode === 'auto') {
+                                    saveFeatureTourFlow({
+                                        userId: tourUserId,
+                                        campaignId: COST_QUOTE_RECEIPT_TOUR.id,
+                                        stage: 'quote',
+                                    });
+                                }
+                            }}
+                            onStepChange={handleQuoteTourStepChange}
+                            onTourEnd={(status, mode) => {
+                                setQuoteModalOpen(false);
+                                if (mode !== 'auto') return;
+                                if (status === 'completed') {
+                                    saveFeatureTourFlow({
+                                        userId: tourUserId,
+                                        campaignId: COST_QUOTE_RECEIPT_TOUR.id,
+                                        stage: 'receipt-entry',
+                                    });
+                                    navigate('/receipts');
+                                } else {
+                                    clearFeatureTourFlow(tourUserId);
+                                }
+                            }}
+                            triggerAriaLabel="打开报价操作引导"
+                        />
+                    )}
+                </Space>
+            </div>
             <Modal
                 title={`订单报价 ${descriptionData?.order_id || ''}`}
                 open={quoteModalOpen}
@@ -1056,10 +1261,18 @@ export default function OrderDetail() {
                 onOk={submitQuote}
                 confirmLoading={quoteSubmitting}
                 okText="提交报价"
-                cancelText="取消"
+                cancelText={receiptLocked ? '关闭' : '取消'}
                 width={760}
-                okButtonProps={{ 'data-tour': 'quote-submit' }}
+                okButtonProps={{ 'data-tour': 'quote-submit', disabled: receiptLocked }}
             >
+                {receiptLocked && (
+                    <Alert
+                        type="info"
+                        showIcon
+                        message="订单已锁定，当前仅可查看历史报价"
+                        style={{ marginBottom: 16 }}
+                    />
+                )}
                 <Form form={quoteForm} layout="vertical">
                     <Descriptions data-tour="quote-summary" size="small" bordered style={{ marginBottom: 16 }}>
                         <Descriptions.Item label="当前运输方式">
@@ -1071,21 +1284,26 @@ export default function OrderDetail() {
                         <Descriptions.Item label="当前总重">
                             {currentQuoteWeight.toFixed(3)} kg
                         </Descriptions.Item>
+                        <Descriptions.Item label="计费重量">
+                            {currentBillingWeight} kg
+                        </Descriptions.Item>
                         <Descriptions.Item label="应收账款">
-                            <Typography.Text strong>{quoteReceivablePreview.toFixed(2)} CNY</Typography.Text>
+                            <Typography.Text strong>{displayedQuoteReceivable.toFixed(2)} CNY</Typography.Text>
                         </Descriptions.Item>
                     </Descriptions>
-                    <div data-tour="quote-pricing">
-                        <Form.Item name="unit_price" label="每公斤单价 (CNY/kg)" rules={[{ required: true, message: '请输入每公斤单价' }]}>
-                            <InputNumber min={0} precision={4} style={{ width: '100%' }} />
-                        </Form.Item>
-                        <Form.Item name="surcharge" label="附加费 (CNY)" rules={[{ required: true, message: '请输入附加费' }]}>
-                            <InputNumber min={0} precision={2} style={{ width: '100%' }} />
-                        </Form.Item>
-                        <Form.Item name="quote_remark" label="报价说明">
-                            <Input.TextArea rows={3} />
-                        </Form.Item>
-                    </div>
+                    {!receiptLocked && (
+                        <div data-tour="quote-pricing">
+                            <Form.Item name="unit_price" label="每公斤单价 (CNY/kg)" rules={[{ required: true, message: '请输入每公斤单价' }]}>
+                                <InputNumber min={0} precision={4} style={{ width: '100%' }} />
+                            </Form.Item>
+                            <Form.Item name="surcharge" label="附加费 (CNY)" rules={[{ required: true, message: '请输入附加费' }]}>
+                                <InputNumber min={0} precision={2} style={{ width: '100%' }} />
+                            </Form.Item>
+                            <Form.Item name="quote_remark" label="报价说明">
+                                <Input.TextArea rows={3} />
+                            </Form.Item>
+                        </div>
+                    )}
                 </Form>
                 <Space style={{ marginBottom: 12 }}>
                     <Typography.Text type={finalQuote ? 'success' : 'secondary'}>
@@ -1110,18 +1328,18 @@ export default function OrderDetail() {
                         dataSource={quoteHistory}
                         pagination={false}
                         columns={[
-                        { title: '版本', dataIndex: 'version_no', key: 'version_no', width: 70 },
-                        { title: '渠道', dataIndex: 'transportation_name', key: 'transportation_name' },
-                        { title: '单价', dataIndex: 'unit_price', key: 'unit_price', width: 100, render: v => Number(v || 0).toFixed(4) },
-                        { title: '附加费', dataIndex: 'surcharge', key: 'surcharge', width: 90, render: v => Number(v || 0).toFixed(2) },
-                        { title: '重量', dataIndex: 'weight_snapshot', key: 'weight_snapshot', width: 90, render: v => Number(v || 0).toFixed(3) },
-                        { title: '应收', dataIndex: 'receivable_amount', key: 'receivable_amount', width: 100, render: v => Number(v || 0).toFixed(2) },
-                        { title: '最低p', dataIndex: 'min_price', key: 'min_price', width: 90, render: v => Number(v || 0).toFixed(4) },
-                        {
-                            title: '状态', dataIndex: 'validity_status', key: 'validity_status', width: 110,
-                            render: v => <Tag color={v === 'effective' ? 'green' : v === 'stale' ? 'orange' : v === 'rejected' ? 'red' : 'blue'}>{({ effective: '有效', stale: '重量失效', pending: '待审核', rejected: '已驳回', superseded: '已替代' })[v] || v}</Tag>
-                        },
-                        { title: '报价人', dataIndex: 'quoter_name', key: 'quoter_name', width: 100 },
+                            { title: '版本', dataIndex: 'version_no', key: 'version_no', width: 70 },
+                            { title: '渠道', dataIndex: 'transportation_name', key: 'transportation_name' },
+                            { title: '单价', dataIndex: 'unit_price', key: 'unit_price', width: 100, render: v => Number(v || 0).toFixed(4) },
+                            { title: '附加费', dataIndex: 'surcharge', key: 'surcharge', width: 90, render: v => Number(v || 0).toFixed(2) },
+                            { title: '重量', dataIndex: 'weight_snapshot', key: 'weight_snapshot', width: 90, render: v => Number(v || 0).toFixed(3) },
+                            { title: '应收', dataIndex: 'receivable_amount', key: 'receivable_amount', width: 100, render: v => Number(v || 0).toFixed(2) },
+                            { title: '最低p', dataIndex: 'min_price', key: 'min_price', width: 90, render: v => Number(v || 0).toFixed(4) },
+                            {
+                                title: '状态', dataIndex: 'validity_status', key: 'validity_status', width: 110,
+                                render: v => <Tag color={v === 'effective' ? 'green' : v === 'rejected' ? 'red' : 'blue'}>{({ effective: '有效', pending: '待审核', rejected: '已驳回', superseded: '已替代' })[v] || v}</Tag>
+                            },
+                            { title: '报价人', dataIndex: 'quoter_name', key: 'quoter_name', width: 100 },
                         ]}
                     />
                 </div>
@@ -1234,7 +1452,7 @@ export default function OrderDetail() {
                         <Descriptions.Item key={k} span={v.span || 1} label={v.label.split('/')[0]}>
                             <Typography.Text
                                 copyable={!!descriptionData[v.name]}
-                                editable={v.name === 'customer_name' ? false : {
+                                editable={v.name === 'customer_name' || (receiptLocked && v.name === 'total_weight') ? false : {
                                     onChange: handleDescriptionDataChange,
                                 }}>{descriptionData[v.name]}</Typography.Text>{descriptionData[v.name] &&
                                     <span>{v.name === 'total_weight' ? 'kg' : ''}</span>}
@@ -1263,12 +1481,13 @@ export default function OrderDetail() {
             <Typography.Title level={4} style={{ marginBottom: '2rem' }}>包裹详情/Cargo Detail</Typography.Title>
             <Typography.Title level={5}>添加包装箱</Typography.Title>
             <Space size='small' style={{ marginBottom: '2rem' }} align={'center'}>
-                <InputNumber value={count} onChange={setCount} />
-                <Button type={'primary'} onClick={handleAdd}>添加</Button>
+                <InputNumber value={count} onChange={setCount} disabled={receiptLocked} />
+                <Button type={'primary'} onClick={handleAdd} disabled={receiptLocked}>添加</Button>
                 {canAssignBoxes && (
                     <Button
                         type={'default'}
                         icon={<InboxOutlined />}
+                        disabled={receiptLocked}
                         onClick={() => setBoxAssignmentVisible(true)}
                     >
                         从装箱单分配
@@ -1285,7 +1504,7 @@ export default function OrderDetail() {
                         okText="确认移除"
                         cancelText="取消"
                     >
-                        <Button danger icon={<DeleteOutlined />}>
+                        <Button danger icon={<DeleteOutlined />} disabled={receiptLocked}>
                             批量移除（{selectedKeys.length}）
                         </Button>
                     </Popconfirm>

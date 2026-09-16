@@ -40,6 +40,17 @@ test('renders the authenticated application menu', async () => {
     expect(await screen.findByText('收款管理')).toBeInTheDocument();
 });
 
+test('multi-role labels use spacing without punctuation separators', async () => {
+    setJwt(11, ['admin', 'salesperson'], 'Multi Role Test');
+
+    render(<MemoryRouter><App /></MemoryRouter>);
+    fireEvent.click((await screen.findByRole('img', { name: 'menu-unfold' })).closest('button'));
+
+    expect(await screen.findByText('管理员')).toHaveStyle({ whiteSpace: 'nowrap' });
+    expect(screen.getByText('业务员')).toHaveStyle({ whiteSpace: 'nowrap' });
+    expect(screen.queryByText('，')).not.toBeInTheDocument();
+});
+
 test('clicking receipt management advances an active onboarding flow', async () => {
     setJwt(2, ['salesperson'], 'Sales Test');
     window.sessionStorage.setItem('wms:tour-flow:2', JSON.stringify({
@@ -94,15 +105,15 @@ test('finance starts with receipt audit and can open the global feature center',
     });
 });
 
-test('admin starts with receipt entry before audit and ledger', async () => {
+test('admin follows the salesperson onboarding path instead of the finance path', async () => {
     setJwt(7, ['admin']);
     render(<MemoryRouter><App /></MemoryRouter>);
 
-    expect(await screen.findByText('依次了解收款登记、收款审核和应收账款台账。')).toBeInTheDocument();
+    expect(await screen.findByText('选择一笔由你负责的订单，依次了解订单报价和收款登记。')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '立即了解' }));
 
     expect(JSON.parse(window.sessionStorage.getItem('wms:tour-flow:7'))).toMatchObject({
-        stage: 'receipt-entry',
+        stage: 'select-quote-order',
     });
 });
 

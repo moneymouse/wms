@@ -11,6 +11,7 @@ const { Title, Text } = Typography;
 const EVENT_LABELS = {
     transportation_cost: '渠道成本',
     order_quote: '订单报价',
+    order_receipt_revision: '订单收据修订',
     payment_receipt: '收款单',
     sales_bonus_rate: '跟单奖金费率',
     supplier_export: '供应商导出',
@@ -27,7 +28,25 @@ const ACTION_COLORS = {
     receipt_create: 'blue',
     receipt_approve: 'green',
     receipt_reject: 'red',
+    order_unlock: 'orange',
+    order_relock: 'green',
     export_blocked_invalid_quote: 'red',
+};
+
+const ACTION_LABELS = {
+    create: '创建',
+    update: '更新',
+    archive: '归档',
+    quote_submit: '提交报价',
+    quote_adopt: '采纳报价',
+    quote_approve: '通过报价',
+    quote_reject: '驳回报价',
+    receipt_create: '创建收款单',
+    receipt_approve: '通过收款单',
+    receipt_reject: '驳回收款单',
+    order_unlock: '解锁订单',
+    order_relock: '重新锁定订单',
+    export_blocked_invalid_quote: '因报价无效阻止导出',
 };
 
 export default function AuditLogs() {
@@ -148,7 +167,9 @@ export default function AuditLogs() {
             dataIndex: 'action',
             key: 'action',
             width: 130,
-            render: (action) => <Tag color={ACTION_COLORS[action] || 'default'}>{action}</Tag>,
+            render: (action) => (
+                <Tag color={ACTION_COLORS[action] || 'default'}>{ACTION_LABELS[action] || action}</Tag>
+            ),
         },
         {
             title: '审计对象',

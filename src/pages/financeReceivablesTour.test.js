@@ -65,6 +65,7 @@ beforeEach(() => {
     global.fetch = jest.fn((url) => {
         let data = [];
         if (url.includes('/receipts?')) data = [pendingReceipt];
+        if (url.endsWith('/receipts/21')) data = pendingReceipt;
         if (url.includes('/finance/accounts-receivable')) {
             data = { items: [], totals: {}, total: 0, page: 1, page_size: 20 };
         }
@@ -85,13 +86,35 @@ test('the audit tour can open a pending receipt for explanation without reviewin
     fireEvent.click(trigger);
 
     expect(await screen.findByText('收款审核 - RC20260828001')).toBeInTheDocument();
+    await waitFor(() => expect(global.fetch.mock.calls.some(([url]) => url.endsWith('/receipts/21'))).toBe(true));
     expect(global.fetch.mock.calls.some(([, options]) => options?.method === 'PUT')).toBe(false);
+});
+
+test('receipt audit can search by receipt number', async () => {
+    render(<ReceiptAudit />);
+    await screen.findByText('RC20260828001');
+
+    fireEvent.change(screen.getByPlaceholderText('收款单号'), {
+        target: { value: 'RC20260828001' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /搜\s*索/ }));
+
+    await waitFor(() => expect(global.fetch.mock.calls.some(([url]) => (
+        url.includes('/receipts?') && url.includes('q=RC20260828001')
+    ))).toBe(true));
 });
 
 test('the receivable ledger exposes stable targets for filters, totals and details', async () => {
     const { container } = render(<ReceivableLedger />);
 
     await waitFor(() => expect(global.fetch).toHaveBeenCalled());
+    const ledgerRequest = global.fetch.mock.calls.find(([url]) => url.includes('/finance/accounts-receivable'))?.[0];
+    const params = new URLSearchParams(ledgerRequest.split('?')[1]);
+    expect(params.has('date_from')).toBe(true);
+    expect(params.has('date_to')).toBe(true);
+    expect(params.has('as_of')).toBe(false);
+    expect(screen.getByPlaceholderText('开始日期')).toBeInTheDocument();
+    expect(screen.getByPlaceholderText('结束日期')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '打开应收账款操作引导' }))
         .toHaveAttribute('data-auto-enabled', 'false');
     expect(container.querySelector('[data-tour="receivable-filters"]')).toBeInTheDocument();

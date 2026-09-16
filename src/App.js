@@ -330,7 +330,11 @@ function App() {
                             <div style={{ fontSize: 14, fontWeight: 500, textOverflow: 'ellipsis', overflow: 'hidden' }}>{username || '未知用户'}</div>
                             <div style={{ fontSize: 12, opacity: 0.65, display: 'flex', gap: 4, flexWrap: 'wrap' }}>
                                 {userRoles.length > 0
-                                    ? userRoles.map(role => <span key={role}>{ROLE_LABEL_MAP[role] || role}</span>).reduce((prev, curr) => [prev, '，', curr])
+                                    ? userRoles.map(role => (
+                                        <span key={role} style={{ whiteSpace: 'nowrap' }}>
+                                            {ROLE_LABEL_MAP[role] || role}
+                                        </span>
+                                    ))
                                     : '未登录'
                                 }
                             </div>
