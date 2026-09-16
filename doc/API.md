@@ -365,16 +365,32 @@ x-token: <JWT_TOKEN>
   "country": "中国",
   "tag_all": "标签",
   "cargo_count": 3,
-  "remark": "备注信息"
+  "remark": "备注信息",
+  "salesman_id": 3,
+  "quote": {
+    "unit_price": 12.34,
+    "surcharge": 5,
+    "quote_remark": "创建订单时的首版报价"
+  }
 }
 ```
+
+`salesman_id` 为所选业务员。`quote` 为可选字段；提供时，订单创建完成后复用报价服务自动生成第 1 版报价，报价人取 `salesman_id` 对应的业务员，不取接口操作人。
 
 **响应示例:**
 
 ```json
 {
   "code": 200,
-  "msg": "success"
+  "msg": "创建成功并已生成报价",
+  "uid": "订单UID",
+  "data": {
+    "quote": {
+      "version_no": 1,
+      "quoter_id": 3,
+      "quoter_name": "业务员A"
+    }
+  }
 }
 ```
 
@@ -401,7 +417,7 @@ x-token: <JWT_TOKEN>
 | s    | int    | 30          | 每页数量                   |
 | sf   | string | create_date | 排序字段                   |
 | so   | int    | 1           | 排序方向（1=降序, 0=升序） |
-| q    | string | ""          | 搜索关键词                 |
+| q    | string | ""          | 搜索订单、客户、收件人、业务员等关键词 |
 
 **响应示例:**
 
@@ -450,6 +466,7 @@ x-token: <JWT_TOKEN>
     "receiver_phone": "13800138000",
     "address": "收件地址",
     "cargo_count": 3,
+    "receipt_locked": true,
     "cargo_uid_list": ["cargo1", "cargo2", "cargo3"]
   }
 }
@@ -1295,6 +1312,8 @@ x-token: <JWT_TOKEN>
 }
 ```
 
+`receipt_locked=true` 表示订单存在收据历史且当前没有管理员开启的修订窗口，包裹重量、包裹归属、包裹增删和报价处于锁定状态。
+
 ---
 
 ## 6. 品名管理
@@ -1406,19 +1425,19 @@ x-token: <JWT_TOKEN>
 }
 ```
 
-响应增加 `weight_snapshot`、`current_weight`、`receivable_amount`、`effective_date`、`is_effective` 和 `validity_status`。`receivable_amount` 按 `round(weight_snapshot × unit_price + surcharge, 2)` 计算。低于渠道 `min_price` 的每公斤单价进入 `pending`，附加费不参与最低报价判断。
+响应增加 `weight_snapshot`、`billing_weight`、`current_weight`、`receivable_amount`、`effective_date`、`is_effective` 和 `validity_status`。`weight_snapshot` 为订单原始总重量，`billing_weight` 为每个未归档包裹分别向上取整后再求和的计费重量；`receivable_amount` 按 `round(billing_weight × unit_price + surcharge, 2)` 计算。低于渠道 `min_price` 的每公斤单价进入 `pending`，附加费不参与最低报价判断。
 
-`validity_status` 取值：`effective`、`pending`、`rejected`、`superseded`、`stale`。订单当前未归档包裹总重与快照相差 0.001kg 或以上时为 `stale`，必须重新报价。
+`validity_status` 取值：`effective`、`pending`、`rejected`、`superseded`。有效报价始终使用当前未归档包裹实时计算原始重量、计费重量和应收，报价快照仅作审计记录。任意收据明细生成后，订单的重量、包裹归属、包裹增删和新报价均锁定；满足条件时可由管理员开启受控修订窗口进行更正。
 
 - **待审核报价:** `GET /api/finance/quote-approvals`，权限为 `admin`
 - **审核:** `PUT /api/finance/quote-approvals/<quote_id>`，请求体为 `{ "action": "approve|reject", "review_remark": "..." }`
 - **双语报价单:** `GET /api/orders/<uid>/quote-pdf`
 
-新报价应收低于该订单已审核收款与待审核占用之和时返回 `409`。
+订单已生成任意状态的收据时，新报价或待审报价批准返回 `409`。
 
 ### 7.2 可收款订单与收款单
 
-- **可收款订单:** `GET /api/receivables/orders?customer_id=<id>&q=<订单号>`，权限为 `salesperson`、`admin`
+- **可收款订单:** `GET /api/receivables/orders?customer_id=<id>&q=<订单号>&p=1&s=20`，权限为 `salesperson`、`admin`。`customer_id` 可选；无论是否传入，都只返回 `实时应收 > 已审核 + 待审核` 且不存在待审核或已批准结清收据的当前可收款订单
 - **创建收款单:** `POST /api/receipts`，权限为 `salesperson`、`admin`
 - **收款单列表:** `GET /api/receipts?p=1&s=20&status=pending&q=<单号或客户>`
 - **收款单详情:** `GET /api/receipts/<id>`
@@ -1429,6 +1448,7 @@ x-token: <JWT_TOKEN>
   "customer_id": 1,
   "receipt_date": "2026-08-27",
   "payment_method": "bank_transfer",
+  "settlement_status": "unsettled",
   "remark": "首笔部分收款",
   "items": [
     { "order_uid": "ORDER-UID", "amount": 80 }
@@ -1438,7 +1458,32 @@ x-token: <JWT_TOKEN>
 
 `payment_method` 可取 `cash`、`bank_transfer`、`wechat`、`alipay`、`other`。一张收款单只能包含一个客户的订单；业务员只能登记当前有效报价人为本人的订单，管理员可代登记。待审核金额立即占用可收余额，金额必须大于 0 且不能超额。单号格式为 `RCPT-YYYYMMDD-xxxxxx`。
 
-状态为 `pending`、`approved`、`rejected`。三种状态均可打印，PDF 响应为 Base64 编码，字段 `mime_type` 为 `application/pdf`。
+审核状态 `status` 为 `pending`、`approved`、`rejected`。三种状态均可打印，PDF 响应为 Base64 编码，字段 `mime_type` 为 `application/pdf`。
+
+结清状态 `settlement_status` 为 `settled`（已结清）或 `unsettled`（未结清），统一作用于整张收据。未传时按所选订单 `应收 − 已审核实收 − 本次收款` 合计小于30元默认已结清，否则未结清；默认判断不扣其他待审核金额，业务员可以覆盖。历史记录为空并保持原逻辑。结清须审核通过后生效，保留实际收款及原报价，明细新增最终 `settlement_difference` 和待审 `preview_settlement_difference`。完整规则见 [API v1.5](API-v1.5.md)。
+
+#### 7.2.1 管理员订单修订窗口
+
+- **解锁订单:** `POST /api/orders/<uid>/receipt-unlock`，仅限 `admin`，请求体 `{ "reason": "必填，最多 512 个字符" }`
+- **重新锁定:** `POST /api/orders/<uid>/receipt-relock`，仅限 `admin`，请求体 `{ "remark": "可选，最多 512 个字符" }`
+
+仅当订单关联的所有收款单均为 `rejected`，且没有已分配奖金的包裹时允许解锁；已有出库包裹不影响解锁。创建新收款单也会在同一事务内自动关闭其订单的开放修订窗口。完整规则见 [API v1.3](API-v1.3.md)。
+
+`GET /api/orders/<uid>` 保留兼容字段 `receipt_locked`，并增加：
+
+```json
+{
+  "receipt_lock": {
+    "status": "none|locked|revision_open",
+    "has_history": true,
+    "unlock_eligible": true,
+    "blockers": [],
+    "revision": null
+  }
+}
+```
+
+`blockers` 可取 `pending_receipt`、`approved_receipt`、`bonus_assigned`。业务状态冲突返回 `409`。
 
 ### 7.3 收款审核
 
@@ -1448,13 +1493,15 @@ x-token: <JWT_TOKEN>
 
 创建人不能审核自己的收款单。驳回必须填写审核意见；驳回单永久保留，原待审核占用自动释放。只有 `approved` 明细计入已收账款。
 
+已结清收据批准前须先处理关联订单的其他待审核收据，否则整张保持待审核并返回相关单号。批准时固化结清差额；差额不计入实际收入。待审核结清收据暂停关联订单新增收据，驳回后解除限制。
+
 ### 7.4 应收账款台账
 
 - **URL:** `GET /api/finance/accounts-receivable`
 - **权限:** `finance`、`admin`
-- **参数:** `as_of=YYYY-MM-DD`、`customer_id`、`owner_id`、`status=unpaid|partial|paid`、`q`、`p`、`s`
+- **参数:** `date_from=YYYY-MM-DD`、`date_to=YYYY-MM-DD`、`customer_id`、`owner_id`、`status=unpaid|partial|paid`、`q`、`p`、`s`。`as_of` 暂作为 `date_to` 的兼容参数保留
 
-响应 `data.items` 按订单返回负责人、报价生效日、报价重量、应收、已收、未收、待审核占用与结清状态；`data.totals` 返回当前筛选结果的合计。历史口径按报价 `effective_date` 和收款 `review_date` 截止到查询日 23:59:59 计算。
+响应 `data.items` 按订单返回负责人、报价生效日、原始重量 `weight_snapshot`、向上取整后的计费重量 `billing_weight`、应收、已收、结清差额 `settlement_difference`、未收、待审核占用与结清状态；`data.totals` 返回报价生效日在起止日期（含）之间的订单合计（包括结清差额）。收款和结清状态按 `date_to` 当日 23:59:59 重建；生效结清订单的未收为0、状态为 `paid`，收入仍只累计实际收款。
 
 ### 7.5 跟单奖金费率
 
@@ -1534,4 +1581,4 @@ Docker 部署时通过环境变量配置初始管理员：
 
 ---
 
-*文档更新时间: 2026-08-27*
+*文档更新时间: 2026-09-04*

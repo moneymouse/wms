@@ -30,15 +30,24 @@ def _error_response(exc):
 @allow(role=RECEIPT_ROLES)
 def get_receivable_orders():
     customer_id = request.args.get("customer_id", type=int)
-    if not customer_id:
-        return jsonify({"code": 400, "msg": "customer_id is required"}), 400
+    page = max(request.args.get("p", 1, type=int) or 1, 1)
+    page_size = min(max(request.args.get("s", 20, type=int) or 20, 1), 100)
     try:
-        rows = receivable_service.list_receivable_orders(
+        result = receivable_service.list_receivable_orders(
             customer_id=customer_id,
             operator_payload=get_token_payload() or {},
             query_text=request.args.get("q", ""),
+            page=page,
+            page_size=page_size,
+            date_from=request.args.get("date_from"),
+            date_to=request.args.get("date_to"),
+            owner_id=request.args.get("owner_id", type=int),
         )
-        return jsonify({"code": 200, "data": rows})
+        return jsonify({
+            "code": 200,
+            "data": result["items"],
+            **{k: result[k] for k in ("total", "page", "page_size")},
+        })
     except (ValueError, PermissionError) as exc:
         return _error_response(exc)
 
@@ -51,6 +60,7 @@ def create_receipt():
         result = receivable_service.create_receipt(
             request.get_json() or {}, get_token_payload() or {}
         )
+        closed_revision_events = result.pop("_closed_revision_events", [])
         record_audit(
             event_type="payment_receipt",
             target_type="receipt",
@@ -59,6 +69,23 @@ def create_receipt():
             after_data=result,
             remark=result.get("remark"),
         )
+        for revision in closed_revision_events:
+            record_audit(
+                event_type="order_receipt_revision",
+                target_type="order",
+                target_id=revision["order_uid"],
+                action="order_relock",
+                before_data={
+                    "status": "revision_open",
+                    "revision": revision,
+                },
+                after_data={
+                    "status": "locked",
+                    "closing_receipt_id": result["id"],
+                    "closing_receipt_no": result["receipt_no"],
+                },
+                remark=f"生成收款单 {result['receipt_no']} 后自动锁定",
+            )
         return jsonify({"code": 200, "msg": "收款单已提交审核", "data": result})
     except (ValueError, PermissionError) as exc:
         return _error_response(exc)
@@ -140,12 +167,13 @@ def review_receipt(receipt_id):
 @verify
 @allow(role=FINANCE_ROLES)
 def get_accounts_receivable():
-    as_of = request.args.get("as_of") or datetime.now().strftime("%Y-%m-%d")
+    date_to = request.args.get("date_to") or request.args.get("as_of") or datetime.now().strftime("%Y-%m-%d")
     page = max(request.args.get("p", 1, type=int) or 1, 1)
     page_size = min(max(request.args.get("s", 20, type=int) or 20, 1), 200)
     try:
         result = receivable_service.accounts_receivable_ledger(
-            as_of=as_of,
+            date_from=request.args.get("date_from") or None,
+            date_to=date_to,
             page=page,
             page_size=page_size,
             customer_id=request.args.get("customer_id", type=int),

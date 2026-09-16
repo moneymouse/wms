@@ -58,7 +58,6 @@ def build_quote_pdf(order: Dict[str, Any], quote: Dict[str, Any]) -> BytesIO:
         Paragraph("<b>迅达货运报价单 / XUNDA QUOTATION</b>", title),
         Spacer(1, 8 * mm),
     ]
-
     header = Table(
         [[
             Paragraph(f"<b>订单号 / Order No.:</b> {_text(order.get('order_id'))}", base),
@@ -75,6 +74,8 @@ def build_quote_pdf(order: Dict[str, Any], quote: Dict[str, Any]) -> BytesIO:
     story.append(header)
     story.append(Spacer(1, 8 * mm))
 
+    billing_weight = quote.get("billing_weight") or 0
+
     raw_rows = [
         ["项目 / Item", "内容 / Details"],
         ["客户 / Customer", _text(order.get("customer_name")) or "-"],
@@ -82,7 +83,7 @@ def build_quote_pdf(order: Dict[str, Any], quote: Dict[str, Any]) -> BytesIO:
         ["国家/城市 / Country/City", f"{_text(order.get('country'))} / {_text(order.get('city'))}"],
         ["地址 / Address", _text(order.get("address")) or "-"],
         ["货运渠道 / Shipping Channel", _text(quote.get("transportation_name")) or "-"],
-        ["计费重量 / Billing Weight", f"{float(quote.get('weight_snapshot') or 0):.3f} kg"],
+        ["计费重量 / Billing Weight", f"{float(billing_weight):.0f} kg"],
         ["每公斤单价 / Unit Price", f"{float(quote.get('unit_price') or 0):.4f} CNY/kg"],
         ["附加费 / Surcharge", f"{_money(quote.get('surcharge'))} CNY"],
         ["应收账款 / Receivable", f"{_money(quote.get('receivable_amount'))} CNY"],

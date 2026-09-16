@@ -13,12 +13,19 @@ from data import (
     add_customer_record,
 )
 from data.database import SessionFactory
-from data.DB import CargoTable, OrderQuoteVersionTable, OrderTable, TransportationModeTable
-from data.user.User import user_model
+from data.DB import (
+    CargoTable,
+    OrderQuoteVersionTable,
+    OrderTable,
+    ReceiptLockedError,
+    ensure_order_receipt_unlocked,
+)
+from data.user.User import UserTable, user_model
 from utils.audit import record_audit
 from utils.log import log
 from utils.quote_pdf import build_quote_pdf
 from services import receivable_service
+from services.cargo_service import add_cargos_to_order
 
 order_bp = Blueprint("order", __name__, url_prefix="/api")
 
@@ -71,6 +78,7 @@ def _apply_order_search(query, query_param):
         conditions.extend(
             getattr(OrderTable, field).ilike(like) for field in ORDER_SEARCH_FIELDS
         )
+        conditions.append(OrderTable.salesman.has(UserTable.name.ilike(like)))
     for keyword in keywords:
         like = f"%{keyword}%"
         conditions.append(
@@ -117,16 +125,6 @@ def _order_pdf_dict(order):
     }
 
 
-def _next_quote_version(session, order_uid):
-    row = (
-        session.query(OrderQuoteVersionTable.version_no)
-        .filter(OrderQuoteVersionTable.order_uid == order_uid)
-        .order_by(OrderQuoteVersionTable.version_no.desc())
-        .first()
-    )
-    return (row[0] if row else 0) + 1
-
-
 # 创建订单
 @order_bp.post("/create")
 @verify
@@ -143,6 +141,31 @@ def create_order():
     from data.database import SessionFactory
 
     record = json.loads(request.data)
+    quote_payload = record.pop("quote", None)
+    if quote_payload is not None:
+        try:
+            receivable_service.normalize_quote_payload(quote_payload)
+        except ValueError as exc:
+            return jsonify({"code": 400, "msg": str(exc)}), 400
+
+    payload = get_token_payload() or {}
+    raw_salesman_id = record.get("salesman_id")
+    if raw_salesman_id not in [None, "", 0, "0"]:
+        try:
+            salesman_id = int(raw_salesman_id)
+        except (TypeError, ValueError):
+            return jsonify({"code": 400, "msg": "Invalid salesman_id"}), 400
+        if not user_model.get_by_id(salesman_id):
+            return jsonify({"code": 404, "msg": "Salesman not found"}), 404
+        record["salesman_id"] = salesman_id
+    else:
+        salesman_id = payload.get("user_id") or payload.get("id")
+        if salesman_id is not None:
+            record["salesman_id"] = salesman_id
+
+    if quote_payload is not None and salesman_id is None:
+        return jsonify({"code": 400, "msg": "提供报价时必须指定业务员"}), 400
+
     customer_name = str(record.get("customer_name", "") or "").strip()
     raw_customer_id = record.get("customer_id")
     customer_id = None
@@ -180,10 +203,6 @@ def create_order():
 
     try:
         record["order_date"] = time.strftime("%Y-%m-%d %H:%M")
-        # Set the current user as the default salesman
-        payload = get_token_payload()
-        if payload and payload.get("user_id"):
-            record["salesman_id"] = payload["user_id"]
         order_uid = order_model.create(record)
 
         # 关联客户
@@ -192,7 +211,39 @@ def create_order():
 
     except RecordExist:
         return jsonify({"code": 500, "msg": "Record Existed"})
-    return jsonify({"code": 200, "msg": "success", "uid": order_uid})
+
+    quote_result = None
+    if quote_payload is not None:
+        try:
+            quote_result = receivable_service.create_order_quote(
+                order_uid=order_uid,
+                body=quote_payload,
+                operator_payload=payload,
+                allow_on_behalf=True,
+            )
+        except (ValueError, LookupError, PermissionError) as exc:
+            return jsonify({
+                "code": 500,
+                "msg": f"订单已创建，但报价生成失败：{exc}",
+                "uid": order_uid,
+            }), 500
+        record_audit(
+            event_type="order_quote",
+            target_type="order",
+            target_id=order_uid,
+            action="quote_submit" if quote_result["status"] == "pending" else "quote_adopt",
+            after_data=quote_result,
+            remark=quote_result.get("quote_remark"),
+        )
+
+    response_data = {
+        "code": 200,
+        "msg": "创建成功并已生成报价" if quote_result else "success",
+        "uid": order_uid,
+    }
+    if quote_result:
+        response_data["data"] = {"quote": quote_result}
+    return jsonify(response_data)
 
 
 # 获取订单列表（支持分页、搜索、排序）
@@ -231,7 +282,79 @@ def get_order_list():
 @verify
 @allow()
 def get_order(uid):
-    return jsonify({"code": 200, "data": order_model.read(uid)})
+    data = order_model.read(uid)
+    if data is not None:
+        with SessionFactory() as session:
+            lock_state = receivable_service.get_order_receipt_lock_state(session, uid)
+            data["receipt_locked"] = lock_state["status"] == "locked"
+            data["receipt_lock"] = lock_state
+    return jsonify({"code": 200, "data": data})
+
+
+@order_bp.post("/orders/<string:uid>/receipt-unlock")
+@verify
+@allow(role=["admin"])
+def unlock_order_receipt_revision(uid):
+    body = request.get_json(silent=True) or {}
+    reason = body.get("reason")
+    try:
+        before = receivable_service.get_order_receipt_lock_state_by_uid(uid)
+        result = receivable_service.open_order_receipt_revision(
+            order_uid=uid,
+            reason=reason,
+            operator_payload=get_token_payload() or {},
+        )
+        record_audit(
+            event_type="order_receipt_revision",
+            target_type="order",
+            target_id=uid,
+            action="order_unlock",
+            before_data=before,
+            after_data=result,
+            remark=result["revision"]["reason"],
+        )
+        return jsonify({"code": 200, "msg": "订单已进入修订状态", "data": result})
+    except receivable_service.OrderReceiptRevisionConflictError as exc:
+        return jsonify({"code": 409, "msg": str(exc)}), 409
+    except PermissionError as exc:
+        return jsonify({"code": 403, "msg": str(exc)}), 403
+    except LookupError as exc:
+        return jsonify({"code": 404, "msg": str(exc)}), 404
+    except ValueError as exc:
+        return jsonify({"code": 400, "msg": str(exc)}), 400
+
+
+@order_bp.post("/orders/<string:uid>/receipt-relock")
+@verify
+@allow(role=["admin"])
+def relock_order_receipt_revision(uid):
+    body = request.get_json(silent=True) or {}
+    remark = body.get("remark")
+    try:
+        before = receivable_service.get_order_receipt_lock_state_by_uid(uid)
+        result = receivable_service.close_order_receipt_revision(
+            order_uid=uid,
+            remark=remark,
+            operator_payload=get_token_payload() or {},
+        )
+        record_audit(
+            event_type="order_receipt_revision",
+            target_type="order",
+            target_id=uid,
+            action="order_relock",
+            before_data=before,
+            after_data=result,
+            remark=(remark or "").strip() or "管理员手动完成修订",
+        )
+        return jsonify({"code": 200, "msg": "订单已重新锁定", "data": result})
+    except receivable_service.OrderReceiptRevisionConflictError as exc:
+        return jsonify({"code": 409, "msg": str(exc)}), 409
+    except PermissionError as exc:
+        return jsonify({"code": 403, "msg": str(exc)}), 403
+    except LookupError as exc:
+        return jsonify({"code": 404, "msg": str(exc)}), 404
+    except ValueError as exc:
+        return jsonify({"code": 400, "msg": str(exc)}), 400
 
 
 # 更新订单
@@ -240,7 +363,10 @@ def get_order(uid):
 @verify
 @log(desc="Update order.", is_json=True)
 def update_order(uid):
-    order_model.update(uid, json.loads(request.data))
+    try:
+        order_model.update(uid, json.loads(request.data))
+    except ReceiptLockedError as exc:
+        return jsonify({"code": 409, "msg": str(exc)}), 409
     return jsonify({"code": 200, "msg": "success"})
 
 
@@ -250,7 +376,10 @@ def update_order(uid):
 @verify
 @log(desc="Archive order.")
 def archive_order(uid):
-    order_model.archive(uid)
+    try:
+        order_model.archive(uid)
+    except ReceiptLockedError as exc:
+        return jsonify({"code": 409, "msg": str(exc)}), 409
     return jsonify({"code": 200, "msg": "success"})
 
 
@@ -261,8 +390,11 @@ def archive_order(uid):
 @log(desc="Archive orders.", is_json=True)
 def archive_order_list():
     uid_list = json.loads(request.data)["uid_list"]
-    for uid in uid_list:
-        order_model.archive(uid)
+    try:
+        for uid in uid_list:
+            order_model.archive(uid)
+    except ReceiptLockedError as exc:
+        return jsonify({"code": 409, "msg": str(exc)}), 409
     return jsonify({"code": 200, "msg": "success"})
 
 
@@ -272,7 +404,10 @@ def archive_order_list():
 @verify
 @log(desc="Delete order.")
 def delete_order(uid):
-    order_model.delete(uid)
+    try:
+        order_model.delete(uid)
+    except ReceiptLockedError as exc:
+        return jsonify({"code": 409, "msg": str(exc)}), 409
     return jsonify({"code": 200, "msg": "success"})
 
 
@@ -283,8 +418,11 @@ def delete_order(uid):
 @log(desc="Delete orders.", is_json=True)
 def delete_order_list():
     uid_list = json.loads(request.data)["uid_list"]
-    for uid in uid_list:
-        order_model.delete(uid)
+    try:
+        for uid in uid_list:
+            order_model.delete(uid)
+    except ReceiptLockedError as exc:
+        return jsonify({"code": 409, "msg": str(exc)}), 409
     return jsonify({"code": 200, "msg": "success"})
 
 
@@ -299,28 +437,13 @@ def add_cargo(uid):
     if cargo_delta <= 0:
         return jsonify({"code": 404, "msg": "Cargo count should larger than 0"})
 
-    order = order_model.read(uid)
-    cargo_count = order["cargo_count"] or 0
-    cargo_count_n = cargo_count + cargo_delta
-    order_model.update(uid, {"cargo_count": cargo_count_n})
-
-    order_id = order["order_id"]
-    cargo_uid_list = order_model.read(uid)["cargo_uid_list"]
-    result = []
-    for i in range(cargo_count + 1, cargo_count_n + 1):
-        cargo_uid = cargo_model.create(
-            {
-                "origin_id": f"{order_id}-{i}",
-                "status": 0,
-                "tag": f'{order["tag_all"]}_{i}',
-                "target_order_uid": uid,
-            }
-        )
-        cargo_uid_list.append(cargo_uid)
-        result.append(cargo_model.read(cargo_uid))
-
-    order_model.update(uid, {"cargo_uid_list": cargo_uid_list})
-    return jsonify({"code": 200, "data": result, "cargo_id_list": cargo_uid_list})
+    try:
+        result = add_cargos_to_order(uid, cargo_delta)
+    except ReceiptLockedError as exc:
+        return jsonify({"code": 409, "msg": str(exc)}), 409
+    except LookupError as exc:
+        return jsonify({"code": 404, "msg": str(exc)}), 404
+    return jsonify({"code": 200, **result})
 
 
 # 获取订单负责人
@@ -410,108 +533,32 @@ def get_order_quotes(uid):
 @allow(role=["salesperson"])
 def create_order_quote(uid):
     body = json.loads(request.data or "{}")
-    raw_unit_price = body.get("unit_price", body.get("quoted_price"))
-    raw_surcharge = body.get("surcharge", 0)
-    quote_remark = body.get("quote_remark")
-
-    if raw_unit_price is None:
-        return jsonify({"code": 400, "msg": "每公斤单价不能为空"}), 400
     try:
-        quote_unit_price = receivable_service.unit_price(raw_unit_price)
-        surcharge = receivable_service.money(raw_surcharge)
+        after_data = receivable_service.create_order_quote(
+            order_uid=uid,
+            body=body,
+            operator_payload=get_token_payload() or {},
+        )
+    except receivable_service.QuoteConflictError as exc:
+        return jsonify({"code": 409, "msg": str(exc)}), 409
+    except ReceiptLockedError as exc:
+        return jsonify({"code": 409, "msg": str(exc)}), 409
+    except PermissionError as exc:
+        return jsonify({"code": 403, "msg": str(exc)}), 403
+    except LookupError as exc:
+        return jsonify({"code": 404, "msg": str(exc)}), 404
     except ValueError as exc:
         return jsonify({"code": 400, "msg": str(exc)}), 400
-    if quote_unit_price < 0 or surcharge < 0:
-        return jsonify({"code": 400, "msg": "每公斤单价和附加费不能小于 0"}), 400
-
-    operator = _current_operator()
-    now = time.strftime("%Y-%m-%d %H:%M:%S")
-    with SessionFactory() as session:
-        order = session.query(OrderTable).filter(OrderTable.uid == uid).first()
-        if order is None:
-            return jsonify({"code": 404, "msg": "订单不存在"}), 404
-        if (
-            order.salesman_id is None
-            or operator["id"] is None
-            or str(order.salesman_id) != str(operator["id"])
-        ):
-            return jsonify({"code": 403, "msg": "仅当前订单的业务员可以报价"}), 403
-
-        transportation_name = (order.transportation or "").strip()
-        mode = None
-        if transportation_name:
-            mode = (
-                session.query(TransportationModeTable)
-                .filter(TransportationModeTable.name == transportation_name)
-                .first()
-            )
-
-        transportation_mode_id = mode.id if mode else None
-        quote_transportation_name = mode.name if mode else transportation_name
-        channel_cost = float(mode.cost or 0) if mode else 0
-        min_price = float(mode.min_price or 0) if mode else 0
-        weight_snapshot = receivable_service.current_order_weight(session, uid)
-        receivable_amount = receivable_service.calculate_receivable(
-            weight_snapshot, quote_unit_price, surcharge
-        )
-        committed_amount = receivable_service.get_committed_receipt_amount(session, uid)
-        if receivable_amount < committed_amount:
-            return jsonify({
-                "code": 409,
-                "msg": f"新应收 {receivable_amount:.2f} 不能低于已收及待审核金额 {committed_amount:.2f}",
-            }), 409
-
-        status = (
-            "adopted"
-            if quote_unit_price >= receivable_service.unit_price(min_price)
-            else "pending"
-        )
-        is_final = status == "adopted"
-        if is_final:
-            (
-                session.query(OrderQuoteVersionTable)
-                .filter(OrderQuoteVersionTable.order_uid == uid)
-                .update({"is_final": False})
-            )
-            order.transportation = quote_transportation_name
-            order.update_date = now
-
-        quote = OrderQuoteVersionTable(
-            order_uid=uid,
-            version_no=_next_quote_version(session, uid),
-            transportation_mode_id=transportation_mode_id,
-            transportation_name=quote_transportation_name,
-            channel_cost=channel_cost,
-            min_price=min_price,
-            unit_price=quote_unit_price,
-            surcharge=surcharge,
-            weight_snapshot=weight_snapshot,
-            receivable_amount=receivable_amount,
-            quoted_price=float(quote_unit_price),
-            status=status,
-            is_final=is_final,
-            quote_remark=quote_remark,
-            quoter_id=operator["id"],
-            quoter_name=operator["name"],
-            create_date=now,
-            effective_date=now if is_final else None,
-        )
-        session.add(quote)
-        session.commit()
-        session.refresh(quote)
-        after_data = _quote_dict(session, quote)
-        if is_final:
-            after_data["order_transportation"] = order.transportation
 
     record_audit(
         event_type="order_quote",
         target_type="order",
         target_id=uid,
-        action="quote_submit" if status == "pending" else "quote_adopt",
+        action="quote_submit" if after_data["status"] == "pending" else "quote_adopt",
         after_data=after_data,
-        remark=quote_remark,
+        remark=after_data.get("quote_remark"),
     )
-    msg = "报价已采纳" if status == "adopted" else "报价低于最低限制，已提交管理员审核"
+    msg = "报价已采纳" if after_data["status"] == "adopted" else "报价低于最低限制，已提交管理员审核"
     return jsonify({"code": 200, "msg": msg, "data": after_data})
 
 
@@ -564,8 +611,10 @@ def review_quote_approval(quote_id):
 
         before_data = _quote_dict(session, quote)
         if action == "approve":
-            if not receivable_service.quote_is_fresh(session, quote):
-                return jsonify({"code": 409, "msg": "订单重量已变化，请业务员重新报价"}), 409
+            try:
+                ensure_order_receipt_unlocked(session, quote.order_uid)
+            except ReceiptLockedError as exc:
+                return jsonify({"code": 409, "msg": str(exc)}), 409
             (
                 session.query(OrderQuoteVersionTable)
                 .filter(OrderQuoteVersionTable.order_uid == quote.order_uid)

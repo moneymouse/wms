@@ -6,6 +6,7 @@ from flask import Blueprint, jsonify, make_response, request, send_file
 
 from Auth import verify, allow
 from data import order_model, cargo_model
+from data.DB import OrderRevisionOpenError, ReceiptLockedError
 from PDF import PDF
 from services.cargo_service import (
     get_cargo_with_tracking,
@@ -111,8 +112,11 @@ def get_cargo():
 @verify
 @log(desc="Archive cargo.", is_json=True)
 def archive_cargo():
-    for cargo_id in json.loads(request.data)["cargo_id_list"]:
-        cargo_model.archive(cargo_id)
+    try:
+        for cargo_id in json.loads(request.data)["cargo_id_list"]:
+            cargo_model.archive(cargo_id)
+    except ReceiptLockedError as exc:
+        return jsonify({"code": 409, "msg": str(exc)}), 409
     return jsonify({"code": 200, "msg": "success"})
 
 
@@ -122,8 +126,11 @@ def archive_cargo():
 @verify
 @log(desc="Delete cargo.", is_json=True)
 def delete_cargo():
-    for cargo_id in json.loads(request.data)["cargo_id_list"]:
-        cargo_model.delete(cargo_id)
+    try:
+        for cargo_id in json.loads(request.data)["cargo_id_list"]:
+            cargo_model.delete(cargo_id)
+    except ReceiptLockedError as exc:
+        return jsonify({"code": 409, "msg": str(exc)}), 409
     return jsonify({"code": 200, "msg": "success"})
 
 
@@ -141,13 +148,16 @@ def unbind_cargo_from_order():
     success_ids = []
     failed_ids = []
 
-    for cargo_id in cargo_id_list:
-        if not cargo_id:
-            continue
-        if cargo_model.unbind_from_order(cargo_id):
-            success_ids.append(cargo_id)
-        else:
-            failed_ids.append(cargo_id)
+    try:
+        for cargo_id in cargo_id_list:
+            if not cargo_id:
+                continue
+            if cargo_model.unbind_from_order(cargo_id):
+                success_ids.append(cargo_id)
+            else:
+                failed_ids.append(cargo_id)
+    except ReceiptLockedError as exc:
+        return jsonify({"code": 409, "msg": str(exc)}), 409
 
     return jsonify(
         {
@@ -178,6 +188,10 @@ def update_cargo(uid):
 
     try:
         cargo_model.update(uid, update_data)
+    except ReceiptLockedError as e:
+        return jsonify({"code": 409, "msg": str(e)}), 409
+    except OrderRevisionOpenError as e:
+        return jsonify({"code": 409, "msg": str(e)}), 409
     except ValueError as e:
         return jsonify({"code": 400, "msg": str(e)}), 400
     if new_waybill and new_waybill != old_waybill:
@@ -203,9 +217,12 @@ def record_input(uid):
     record = json.loads(request.data)
     if not (record.get("weight") and record.get("count")):
         return jsonify({"code": 404, "msg": "lack param"})
-    cargo_model.update(
-        uid, {"weight": record.get("weight", 0), "count": record.get("count", 0)}
-    )
+    try:
+        cargo_model.update(
+            uid, {"weight": record.get("weight", 0), "count": record.get("count", 0)}
+        )
+    except ReceiptLockedError as exc:
+        return jsonify({"code": 409, "msg": str(exc)}), 409
     return jsonify({"code": 200, "msg": "success"})
 
 
@@ -322,6 +339,11 @@ def upload_order(mode):
 
         transfer_map = parse_waybill_file(fp, filename)
         register_list, track_err = apply_waybill_table(cargo_model, transfer_map)
+    except OrderRevisionOpenError as e:
+        return (
+            _waybill_upload_response(409, str(e), cargo_list=transfer_map),
+            409,
+        )
     except ValueError as e:
         return (
             _waybill_upload_response(400, str(e), cargo_list=transfer_map),

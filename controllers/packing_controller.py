@@ -10,6 +10,7 @@ from flask import Blueprint, jsonify, request, send_file
 
 from Auth import verify, allow, get_token_payload
 from services import packing_list_service
+from data.DB import OrderRevisionOpenError, ReceiptLockedError
 from utils.packing_list_pdf import build_packing_list_pdf, build_packing_lists_pdf
 from utils.log import log
 
@@ -455,6 +456,8 @@ def update_box(uid):
 
     try:
         success = packing_list_service.update_box(uid, data)
+    except (OrderRevisionOpenError, ReceiptLockedError) as e:
+        return jsonify({"code": 409, "msg": str(e)}), 409
     except ValueError as e:
         return jsonify({"code": 400, "msg": str(e)}), 400
 
@@ -481,7 +484,10 @@ def weigh_box(uid):
     if weight is None or weight <= 0:
         return jsonify({"code": 400, "msg": "weight must be greater than 0"}), 400
 
-    success = packing_list_service.weigh_box(uid, weight)
+    try:
+        success = packing_list_service.weigh_box(uid, weight)
+    except ReceiptLockedError as e:
+        return jsonify({"code": 409, "msg": str(e)}), 409
     if not success:
         return jsonify({"code": 404, "msg": "Box not found"}), 404
     return jsonify({"code": 200, "msg": "success"})
@@ -493,7 +499,10 @@ def weigh_box(uid):
 @log(desc="Archive box.")
 def archive_box(uid):
     """归档箱子"""
-    success = packing_list_service.archive_box(uid)
+    try:
+        success = packing_list_service.archive_box(uid)
+    except ReceiptLockedError as e:
+        return jsonify({"code": 409, "msg": str(e)}), 409
     if not success:
         return jsonify({"code": 404, "msg": "Box not found"}), 404
     return jsonify({"code": 200, "msg": "success"})
@@ -505,7 +514,10 @@ def archive_box(uid):
 @log(desc="Delete box.")
 def delete_box(uid):
     """删除箱子"""
-    success = packing_list_service.delete_box(uid)
+    try:
+        success = packing_list_service.delete_box(uid)
+    except ReceiptLockedError as e:
+        return jsonify({"code": 409, "msg": str(e)}), 409
     if not success:
         return jsonify({"code": 404, "msg": "Box not found"}), 404
     return jsonify({"code": 200, "msg": "success"})
@@ -625,15 +637,21 @@ def get_unassigned_boxes_all():
         - valid_only: 是否只返回有效箱子（默认 true）
         - customer_id: 可选，按客户过滤
         - q: 可选，按唛头模糊搜索
+        - p: 装箱单页码（默认 1）
+        - s: 每页装箱单数量（默认 10，最大 100）
     """
     valid_only = request.args.get("valid_only", "true").lower() == "true"
     customer_id = request.args.get("customer_id", type=int)
     mark_search = request.args.get("q")
+    page = request.args.get("p", 1, type=int)
+    page_size = request.args.get("s", 10, type=int)
 
     result = packing_list_service.get_unassigned_boxes(
         valid_only=valid_only,
         customer_id=customer_id,
         mark_search=mark_search,
+        page=page,
+        page_size=page_size,
     )
     return jsonify({"code": 200, "data": result})
 
@@ -669,7 +687,10 @@ def assign_boxes():
     if not order_uid:
         return jsonify({"code": 400, "msg": "order_uid is required"}), 400
 
-    result = packing_list_service.batch_assign_boxes(box_uids, order_uid)
+    try:
+        result = packing_list_service.batch_assign_boxes(box_uids, order_uid)
+    except ReceiptLockedError as e:
+        return jsonify({"code": 409, "msg": str(e)}), 409
     return jsonify({"code": 200, "data": result})
 
 

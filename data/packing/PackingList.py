@@ -13,7 +13,14 @@ from typing import List, Optional
 from sqlalchemy import Column, Integer, String, Boolean, Text, ForeignKey, func, case, or_
 from sqlalchemy.orm import relationship, selectinload, joinedload
 
-from data.DB import BoxCostRecordTable, CargoTable, OrderTable, TransportationModeTable
+from data.DB import (
+    BoxCostRecordTable,
+    CargoTable,
+    OrderTable,
+    TransportationModeTable,
+    ensure_order_revision_closed_for_downstream,
+    ensure_order_receipt_unlocked,
+)
 from data.customer.Customer import CustomerTable
 from data.database import Base, SessionFactory
 
@@ -648,14 +655,29 @@ class BoxModel:
         """更新箱子信息"""
         s = SessionFactory()
         try:
-            record = s.query(BoxTable).filter_by(uid=uid).first()
+            record = (
+                s.query(BoxTable)
+                .filter_by(uid=uid)
+                .with_for_update()
+                .first()
+            )
             if record is None:
                 return False
             if record.packing_list_uid is None:
                 return False
-
             if not isinstance(data, dict):
                 raise ValueError("invalid payload")
+
+            if "weight" in data and record.target_order_uid:
+                raw_weight = data.get("weight")
+                try:
+                    next_weight = None if raw_weight in [None, ""] else float(raw_weight)
+                    current_weight = None if record.weight is None else float(record.weight)
+                    weight_changed = next_weight != current_weight
+                except (TypeError, ValueError):
+                    weight_changed = raw_weight != record.weight
+                if weight_changed:
+                    ensure_order_receipt_unlocked(s, record.target_order_uid)
 
             now = time.strftime("%Y-%m-%d %H:%M")
             if int(record.status or 0) == CARGO_STATUS_OUTBOUND:
@@ -791,11 +813,21 @@ class BoxModel:
                 record.transfer_id = str(data.get("transfer_id") or "").strip()
 
             if "waybill_id" in data:
-                record.waybill_id = str(data.get("waybill_id") or "").strip()
+                next_waybill_id = str(data.get("waybill_id") or "").strip()
                 if (
                     record.packing_list_uid
                     and record.target_order_uid
-                    and str(record.waybill_id or "").strip()
+                    and next_waybill_id
+                    and int(record.status or 0) != CARGO_STATUS_OUTBOUND
+                ):
+                    ensure_order_revision_closed_for_downstream(
+                        s, record.target_order_uid
+                    )
+                record.waybill_id = next_waybill_id
+                if (
+                    record.packing_list_uid
+                    and record.target_order_uid
+                    and next_waybill_id
                     and int(record.status or 0) != CARGO_STATUS_OUTBOUND
                 ):
                     record.status = CARGO_STATUS_OUTBOUND
@@ -815,11 +847,18 @@ class BoxModel:
         """归档箱子"""
         s = SessionFactory()
         try:
-            record = s.query(BoxTable).filter_by(uid=uid).first()
+            record = (
+                s.query(BoxTable)
+                .filter_by(uid=uid)
+                .with_for_update()
+                .first()
+            )
             if record is None:
                 return False
             if record.packing_list_uid is None:
                 return False
+            if record.target_order_uid:
+                ensure_order_receipt_unlocked(s, record.target_order_uid)
             record.archive = True
             record.update_date = time.strftime("%Y-%m-%d %H:%M")
             s.commit()
@@ -834,11 +873,18 @@ class BoxModel:
         """硬删除箱子"""
         s = SessionFactory()
         try:
-            record = s.query(BoxTable).filter_by(uid=uid).first()
+            record = (
+                s.query(BoxTable)
+                .filter_by(uid=uid)
+                .with_for_update()
+                .first()
+            )
             if record is None:
                 return False
             if record.packing_list_uid is None:
                 return False
+            if record.target_order_uid:
+                ensure_order_receipt_unlocked(s, record.target_order_uid)
             s.query(BoxWorkerTable).filter_by(box_uid=uid).delete(
                 synchronize_session=False
             )
@@ -859,7 +905,9 @@ class BoxModel:
         s = SessionFactory()
         try:
             # 验证箱子存在
-            box = s.query(BoxTable).filter_by(uid=box_uid).first()
+            box = (
+                s.query(BoxTable).filter_by(uid=box_uid).with_for_update().first()
+            )
             if box is None:
                 return False
             if box.packing_list_uid is None:
@@ -906,7 +954,9 @@ class BoxModel:
 
         s = SessionFactory()
         try:
-            box = s.query(BoxTable).filter_by(uid=box_uid).first()
+            box = (
+                s.query(BoxTable).filter_by(uid=box_uid).with_for_update().first()
+            )
             if box is None:
                 return False
             if box.packing_list_uid is None:
@@ -954,7 +1004,12 @@ class BoxModel:
         """将箱子分配到订单"""
         s = SessionFactory()
         try:
-            box = s.query(BoxTable).filter_by(uid=box_uid).first()
+            box = (
+                s.query(BoxTable)
+                .filter_by(uid=box_uid)
+                .with_for_update()
+                .first()
+            )
             if box is None:
                 return False
             if box.packing_list_uid is None:
@@ -965,12 +1020,7 @@ class BoxModel:
             if box.target_order_uid:
                 raise ValueError(f"Box {box_uid} is already assigned")
 
-            # 验证订单存在
-            from data.DB import OrderTable
-
-            order = s.query(OrderTable).filter_by(uid=order_uid).first()
-            if order is None:
-                raise ValueError(f"Order {order_uid} not found")
+            ensure_order_receipt_unlocked(s, order_uid)
 
             box.target_order_uid = order_uid
             box.tag = self._build_box_tag(
@@ -991,15 +1041,43 @@ class BoxModel:
     def batch_assign(self, box_uids: List[str], order_uid: str) -> dict:
         """批量分配箱子到订单"""
         results = {"success": [], "failed": []}
-
-        for box_uid in box_uids:
-            try:
-                self.assign_to_order(box_uid, order_uid)
+        s = SessionFactory()
+        try:
+            ensure_order_receipt_unlocked(s, order_uid)
+            boxes = (
+                s.query(BoxTable)
+                .filter(BoxTable.uid.in_(box_uids))
+                .with_for_update()
+                .all()
+            )
+            box_map = {box.uid: box for box in boxes}
+            now = time.strftime("%Y-%m-%d %H:%M")
+            for box_uid in box_uids:
+                box = box_map.get(box_uid)
+                if box is None or box.packing_list_uid is None:
+                    results["failed"].append({"uid": box_uid, "error": "Box not found"})
+                    continue
+                if int(box.status or 0) == CARGO_STATUS_OUTBOUND:
+                    results["failed"].append({"uid": box_uid, "error": "Box is already outbound"})
+                    continue
+                if box.target_order_uid:
+                    results["failed"].append({"uid": box_uid, "error": "Box is already assigned"})
+                    continue
+                box.target_order_uid = order_uid
+                box.tag = self._build_box_tag(
+                    box.packing_list.list_number if box.packing_list else "",
+                    box.box_number or 0,
+                )
+                box.status = CARGO_STATUS_PENDING_OUTBOUND
+                box.update_date = now
                 results["success"].append(box_uid)
-            except Exception as e:
-                results["failed"].append({"uid": box_uid, "error": str(e)})
-
-        return results
+            s.commit()
+            return results
+        except Exception:
+            s.rollback()
+            raise
+        finally:
+            s.close()
 
     def get_unassigned_by_customer(
         self, customer_id: int, valid_only: bool = True
@@ -1012,28 +1090,68 @@ class BoxModel:
         valid_only: bool = True,
         customer_id: Optional[int] = None,
         mark_search: Optional[str] = None,
-    ) -> List[dict]:
-        """获取未分配箱子，可按客户和唛头过滤。"""
+        page: Optional[int] = None,
+        page_size: Optional[int] = None,
+    ) -> List[dict] | dict:
+        """获取未分配箱子，可按客户、唛头和装箱单分页过滤。"""
         from services.box_validator import default_validator
 
         s = SessionFactory()
         try:
-            query = s.query(PackingListTable).filter(
-                PackingListTable.archive == False,
-                PackingListTable.status != "draft",
+            box_conditions = [
+                BoxTable.archive == False,  # noqa: E712
+                BoxTable.target_order_uid.is_(None),
+            ]
+            if valid_only:
+                box_conditions.extend([
+                    BoxTable.weight.isnot(None),
+                    BoxTable.weight > 0,
+                ])
+
+            query = (
+                s.query(PackingListTable)
+                .join(
+                    BoxTable,
+                    (BoxTable.packing_list_uid == PackingListTable.uid)
+                    & (BoxTable.archive == False),  # noqa: E712
+                )
+                .filter(
+                    PackingListTable.archive == False,  # noqa: E712
+                    PackingListTable.status != "draft",
+                    *box_conditions[1:],
+                )
             )
             if customer_id is not None:
                 query = query.filter(PackingListTable.customer_id == customer_id)
 
             if mark_search:
                 query = query.filter(
-                    PackingListTable.list_number.like(
-                        f"%{mark_search.strip().upper()}%"
-                    )
+                    PackingListTable.list_number.ilike(f"%{mark_search.strip()}%")
                 )
-                
 
-            packing_lists = query.order_by(PackingListTable.create_date.desc()).all()
+            total = (
+                query.with_entities(func.count(func.distinct(PackingListTable.uid)))
+                .order_by(None)
+                .scalar()
+                or 0
+            )
+            total_boxes = (
+                query.with_entities(func.count(BoxTable.uid))
+                .order_by(None)
+                .scalar()
+                or 0
+            )
+            paginated = page is not None or page_size is not None
+            page = max(int(page or 1), 1)
+            page_size = min(max(int(page_size or 10), 1), 100)
+            page_query = (
+                query.options(selectinload(PackingListTable.boxes))
+                .order_by(PackingListTable.create_date.desc(), PackingListTable.uid.desc())
+                .distinct()
+            )
+            if paginated:
+                page_query = page_query.offset((page - 1) * page_size).limit(page_size)
+            packing_lists = page_query.all()
 
             result = []
             for pl in packing_lists:
@@ -1057,7 +1175,15 @@ class BoxModel:
                         }
                     )
 
-            return result
+            if not paginated:
+                return result
+            return {
+                "items": result,
+                "total": total,
+                "total_boxes": total_boxes,
+                "page": page,
+                "page_size": page_size,
+            }
         finally:
             s.close()
 
@@ -1082,6 +1208,16 @@ class BoxModel:
                 .all()
             )
             record_map = {r.uid: r for r in records}
+
+            for order_uid in sorted(
+                {
+                    box.target_order_uid
+                    for box in records
+                    if box.target_order_uid
+                    and int(box.status or 0) != CARGO_STATUS_OUTBOUND
+                }
+            ):
+                ensure_order_revision_closed_for_downstream(s, order_uid)
 
             now = time.strftime("%Y-%m-%d %H:%M")
             for uid in box_uids:
@@ -1141,6 +1277,7 @@ class BoxModel:
                     BoxTable.uid == uid,
                     BoxTable.packing_list_uid.isnot(None),
                 )
+                .with_for_update()
                 .first()
             )
             if box is None:

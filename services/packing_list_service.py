@@ -282,12 +282,16 @@ def get_unassigned_boxes(
     valid_only: bool = True,
     customer_id: Optional[int] = None,
     mark_search: Optional[str] = None,
-) -> List[dict]:
-    """获取未分配箱子，可按客户和唛头过滤。"""
+    page: int = 1,
+    page_size: int = 10,
+) -> dict:
+    """分页获取未分配箱子，可按客户和唛头过滤。"""
     return box_model.get_unassigned(
         valid_only=valid_only,
         customer_id=customer_id,
         mark_search=mark_search,
+        page=page,
+        page_size=page_size,
     )
 
 

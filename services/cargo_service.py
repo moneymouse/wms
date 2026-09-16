@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import uuid
 from threading import Thread
 
 import pandas as pd
@@ -8,13 +9,56 @@ from openpyxl import load_workbook, Workbook
 from openpyxl.utils import column_index_from_string
 
 from data.database import SessionFactory
-from data.DB import ExcelTemplateTable
+from data.DB import (
+    CargoTable,
+    ExcelTemplateTable,
+    ensure_order_receipt_unlocked,
+)
 from utils.l7track import getTrackInfo, registerTrack
 
 logger = logging.getLogger(__name__)
 
 # Excel 导出相关常量
 _TEMPLATE_DIR = os.path.join(os.path.dirname(__file__), "..", "uploads", "excel_templates")
+
+
+def add_cargos_to_order(order_uid: str, cargo_delta: int) -> dict:
+    """在同一事务内锁定订单、检查收据锁并批量新增普通包裹。"""
+    with SessionFactory() as session:
+        order = ensure_order_receipt_unlocked(session, order_uid)
+        cargo_count = int(order.cargo_count or 0)
+        next_count = cargo_count + cargo_delta
+        created = []
+        for index in range(cargo_count + 1, next_count + 1):
+            cargo = CargoTable(
+                uid=uuid.uuid4().hex,
+                origin_id=f"{order.order_id}-{index}",
+                status=0,
+                tag=f"{order.tag_all}_{index}",
+                target_order_uid=order_uid,
+            )
+            session.add(cargo)
+            created.append(cargo)
+        order.cargo_count = next_count
+        session.flush()
+        data = [
+            {
+                column.name: getattr(row, column.name)
+                for column in CargoTable.__table__.columns
+            }
+            for row in created
+        ]
+        cargo_ids = [
+            row[0]
+            for row in session.query(CargoTable.uid)
+            .filter(
+                CargoTable.target_order_uid == order_uid,
+                CargoTable.archive == False,  # noqa: E712
+            )
+            .all()
+        ]
+        session.commit()
+        return {"data": data, "cargo_id_list": cargo_ids}
 
 
 def _get_template(mode_key: str):

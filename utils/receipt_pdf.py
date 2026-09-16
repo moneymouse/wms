@@ -16,9 +16,13 @@ from utils.pdf_fonts import register_pdf_font
 PDF_FONT = register_pdf_font()
 
 STATUS_LABELS = {
-    "pending": "待审核 / Pending Review - 尚未生效 / Not Yet Effective",
+    "pending": "待审核 / Pending Review",
     "approved": "已生效 / Approved",
     "rejected": "已驳回 / Rejected - 无效 / Void",
+}
+SETTLEMENT_LABELS = {
+    "settled": "已结清 / Settled",
+    "unsettled": "未结清 / Unsettled",
 }
 PAYMENT_METHOD_LABELS = {
     "cash": "现金 / Cash",
@@ -67,6 +71,18 @@ def build_receipt_pdf(receipt: dict) -> BytesIO:
         textColor=colors.HexColor("#164e63"),
     )
     right = ParagraphStyle("ReceiptRight", parent=base, alignment=TA_RIGHT)
+    cell = ParagraphStyle("ReceiptCell", parent=base, fontSize=8, leading=11)
+    amount_cell = ParagraphStyle("ReceiptAmount", parent=cell, alignment=TA_RIGHT)
+    heading_cell = ParagraphStyle(
+        "ReceiptHeading", parent=cell, alignment=TA_CENTER, textColor=colors.white,
+    )
+    receipt_status = receipt.get("status")
+    show_preview = receipt_status == "pending" and receipt.get("settlement_status") == "settled"
+    difference_key = "preview_settlement_difference" if show_preview else "settlement_difference"
+    show_difference = show_preview or any(
+        item.get("settlement_difference") is not None for item in receipt.get("items") or []
+    )
+    difference_heading = "预计结清差额\nEstimated Difference" if show_preview else "结清差额\nSettlement Difference"
     status_style = ParagraphStyle(
         "ReceiptStatus",
         parent=base,
@@ -108,6 +124,9 @@ def build_receipt_pdf(receipt: dict) -> BytesIO:
         [Paragraph(f"<b>{label}</b>", base), Paragraph(value or "-", base)]
         for label, value in [
             ("客户 / Customer", _text(receipt.get("customer_name"))),
+            ("结清状态 / Settlement", _text(SETTLEMENT_LABELS.get(
+                receipt.get("settlement_status"), "历史未设置 / Not recorded"
+            ))),
             ("付款方式 / Payment Method", _text(PAYMENT_METHOD_LABELS.get(receipt.get("payment_method"), receipt.get("payment_method")))),
             ("创建人 / Created By", _text(receipt.get("creator_name"))),
             ("审核人 / Reviewed By", _text(receipt.get("reviewer_name"))),
@@ -134,18 +153,34 @@ def build_receipt_pdf(receipt: dict) -> BytesIO:
         "应收\nReceivable",
         "此前已收\nPreviously Paid",
         "本次收款\nThis Receipt",
-        "收款后余额\nBalance",
+        "可收余额快照\nAvailable Snapshot",
     ]]
+    if show_difference:
+        item_rows[0].append(difference_heading)
     for item in receipt.get("items") or []:
-        item_rows.append([
-            _text(item.get("order_id")),
+        row = [
+            item.get("order_id") or "-",
             _money(item.get("receivable_snapshot")),
             _money(item.get("received_before")),
             _money(item.get("amount")),
             _money(item.get("remaining_after")),
-        ])
-    item_rows.append(["合计 / Total", "", "", _money(receipt.get("total_amount")), ""])
-    items = LongTable(item_rows, repeatRows=1, colWidths=[42 * mm, 35 * mm, 35 * mm, 35 * mm, 35 * mm])
+        ]
+        if show_difference:
+            value = item.get(difference_key)
+            row.append(_money(value) if value is not None else "-")
+        item_rows.append(row)
+    total_row = ["合计 / Total", "", "", _money(receipt.get("total_amount")), ""]
+    if show_difference:
+        differences = [item.get(difference_key) for item in receipt.get("items") or []]
+        total_row.append(_money(sum(float(value) for value in differences if value is not None)))
+    item_rows.append(total_row)
+    item_rows = [
+        [Paragraph(_text(value).replace("\n", "<br/>"), heading_cell if row_index == 0 else cell if column == 0 else amount_cell)
+         for column, value in enumerate(row)]
+        for row_index, row in enumerate(item_rows)
+    ]
+    widths = [37, 29, 29, 29, 29, 29] if show_difference else [42, 35, 35, 35, 35]
+    items = LongTable(item_rows, repeatRows=1, colWidths=[value * mm for value in widths])
     items.setStyle(TableStyle([
         ("FONTNAME", (0, 0), (-1, -1), PDF_FONT),
         ("FONTSIZE", (0, 0), (-1, -1), 8.8),
@@ -166,6 +201,18 @@ def build_receipt_pdf(receipt: dict) -> BytesIO:
         "本收款单的财务效力以所示审核状态为准。 / The accounting validity of this receipt is determined by the review status shown above.",
         base,
     ))
+    if receipt.get("settlement_status") == "settled":
+        story.append(Spacer(1, 2 * mm))
+        story.append(Paragraph(
+            "结清须经审核通过后生效；结清差额不计入实际收入。 / Settlement takes effect only after approval; the settlement difference is not actual income.",
+            base,
+        ))
+    if show_preview:
+        story.append(Spacer(1, 2 * mm))
+        story.append(Paragraph(
+            "预计结清差额未扣除其他待审核收款；最终差额以审核通过时为准。 / Estimates exclude other pending receipts and are finalized on approval.",
+            base,
+        ))
 
     def add_page_number(canvas, document):
         canvas.saveState()

@@ -2,7 +2,18 @@ import random
 import time
 from typing import Any
 
-from sqlalchemy import Column, String, Integer, Float, Boolean, Text, ForeignKey, Table, Numeric
+from sqlalchemy import (
+    Boolean,
+    Column,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    Numeric,
+    String,
+    Table,
+    Text,
+)
 from sqlalchemy.orm import relationship
 
 from .database import Base, SessionFactory
@@ -23,6 +34,24 @@ order_customers = Table(
 class RecordExist(Exception):
     def __str__(self):
         return "Record is Existed"
+
+
+RECEIPT_LOCKED_MESSAGE = "订单已生成收据，包裹重量、包裹归属和报价已锁定"
+ORDER_REVISION_OPEN_MESSAGE = "订单正在修订，暂不能出库或分配奖金"
+
+
+class ReceiptLockedError(ValueError):
+    """订单已生成收据，禁止修改计费基础。"""
+
+    def __init__(self):
+        super().__init__(RECEIPT_LOCKED_MESSAGE)
+
+
+class OrderRevisionOpenError(ValueError):
+    """订单处于收据修订窗口，禁止产生新的下游快照。"""
+
+    def __init__(self):
+        super().__init__(ORDER_REVISION_OPEN_MESSAGE)
 
 
 # ---------------------------------------------------------------------------
@@ -309,6 +338,90 @@ class MySQLModel:
 
 
 class OrderModel(MySQLModel):
+    def update(self, uid: str, record: dict):
+        """更新订单；修订窗口只允许绕过计费基础锁，不能绕过归档保护。"""
+        s = SessionFactory()
+        try:
+            db_record = (
+                s.query(OrderTable)
+                .filter(OrderTable.uid == uid)
+                .with_for_update()
+                .first()
+            )
+            if db_record is None:
+                return
+
+            weight_changed = False
+            if "total_weight" in record and record.get("total_weight") is not None:
+                try:
+                    weight_changed = float(record.get("total_weight") or 0) != float(
+                        db_record.total_weight or 0
+                    )
+                except (TypeError, ValueError):
+                    weight_changed = record.get("total_weight") != db_record.total_weight
+            archive_changed = (
+                "archive" in record
+                and record.get("archive") is not None
+                and bool(record.get("archive")) != bool(db_record.archive)
+            )
+            if archive_changed:
+                ensure_order_without_receipt_history(s, uid, order=db_record)
+            if weight_changed:
+                ensure_order_receipt_unlocked(s, uid, order=db_record)
+
+            db_record.update_date = time.strftime("%Y-%m-%d %H:%M")
+            for k, v in record.items():
+                if k not in self._columns or v is None:
+                    continue
+                setattr(db_record, k, v)
+            s.commit()
+        except Exception:
+            s.rollback()
+            raise
+        finally:
+            s.close()
+
+    def archive(self, uid: str):
+        s = SessionFactory()
+        try:
+            order = (
+                s.query(OrderTable)
+                .filter(OrderTable.uid == uid)
+                .with_for_update()
+                .first()
+            )
+            if order is None:
+                return
+            ensure_order_without_receipt_history(s, uid, order=order)
+            order.archive = True
+            order.update_date = time.strftime("%Y-%m-%d %H:%M")
+            s.commit()
+        except Exception:
+            s.rollback()
+            raise
+        finally:
+            s.close()
+
+    def delete(self, uid: str):
+        s = SessionFactory()
+        try:
+            order = (
+                s.query(OrderTable)
+                .filter(OrderTable.uid == uid)
+                .with_for_update()
+                .first()
+            )
+            if order is None:
+                return
+            ensure_order_without_receipt_history(s, uid, order=order)
+            s.delete(order)
+            s.commit()
+        except Exception:
+            s.rollback()
+            raise
+        finally:
+            s.close()
+
     def set_salesman(self, order_uid: str, user_id: int) -> bool:
         """Set the salesman for an order."""
         s = SessionFactory()
@@ -511,10 +624,16 @@ class CargoModel(MySQLModel):
         s = SessionFactory()
         try:
             db_record = (
-                s.query(self.table_class).filter(self.table_class.uid == uid).first()
+                s.query(self.table_class)
+                .filter(self.table_class.uid == uid)
+                .with_for_update()
+                .first()
             )
             if db_record is None:
                 return False
+
+            if db_record.target_order_uid:
+                ensure_order_receipt_unlocked(s, db_record.target_order_uid)
 
             db_record.target_order_uid = None
             db_record.update_date = time.strftime("%Y-%m-%d %H:%M")
@@ -536,10 +655,41 @@ class CargoModel(MySQLModel):
         s = SessionFactory()
         try:
             db_record = (
-                s.query(self.table_class).filter(self.table_class.uid == uid).first()
+                s.query(self.table_class)
+                .filter(self.table_class.uid == uid)
+                .with_for_update()
+                .first()
             )
             if db_record is None:
                 return
+
+            current_order_uid = db_record.target_order_uid
+            next_order_uid = (
+                record.get("target_order_uid")
+                if "target_order_uid" in record
+                else current_order_uid
+            )
+            next_order_uid = next_order_uid or None
+            target_changed = next_order_uid != current_order_uid
+            archive_changed = (
+                "archive" in record
+                and record.get("archive") is not None
+                and bool(record.get("archive")) != bool(db_record.archive)
+            )
+            weight_changed = False
+            if "weight" in record and record.get("weight") is not None:
+                try:
+                    weight_changed = float(record.get("weight")) != float(
+                        db_record.weight or 0
+                    )
+                except (TypeError, ValueError):
+                    weight_changed = record.get("weight") != db_record.weight
+
+            if target_changed or archive_changed or weight_changed:
+                for order_uid in sorted(
+                    {value for value in (current_order_uid, next_order_uid) if value}
+                ):
+                    ensure_order_receipt_unlocked(s, order_uid)
 
             now = time.strftime("%Y-%m-%d %H:%M")
             print(f"[update cargo] {db_record.packing_list_uid}")
@@ -577,10 +727,56 @@ class CargoModel(MySQLModel):
                     and db_record.target_order_uid
                     and int(db_record.status or 0) != 1
                 ):
+                    ensure_order_revision_closed_for_downstream(
+                        s, db_record.target_order_uid
+                    )
                     db_record.status = 1
                     db_record.date = now
                     self._lock_box_cost(s, db_record, now)
 
+            s.commit()
+        except Exception:
+            s.rollback()
+            raise
+        finally:
+            s.close()
+
+    def archive(self, uid: str):
+        s = SessionFactory()
+        try:
+            record = (
+                s.query(self.table_class)
+                .filter(self.table_class.uid == uid)
+                .with_for_update()
+                .first()
+            )
+            if record is None:
+                return
+            if record.target_order_uid:
+                ensure_order_receipt_unlocked(s, record.target_order_uid)
+            record.archive = True
+            record.update_date = time.strftime("%Y-%m-%d %H:%M")
+            s.commit()
+        except Exception:
+            s.rollback()
+            raise
+        finally:
+            s.close()
+
+    def delete(self, uid: str):
+        s = SessionFactory()
+        try:
+            record = (
+                s.query(self.table_class)
+                .filter(self.table_class.uid == uid)
+                .with_for_update()
+                .first()
+            )
+            if record is None:
+                return
+            if record.target_order_uid:
+                ensure_order_receipt_unlocked(s, record.target_order_uid)
+            s.delete(record)
             s.commit()
         except Exception:
             s.rollback()
@@ -704,6 +900,7 @@ class OrderQuoteVersionTable(Base):
     unit_price = Column(Numeric(14, 4), nullable=False, default=0)
     surcharge = Column(Numeric(14, 2), nullable=False, default=0)
     weight_snapshot = Column(Numeric(14, 3), nullable=False, default=0)
+    billing_weight_snapshot = Column(Numeric(14, 3), nullable=False, default=0)
     receivable_amount = Column(Numeric(14, 2), nullable=False, default=0)
     quoted_price = Column(Float, nullable=False, default=0)
     status = Column(String(32), nullable=False, default="adopted")
@@ -730,6 +927,7 @@ class PaymentReceiptTable(Base):
     payment_method = Column(String(32), nullable=False)
     remark = Column(String(512), nullable=True)
     status = Column(String(32), nullable=False, default="pending")
+    settlement_status = Column(String(16), nullable=True)
     creator_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     creator_name = Column(String(128), nullable=False)
     reviewer_id = Column(Integer, ForeignKey("users.id"), nullable=True)
@@ -751,6 +949,116 @@ class PaymentReceiptItemTable(Base):
     received_before = Column(Numeric(14, 2), nullable=False, default=0)
     amount = Column(Numeric(14, 2), nullable=False)
     remaining_after = Column(Numeric(14, 2), nullable=False)
+    settlement_difference = Column(Numeric(14, 2), nullable=True)
+
+
+class OrderReceiptRevisionTable(Base):
+    """管理员为已有收据的订单开启的受控修订窗口。"""
+
+    __tablename__ = "order_receipt_revisions"
+    __table_args__ = (
+        Index("idx_order_receipt_revisions_order_status", "order_uid", "status"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    order_uid = Column(String(32), ForeignKey("orders.uid"), nullable=False)
+    status = Column(String(16), nullable=False, default="open")
+    reason = Column(String(512), nullable=False)
+    opened_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    opened_by_name = Column(String(128), nullable=False)
+    opened_at = Column(String(32), nullable=False)
+    closed_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    closed_by_name = Column(String(128), nullable=True)
+    closed_at = Column(String(32), nullable=True)
+    close_type = Column(String(32), nullable=True)
+    close_remark = Column(String(512), nullable=True)
+    closing_receipt_id = Column(
+        Integer, ForeignKey("payment_receipts.id"), nullable=True
+    )
+
+
+def order_has_receipt_history(session, order_uid: str) -> bool:
+    """订单是否曾出现在任意收款单明细中。"""
+    if not order_uid:
+        return False
+    return (
+        session.query(PaymentReceiptItemTable.id)
+        .filter(PaymentReceiptItemTable.order_uid == order_uid)
+        .first()
+        is not None
+    )
+
+
+def get_open_order_receipt_revision(session, order_uid: str, for_update=False):
+    """读取订单当前开放的收据修订窗口。"""
+    if not order_uid:
+        return None
+    query = session.query(OrderReceiptRevisionTable).filter(
+        OrderReceiptRevisionTable.order_uid == order_uid,
+        OrderReceiptRevisionTable.status == "open",
+    )
+    if for_update:
+        query = query.with_for_update()
+    return query.order_by(OrderReceiptRevisionTable.id.desc()).first()
+
+
+def order_receipt_locked(session, order_uid: str) -> bool:
+    """有收据历史且没有管理员开放的修订窗口时，计费基础锁定。"""
+    return bool(
+        order_has_receipt_history(session, order_uid)
+        and get_open_order_receipt_revision(session, order_uid) is None
+    )
+
+
+def ensure_order_receipt_unlocked(session, order_uid: str, order=None):
+    """
+    锁定订单行并校验收据锁，与收据创建共用同一并发边界。
+    """
+    locked_order = order
+    if locked_order is None:
+        locked_order = (
+            session.query(OrderTable)
+            .filter(OrderTable.uid == order_uid)
+            .with_for_update()
+            .first()
+        )
+    if locked_order is None:
+        raise LookupError("订单不存在")
+    if order_receipt_locked(session, order_uid):
+        raise ReceiptLockedError()
+    return locked_order
+
+
+def ensure_order_without_receipt_history(session, order_uid: str, order=None):
+    """归档或删除订单时，收据历史永远不可被修订窗口绕过。"""
+    locked_order = order
+    if locked_order is None:
+        locked_order = (
+            session.query(OrderTable)
+            .filter(OrderTable.uid == order_uid)
+            .with_for_update()
+            .first()
+        )
+    if locked_order is None:
+        raise LookupError("订单不存在")
+    if order_has_receipt_history(session, order_uid):
+        raise ReceiptLockedError()
+    return locked_order
+
+
+def ensure_order_revision_closed_for_downstream(session, order_uid: str):
+    """修订期间禁止创建出库、成本或奖金等新的下游快照。"""
+    if not order_uid:
+        return
+    # 与开启/关闭修订、生成收款单共用订单行锁，避免“检查后出库”竞态。
+    (
+        session.query(OrderTable.uid)
+        .filter(OrderTable.uid == order_uid)
+        .with_for_update()
+        .first()
+    )
+    if get_open_order_receipt_revision(session, order_uid) is not None:
+        raise OrderRevisionOpenError()
 
 
 class SalesFollowupBonusRateTable(Base):

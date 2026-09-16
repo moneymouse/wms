@@ -13,7 +13,12 @@ from typing import Dict, List, Optional
 from sqlalchemy import func
 
 from data.database import SessionFactory
-from data.DB import CargoTable, OrderQuoteVersionTable, OrderTable
+from data.DB import (
+    CargoTable,
+    OrderQuoteVersionTable,
+    OrderTable,
+    ensure_order_revision_closed_for_downstream,
+)
 from data.finance import bonus_item_model
 from data.finance.BonusItem import BonusItemTable
 from data.packing.PackingList import BoxTable, BoxWorkerTable, PackingListTable
@@ -307,12 +312,11 @@ def get_worker_work_details(worker_id: int, month: Optional[str] = None) -> dict
         )
         orders = []
         for quote, order in order_rows:
-            if not receivable_service.quote_is_fresh(session, quote):
-                continue
+            pricing = receivable_service.quote_pricing_state(session, quote)
             orders.append({
                 "uid": order.uid,
                 "order_id": order.order_id,
-                "total_weight": float(quote.weight_snapshot or 0.0),
+                "total_weight": float(pricing["weight_snapshot"]),
                 "transportation": order.transportation,
                 "create_date": order.create_date,
                 "quote_effective_date": quote.effective_date,
@@ -470,16 +474,9 @@ def assign_bonus_for_packing_list(
         if not assignments:
             raise ValueError("assignments is required")
 
-        active_item_ids = {
-            item.id
-            for item in session.query(BonusItemTable)
-            .filter(BonusItemTable.is_active == True)
-            .all()
-        }
-        if not active_item_ids:
-            raise ValueError("no active bonus items configured")
-
         box_map = {box.uid: box for box in packing_list.boxes if not box.archive}
+        assignment_rows = []
+        guarded_order_uids = set()
 
         for row in assignments:
             box_uid = row.get("box_uid")
@@ -489,7 +486,24 @@ def assign_bonus_for_packing_list(
             box = box_map.get(box_uid)
             if box is None:
                 raise ValueError(f"box {box_uid} not found in packing list")
+            if box.target_order_uid:
+                guarded_order_uids.add(box.target_order_uid)
+            assignment_rows.append((row, box))
 
+        for order_uid in sorted(guarded_order_uids):
+            ensure_order_revision_closed_for_downstream(session, order_uid)
+
+        active_item_ids = {
+            item.id
+            for item in session.query(BonusItemTable)
+            .filter(BonusItemTable.is_active == True)
+            .all()
+        }
+        if not active_item_ids:
+            raise ValueError("no active bonus items configured")
+
+        for row, box in assignment_rows:
+            box_uid = box.uid
             worker_ids = row.get("worker_ids")
             if worker_ids is None:
                 worker_ids = [worker.worker_id for worker in box.workers]

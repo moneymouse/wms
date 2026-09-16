@@ -169,6 +169,7 @@ class UserModel:
 
             from data.DB import (
                 CargoTable,
+                OrderReceiptRevisionTable,
                 OrderQuoteVersionTable,
                 OrderTable,
                 PaymentReceiptTable,
@@ -203,6 +204,12 @@ class UserModel:
             session.query(PaymentReceiptTable).filter(
                 PaymentReceiptTable.reviewer_id == user_id
             ).update({"reviewer_id": None}, synchronize_session=False)
+            session.query(OrderReceiptRevisionTable).filter(
+                OrderReceiptRevisionTable.opened_by_id == user_id
+            ).update({"opened_by_id": None}, synchronize_session=False)
+            session.query(OrderReceiptRevisionTable).filter(
+                OrderReceiptRevisionTable.closed_by_id == user_id
+            ).update({"closed_by_id": None}, synchronize_session=False)
             session.query(SalesFollowupBonusRateTable).filter(
                 SalesFollowupBonusRateTable.creator_id == user_id
             ).update({"creator_id": None}, synchronize_session=False)

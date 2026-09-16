@@ -111,7 +111,9 @@ def setup_test_database():
 
     with patch("data.database.SessionFactory", mock_session_factory), patch(
         "data.user.User.SessionFactory", mock_session_factory
-    ), patch("data.DB.SessionFactory", mock_session_factory):
+    ), patch("data.DB.SessionFactory", mock_session_factory), patch(
+        "data.packing.PackingList.SessionFactory", mock_session_factory
+    ), patch("services.cargo_service.SessionFactory", mock_session_factory):
 
         try:
             yield session

@@ -29,6 +29,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      network: host
     restart: unless-stopped
     env_file:
       - ${PRE_BK_ENV_FILE:-PRE_BK.env}

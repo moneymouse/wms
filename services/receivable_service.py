@@ -1,21 +1,28 @@
 """Quotation, payment receipt and accounts-receivable domain services."""
 
 from datetime import datetime
-from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_HALF_UP
 import time
 from typing import Iterable, Optional
 
-from sqlalchemy import func, or_
+from sqlalchemy import and_, case, func, or_
+from sqlalchemy.orm import selectinload
 
 from Auth import get_payload_roles
 from data.database import SessionFactory
 from data.DB import (
     CargoTable,
+    OrderReceiptRevisionTable,
     OrderQuoteVersionTable,
     OrderTable,
     PaymentReceiptItemTable,
     PaymentReceiptTable,
     SalesFollowupBonusRateTable,
+    TransportationModeTable,
+    ensure_order_receipt_unlocked,
+    get_open_order_receipt_revision,
+    order_has_receipt_history,
+    order_receipt_locked,
 )
 from data.customer.Customer import CustomerTable
 
@@ -24,7 +31,17 @@ MONEY = Decimal("0.01")
 UNIT_PRICE = Decimal("0.0001")
 WEIGHT = Decimal("0.001")
 PAYMENT_METHODS = {"cash", "bank_transfer", "wechat", "alipay", "other"}
+SETTLEMENT_STATUSES = {"settled", "unsettled"}
+SETTLEMENT_THRESHOLD = Decimal("30.00")
 EFFECTIVE_QUOTE_STATUSES = {"adopted", "approved"}
+
+
+class QuoteConflictError(ValueError):
+    """Raised when a new quote conflicts with committed receipt amounts."""
+
+
+class OrderReceiptRevisionConflictError(ValueError):
+    """Raised when an order cannot enter or leave a receipt revision window."""
 
 
 def decimal_value(value, precision=MONEY, field="amount") -> Decimal:
@@ -47,6 +64,10 @@ def weight(value) -> Decimal:
     return decimal_value(value, WEIGHT, "weight")
 
 
+def billing_weight(value) -> Decimal:
+    return weight(value).to_integral_value(rounding=ROUND_CEILING)
+
+
 def decimal_json(value, precision=MONEY) -> float:
     return float(decimal_value(value, precision))
 
@@ -63,8 +84,59 @@ def current_order_weight(session, order_uid: str) -> Decimal:
     return weight(total)
 
 
+def current_order_billing_weight(session, order_uid: str) -> Decimal:
+    cargo_weights = (
+        session.query(CargoTable.weight)
+        .filter(
+            CargoTable.target_order_uid == order_uid,
+            CargoTable.archive == False,  # noqa: E712
+        )
+        .all()
+    )
+    return weight(sum((billing_weight(row[0]) for row in cargo_weights), Decimal("0")))
+
+
 def calculate_receivable(weight_snapshot, price, surcharge) -> Decimal:
-    return money(weight(weight_snapshot) * unit_price(price) + money(surcharge))
+    return money(billing_weight(weight_snapshot) * unit_price(price) + money(surcharge))
+
+
+def quote_price(quote: OrderQuoteVersionTable):
+    price = quote.unit_price
+    if price is None or (money(price) == 0 and money(quote.quoted_price) != 0):
+        price = quote.quoted_price
+    return price
+
+
+def quote_pricing_state(session, quote: OrderQuoteVersionTable) -> dict:
+    """Return live pricing for active quotes; snapshots are audit-only fields."""
+    current_weight = current_order_weight(session, quote.order_uid)
+    current_billing_weight = current_order_billing_weight(session, quote.order_uid)
+    stored_weight = weight(quote.weight_snapshot)
+    stored_billing_weight = weight(
+        quote.billing_weight_snapshot
+        if quote.billing_weight_snapshot is not None
+        else billing_weight(stored_weight)
+    )
+    uses_live_weight = (
+        quote.status == "pending"
+        or (quote.is_final and quote.status in EFFECTIVE_QUOTE_STATUSES)
+    )
+    effective_weight = current_weight if uses_live_weight else stored_weight
+    effective_billing_weight = (
+        current_billing_weight if uses_live_weight else stored_billing_weight
+    )
+    receivable = (
+        calculate_receivable(effective_billing_weight, quote_price(quote), quote.surcharge)
+        if uses_live_weight
+        else money(quote.receivable_amount)
+    )
+    return {
+        "current_weight": current_weight,
+        "current_billing_weight": current_billing_weight,
+        "weight_snapshot": effective_weight,
+        "billing_weight": effective_billing_weight,
+        "receivable_amount": receivable,
+    }
 
 
 def get_current_quote(session, order_uid: str) -> Optional[OrderQuoteVersionTable]:
@@ -80,19 +152,13 @@ def get_current_quote(session, order_uid: str) -> Optional[OrderQuoteVersionTabl
     )
 
 
-def quote_is_fresh(session, quote: Optional[OrderQuoteVersionTable]) -> bool:
-    if quote is None:
-        return False
-    return current_order_weight(session, quote.order_uid) == weight(quote.weight_snapshot)
-
-
 def quote_to_dict(session, quote: OrderQuoteVersionTable) -> dict:
-    current_weight = current_order_weight(session, quote.order_uid)
-    snapshot = weight(quote.weight_snapshot)
+    pricing = quote_pricing_state(session, quote)
+    current_weight = pricing["current_weight"]
+    snapshot = pricing["weight_snapshot"]
     is_effective = bool(
         quote.is_final
         and quote.status in EFFECTIVE_QUOTE_STATUSES
-        and current_weight == snapshot
     )
     if quote.status == "pending":
         validity_status = "pending"
@@ -100,14 +166,10 @@ def quote_to_dict(session, quote: OrderQuoteVersionTable) -> dict:
         validity_status = "rejected"
     elif not quote.is_final:
         validity_status = "superseded"
-    elif current_weight != snapshot:
-        validity_status = "stale"
     else:
         validity_status = "effective"
 
-    p = quote.unit_price
-    if p is None or (money(p) == 0 and money(quote.quoted_price) != 0):
-        p = quote.quoted_price
+    p = quote_price(quote)
     return {
         "id": quote.id,
         "order_uid": quote.order_uid,
@@ -120,8 +182,9 @@ def quote_to_dict(session, quote: OrderQuoteVersionTable) -> dict:
         "quoted_price": decimal_json(p, UNIT_PRICE),
         "surcharge": decimal_json(quote.surcharge),
         "weight_snapshot": decimal_json(snapshot, WEIGHT),
+        "billing_weight": decimal_json(pricing["billing_weight"], WEIGHT),
         "current_weight": decimal_json(current_weight, WEIGHT),
-        "receivable_amount": decimal_json(quote.receivable_amount),
+        "receivable_amount": decimal_json(pricing["receivable_amount"]),
         "status": quote.status,
         "is_final": bool(quote.is_final),
         "is_effective": is_effective,
@@ -169,6 +232,62 @@ def get_committed_receipt_amount(session, order_uid: str) -> Decimal:
     return money(totals["approved"] + totals["pending"])
 
 
+def _locked_receipt_allocations(session, order_uids, exclude_receipt_id=None):
+    """Read current receipt state after locking all affected orders in UID order.
+
+    Locking reads avoid stale repeatable-read snapshots after waiting for an
+    order lock. Every receipt mutation follows orders -> receipt IDs.
+    """
+    items = (
+        session.query(
+            PaymentReceiptItemTable.receipt_id,
+            PaymentReceiptItemTable.order_uid,
+            PaymentReceiptItemTable.amount,
+        )
+        .filter(PaymentReceiptItemTable.order_uid.in_(order_uids))
+        .order_by(PaymentReceiptItemTable.id.asc())
+        .with_for_update()
+        .all()
+    )
+    # Different orders can share a receipt header. Lock those headers explicitly
+    # by ID rather than relying on a join's query plan to acquire sorted locks.
+    receipts = {}
+    for receipt_id in sorted({item.receipt_id for item in items}):
+        receipts[receipt_id] = (
+            session.query(
+                PaymentReceiptTable.receipt_no,
+                PaymentReceiptTable.status,
+                PaymentReceiptTable.settlement_status,
+            )
+            .filter(PaymentReceiptTable.id == receipt_id)
+            .with_for_update()
+            .one()
+        )
+    result = {
+        uid: {
+            "approved": Decimal("0.00"),
+            "pending": Decimal("0.00"),
+            "pending_receipts": [],
+            "settled_receipts": [],
+            "approved_settled": False,
+        }
+        for uid in order_uids
+    }
+    for item in items:
+        receipt = receipts[item.receipt_id]
+        if item.receipt_id == exclude_receipt_id or receipt.status not in {"pending", "approved"}:
+            continue
+        state = result[item.order_uid]
+        state[receipt.status] += money(item.amount)
+        label = receipt.receipt_no or str(item.receipt_id)
+        if receipt.status == "pending":
+            state["pending_receipts"].append(label)
+        if receipt.settlement_status == "settled":
+            state["settled_receipts"].append(label)
+            state["approved_settled"] |= receipt.status == "approved"
+    return result
+
+
 def _customer_matches_order(order: OrderTable, customer: CustomerTable) -> bool:
     linked_ids = {item.id for item in order.customers}
     return customer.id in linked_ids or (
@@ -184,46 +303,534 @@ def _operator(payload: dict) -> dict:
     }
 
 
-def list_receivable_orders(customer_id: int, operator_payload: dict, query_text="") -> list:
-    operator = _operator(operator_payload)
+def _receipt_revision_dict(revision: OrderReceiptRevisionTable) -> Optional[dict]:
+    if revision is None:
+        return None
+    return {
+        "id": revision.id,
+        "reason": revision.reason,
+        "opened_by_id": revision.opened_by_id,
+        "opened_by_name": revision.opened_by_name,
+        "opened_at": revision.opened_at,
+    }
+
+
+def get_order_receipt_lock_state(session, order_uid: str) -> dict:
+    """Return the effective lock plus the reasons an admin cannot unlock it."""
+    has_history = order_has_receipt_history(session, order_uid)
+    revision = get_open_order_receipt_revision(session, order_uid)
+    blockers = []
+
+    if has_history:
+        statuses = {
+            row[0]
+            for row in (
+                session.query(PaymentReceiptTable.status)
+                .join(
+                    PaymentReceiptItemTable,
+                    PaymentReceiptItemTable.receipt_id == PaymentReceiptTable.id,
+                )
+                .filter(PaymentReceiptItemTable.order_uid == order_uid)
+                .distinct()
+                .all()
+            )
+        }
+        if "approved" in statuses:
+            blockers.append("approved_receipt")
+        if "pending" in statuses or any(
+            status not in {"approved", "pending", "rejected"} for status in statuses
+        ):
+            blockers.append("pending_receipt")
+
+        has_assigned_bonus = (
+            session.query(CargoTable.uid)
+            .filter(
+                CargoTable.target_order_uid == order_uid,
+                CargoTable.archive == False,  # noqa: E712
+                CargoTable.bonus_assigned == True,  # noqa: E712
+            )
+            .first()
+            is not None
+        )
+        if has_assigned_bonus:
+            blockers.append("bonus_assigned")
+
+    if not has_history:
+        status = "none"
+    elif revision is not None:
+        status = "revision_open"
+    else:
+        status = "locked"
+
+    return {
+        "status": status,
+        "has_history": has_history,
+        "unlock_eligible": bool(has_history and revision is None and not blockers),
+        "blockers": blockers,
+        "revision": _receipt_revision_dict(revision),
+    }
+
+
+def get_order_receipt_lock_state_by_uid(order_uid: str) -> dict:
     with SessionFactory() as session:
-        customer = session.query(CustomerTable).filter(CustomerTable.id == customer_id).first()
-        if customer is None:
+        order = session.query(OrderTable.uid).filter(OrderTable.uid == order_uid).first()
+        if order is None:
+            raise LookupError("订单不存在")
+        return get_order_receipt_lock_state(session, order_uid)
+
+
+def _revision_blocker_message(blockers: Iterable[str]) -> str:
+    messages = {
+        "approved_receipt": "订单存在已审核通过的收款单，不能直接解锁",
+        "pending_receipt": "订单存在待审核收款单，请先由财务驳回",
+        "bonus_assigned": "订单存在已分配奖金的包裹，本期暂不支持解锁",
+    }
+    for blocker in (
+        "approved_receipt",
+        "pending_receipt",
+        "bonus_assigned",
+    ):
+        if blocker in blockers:
+            return messages[blocker]
+    return "订单当前不能解锁"
+
+
+def open_order_receipt_revision(
+    order_uid: str, reason: str, operator_payload: dict
+) -> dict:
+    operator = _operator(operator_payload)
+    if "admin" not in operator["roles"]:
+        raise PermissionError("只有管理员可以解锁订单")
+    if not isinstance(reason, str):
+        raise ValueError("解锁原因必须是字符串")
+    normalized_reason = reason.strip()
+    if not normalized_reason:
+        raise ValueError("解锁原因不能为空")
+    if len(normalized_reason) > 512:
+        raise ValueError("解锁原因不能超过 512 个字符")
+
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    with SessionFactory() as session:
+        order = (
+            session.query(OrderTable)
+            .filter(OrderTable.uid == order_uid, OrderTable.archive == False)  # noqa: E712
+            .with_for_update()
+            .first()
+        )
+        if order is None:
+            raise LookupError("订单不存在")
+
+        state = get_order_receipt_lock_state(session, order_uid)
+        if state["status"] == "none":
+            raise OrderReceiptRevisionConflictError("订单没有收据锁，无需解锁")
+        if state["status"] == "revision_open":
+            raise OrderReceiptRevisionConflictError("订单已经处于修订中")
+        if not state["unlock_eligible"]:
+            raise OrderReceiptRevisionConflictError(
+                _revision_blocker_message(state["blockers"])
+            )
+
+        revision = OrderReceiptRevisionTable(
+            order_uid=order_uid,
+            status="open",
+            reason=normalized_reason,
+            opened_by_id=operator["id"],
+            opened_by_name=operator["name"] or "管理员",
+            opened_at=now,
+        )
+        session.add(revision)
+        session.flush()
+        session.commit()
+        return get_order_receipt_lock_state(session, order_uid)
+
+
+def close_order_receipt_revision(
+    order_uid: str, remark: str, operator_payload: dict
+) -> dict:
+    operator = _operator(operator_payload)
+    if "admin" not in operator["roles"]:
+        raise PermissionError("只有管理员可以重新锁定订单")
+    if remark is not None and not isinstance(remark, str):
+        raise ValueError("修订说明必须是字符串")
+    normalized_remark = (remark or "").strip()
+    if len(normalized_remark) > 512:
+        raise ValueError("修订说明不能超过 512 个字符")
+
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    with SessionFactory() as session:
+        order = (
+            session.query(OrderTable)
+            .filter(OrderTable.uid == order_uid, OrderTable.archive == False)  # noqa: E712
+            .with_for_update()
+            .first()
+        )
+        if order is None:
+            raise LookupError("订单不存在")
+        revision = get_open_order_receipt_revision(
+            session, order_uid, for_update=True
+        )
+        if revision is None:
+            raise OrderReceiptRevisionConflictError("订单当前不在修订中")
+
+        # 手动关窗时也要冻结修订后的实时重量与应收，保证后续收款快照一致。
+        quote = get_current_quote(session, order_uid)
+        if quote is not None:
+            pricing = quote_pricing_state(session, quote)
+            quote.weight_snapshot = pricing["weight_snapshot"]
+            quote.billing_weight_snapshot = pricing["billing_weight"]
+            quote.receivable_amount = pricing["receivable_amount"]
+
+        revision.status = "closed"
+        revision.closed_by_id = operator["id"]
+        revision.closed_by_name = operator["name"] or "管理员"
+        revision.closed_at = now
+        revision.close_type = "manual"
+        revision.close_remark = normalized_remark or "管理员手动完成修订"
+        session.commit()
+        return get_order_receipt_lock_state(session, order_uid)
+
+
+def _close_revision_for_new_receipt(
+    session, order_uid: str, receipt_id: int, operator: dict, now: str
+):
+    revision = get_open_order_receipt_revision(session, order_uid, for_update=True)
+    if revision is None:
+        return None
+    event = {
+        "id": revision.id,
+        "order_uid": order_uid,
+        "reason": revision.reason,
+        "opened_by_id": revision.opened_by_id,
+        "opened_by_name": revision.opened_by_name,
+        "opened_at": revision.opened_at,
+    }
+    revision.status = "closed"
+    revision.closed_by_id = operator["id"]
+    revision.closed_by_name = operator["name"] or None
+    revision.closed_at = now
+    revision.close_type = "receipt_created"
+    revision.close_remark = "生成新收款单后自动锁定"
+    revision.closing_receipt_id = receipt_id
+    return event
+
+
+def normalize_quote_payload(body: dict) -> dict:
+    """Validate and normalize quote input for controllers and services."""
+    if not isinstance(body, dict):
+        raise ValueError("报价字段格式不正确")
+    raw_unit_price = body.get("unit_price", body.get("quoted_price"))
+    if raw_unit_price is None:
+        raise ValueError("每公斤单价不能为空")
+
+    normalized_unit_price = unit_price(raw_unit_price)
+    normalized_surcharge = money(body.get("surcharge", 0))
+    if normalized_unit_price < 0 or normalized_surcharge < 0:
+        raise ValueError("每公斤单价和附加费不能小于 0")
+    return {
+        "unit_price": normalized_unit_price,
+        "surcharge": normalized_surcharge,
+        "quote_remark": (body.get("quote_remark") or "").strip() or None,
+    }
+
+
+def create_order_quote(
+    order_uid: str,
+    body: dict,
+    operator_payload: dict,
+    allow_on_behalf: bool = False,
+) -> dict:
+    """Create one quote version and attribute it to the order's salesman."""
+    normalized = normalize_quote_payload(body)
+    quote_unit_price = normalized["unit_price"]
+    surcharge = normalized["surcharge"]
+    quote_remark = normalized["quote_remark"]
+    operator = _operator(operator_payload)
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
+
+    with SessionFactory() as session:
+        order = (
+            session.query(OrderTable)
+            .filter(OrderTable.uid == order_uid)
+            .with_for_update()
+            .first()
+        )
+        if order is None:
+            raise LookupError("订单不存在")
+        ensure_order_receipt_unlocked(session, order_uid, order=order)
+        if order.salesman_id is None:
+            raise ValueError("订单尚未分配业务员，无法报价")
+        if (
+            not allow_on_behalf
+            and (operator["id"] is None or str(order.salesman_id) != str(operator["id"]))
+        ):
+            raise PermissionError("仅当前订单的业务员可以报价")
+
+        assigned_salesman = order.salesman
+        if assigned_salesman is not None:
+            quoter_id = assigned_salesman.id
+            quoter_name = assigned_salesman.name
+        elif operator["id"] is not None and str(order.salesman_id) == str(operator["id"]):
+            quoter_id = order.salesman_id
+            quoter_name = operator["name"]
+        else:
+            raise LookupError("订单业务员不存在，无法报价")
+
+        transportation_name = (order.transportation or "").strip()
+        mode = None
+        if transportation_name:
+            mode = (
+                session.query(TransportationModeTable)
+                .filter(TransportationModeTable.name == transportation_name)
+                .first()
+            )
+
+        transportation_mode_id = mode.id if mode else None
+        quote_transportation_name = mode.name if mode else transportation_name
+        channel_cost = float(mode.cost or 0) if mode else 0
+        min_price = float(mode.min_price or 0) if mode else 0
+        weight_snapshot = current_order_weight(session, order_uid)
+        billing_weight_snapshot = current_order_billing_weight(session, order_uid)
+        receivable_amount = calculate_receivable(
+            billing_weight_snapshot, quote_unit_price, surcharge
+        )
+        committed_amount = get_committed_receipt_amount(session, order_uid)
+        if receivable_amount < committed_amount:
+            raise QuoteConflictError(
+                f"新应收 {receivable_amount:.2f} 不能低于已收及待审核金额 {committed_amount:.2f}"
+            )
+
+        status = "adopted" if quote_unit_price >= unit_price(min_price) else "pending"
+        is_final = status == "adopted"
+        if is_final:
+            (
+                session.query(OrderQuoteVersionTable)
+                .filter(OrderQuoteVersionTable.order_uid == order_uid)
+                .update({"is_final": False})
+            )
+            order.transportation = quote_transportation_name
+            order.update_date = now
+
+        latest_version = (
+            session.query(OrderQuoteVersionTable.version_no)
+            .filter(OrderQuoteVersionTable.order_uid == order_uid)
+            .order_by(OrderQuoteVersionTable.version_no.desc())
+            .first()
+        )
+        quote = OrderQuoteVersionTable(
+            order_uid=order_uid,
+            version_no=(latest_version[0] if latest_version else 0) + 1,
+            transportation_mode_id=transportation_mode_id,
+            transportation_name=quote_transportation_name,
+            channel_cost=channel_cost,
+            min_price=min_price,
+            unit_price=quote_unit_price,
+            surcharge=surcharge,
+            weight_snapshot=weight_snapshot,
+            billing_weight_snapshot=billing_weight_snapshot,
+            receivable_amount=receivable_amount,
+            quoted_price=float(quote_unit_price),
+            status=status,
+            is_final=is_final,
+            quote_remark=quote_remark,
+            quoter_id=quoter_id,
+            quoter_name=quoter_name,
+            create_date=now,
+            effective_date=now if is_final else None,
+        )
+        session.add(quote)
+        session.commit()
+        session.refresh(quote)
+        result = quote_to_dict(session, quote)
+        if is_final:
+            result["order_transportation"] = order.transportation
+        return result
+
+
+def list_receivable_orders(
+    customer_id: Optional[int],
+    operator_payload: dict,
+    query_text="",
+    page=1,
+    page_size=20,
+    date_from=None,
+    date_to=None,
+    owner_id=None,
+) -> dict:
+    operator = _operator(operator_payload)
+    for name, value in (("date_from", date_from), ("date_to", date_to)):
+        if value is not None:
+            try:
+                parsed = datetime.strptime(value, "%Y-%m-%d")
+                if parsed.strftime("%Y-%m-%d") != value:
+                    raise ValueError
+            except ValueError as exc:
+                raise ValueError(f"{name} 必须为 YYYY-MM-DD") from exc
+    if date_from and date_to and date_from > date_to:
+        raise ValueError("date_from 不能晚于 date_to")
+    page = max(int(page or 1), 1)
+    page_size = min(max(int(page_size or 20), 1), 100)
+    with SessionFactory() as session:
+        selected_customer = None
+        if customer_id is not None:
+            selected_customer = session.query(CustomerTable).filter(CustomerTable.id == customer_id).first()
+        if customer_id is not None and selected_customer is None:
             raise ValueError("客户不存在")
-        query = session.query(OrderTable).filter(OrderTable.archive == False)  # noqa: E712
+        receipt_stats = (
+            session.query(
+                PaymentReceiptItemTable.order_uid.label("order_uid"),
+                func.coalesce(func.sum(case(
+                    (PaymentReceiptTable.status == "approved", PaymentReceiptItemTable.amount),
+                    else_=0,
+                )), 0).label("approved"),
+                func.coalesce(func.sum(case(
+                    (PaymentReceiptTable.status == "pending", PaymentReceiptItemTable.amount),
+                    else_=0,
+                )), 0).label("pending"),
+                func.max(case(
+                    (and_(
+                        PaymentReceiptTable.status.in_(["pending", "approved"]),
+                        PaymentReceiptTable.settlement_status == "settled",
+                    ), 1),
+                    else_=0,
+                )).label("settled"),
+            )
+            .join(PaymentReceiptTable, PaymentReceiptTable.id == PaymentReceiptItemTable.receipt_id)
+            .group_by(PaymentReceiptItemTable.order_uid)
+            .subquery()
+        )
+        cargo_stats = (
+            session.query(
+                CargoTable.target_order_uid.label("order_uid"),
+                func.coalesce(func.sum(CargoTable.weight), 0).label("raw_weight"),
+                func.coalesce(func.sum(func.ceil(CargoTable.weight)), 0).label("billing_weight"),
+            )
+            .filter(
+                CargoTable.archive == False,  # noqa: E712
+                CargoTable.target_order_uid.isnot(None),
+            )
+            .group_by(CargoTable.target_order_uid)
+            .subquery()
+        )
+        approved_expr = func.coalesce(receipt_stats.c.approved, 0)
+        pending_expr = func.coalesce(receipt_stats.c.pending, 0)
+        current_weight_expr = func.coalesce(cargo_stats.c.raw_weight, 0)
+        current_billing_weight_expr = func.coalesce(cargo_stats.c.billing_weight, 0)
+        quote_price_expr = case(
+            (
+                and_(
+                    OrderQuoteVersionTable.unit_price == 0,
+                    OrderQuoteVersionTable.quoted_price != 0,
+                ),
+                OrderQuoteVersionTable.quoted_price,
+            ),
+            else_=OrderQuoteVersionTable.unit_price,
+        )
+        live_receivable_expr = func.round(
+            current_billing_weight_expr * quote_price_expr
+            + OrderQuoteVersionTable.surcharge,
+            2,
+        )
+        query = (
+            session.query(
+                OrderTable,
+                OrderQuoteVersionTable,
+                approved_expr.label("approved"),
+                pending_expr.label("pending"),
+                current_weight_expr.label("current_weight"),
+                current_billing_weight_expr.label("current_billing_weight"),
+                live_receivable_expr.label("effective_receivable"),
+            )
+            .join(
+                OrderQuoteVersionTable,
+                and_(
+                    OrderQuoteVersionTable.order_uid == OrderTable.uid,
+                    OrderQuoteVersionTable.is_final == True,  # noqa: E712
+                    OrderQuoteVersionTable.status.in_(EFFECTIVE_QUOTE_STATUSES),
+                ),
+            )
+            .outerjoin(receipt_stats, receipt_stats.c.order_uid == OrderTable.uid)
+            .outerjoin(cargo_stats, cargo_stats.c.order_uid == OrderTable.uid)
+            .options(selectinload(OrderTable.customers))
+            .filter(
+                OrderTable.archive == False,  # noqa: E712
+            )
+        )
+        if "admin" not in operator["roles"]:
+            query = query.filter(OrderQuoteVersionTable.quoter_id == operator["id"])
+        elif owner_id is not None:
+            query = query.filter(OrderQuoteVersionTable.quoter_id == owner_id)
+        if date_from:
+            query = query.filter(OrderTable.create_date >= f"{date_from} 00:00:00")
+        if date_to:
+            query = query.filter(OrderTable.create_date <= f"{date_to} 23:59:59")
+        if selected_customer is not None:
+            query = query.filter(or_(
+                OrderTable.customers.any(CustomerTable.id == selected_customer.id),
+                and_(
+                    ~OrderTable.customers.any(),
+                    OrderTable.customer_name == selected_customer.name,
+                ),
+            ))
         if query_text:
             like = f"%{query_text.strip()}%"
             query = query.filter(or_(OrderTable.order_id.ilike(like), OrderTable.customer_name.ilike(like)))
-        orders = query.order_by(OrderTable.create_date.desc()).all()
+        query = query.filter(live_receivable_expr > approved_expr + pending_expr)
+        query = query.filter(func.coalesce(receipt_stats.c.settled, 0) == 0)
+
+        total = query.count()
+        rows = (
+            query.order_by(OrderTable.create_date.desc(), OrderTable.uid.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+            .all()
+        )
         result = []
-        for order in orders:
-            if not _customer_matches_order(order, customer):
-                continue
-            quote = get_current_quote(session, order.uid)
-            if quote is None or not quote_is_fresh(session, quote):
-                continue
-            if "admin" not in operator["roles"] and quote.quoter_id != operator["id"]:
-                continue
-            allocations = _allocation_totals(session, order.uid)
-            receivable = money(quote.receivable_amount)
+        for (
+            order,
+            quote,
+            approved_value,
+            pending_value,
+            current_weight,
+            current_billing_weight,
+            effective_receivable,
+        ) in rows:
+            allocations = {
+                "approved": money(approved_value),
+                "pending": money(pending_value),
+            }
+            effective_weight = weight(current_weight)
+            effective_billing_weight = weight(current_billing_weight)
+            receivable = money(effective_receivable)
             available = money(receivable - allocations["approved"] - allocations["pending"])
-            if available <= 0:
-                continue
+            customer = selected_customer or (order.customers[0] if order.customers else None)
+            if customer is None and order.customer_name:
+                customer = (
+                    session.query(CustomerTable)
+                    .filter(CustomerTable.name == order.customer_name)
+                    .first()
+                )
             result.append({
                 "uid": order.uid,
                 "order_id": order.order_id,
-                "customer_id": customer.id,
-                "customer_name": customer.name,
+                "create_date": order.create_date,
+                "customer_id": customer.id if customer else None,
+                "customer_name": customer.name if customer else order.customer_name,
                 "quoter_id": quote.quoter_id,
                 "quoter_name": quote.quoter_name,
                 "effective_date": quote.effective_date,
-                "weight_snapshot": decimal_json(quote.weight_snapshot, WEIGHT),
+                "weight_snapshot": decimal_json(effective_weight, WEIGHT),
+                "billing_weight": decimal_json(effective_billing_weight, WEIGHT),
                 "receivable_amount": decimal_json(receivable),
                 "approved_received": decimal_json(allocations["approved"]),
                 "pending_amount": decimal_json(allocations["pending"]),
                 "available_amount": decimal_json(available),
             })
-        return result
+        return {
+            "items": result,
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+        }
 
 
 def create_receipt(body: dict, operator_payload: dict) -> dict:
@@ -245,6 +852,12 @@ def create_receipt(body: dict, operator_payload: dict) -> dict:
     payment_method = str(body.get("payment_method") or "").strip()
     if payment_method not in PAYMENT_METHODS:
         raise ValueError("付款方式无效")
+    settlement_status = body.get("settlement_status")
+    if "settlement_status" in body and (
+        not isinstance(settlement_status, str)
+        or settlement_status not in SETTLEMENT_STATUSES
+    ):
+        raise ValueError("结清状态必须为 settled 或 unsettled")
     item_payloads = body.get("items") or []
     if not isinstance(item_payloads, list) or not item_payloads:
         raise ValueError("请至少选择一笔订单")
@@ -254,20 +867,23 @@ def create_receipt(body: dict, operator_payload: dict) -> dict:
 
     now = time.strftime("%Y-%m-%d %H:%M:%S")
     with SessionFactory() as session:
-        customer = session.query(CustomerTable).filter(CustomerTable.id == customer_id).first()
-        if customer is None:
-            raise ValueError("客户不存在")
         orders = (
             session.query(OrderTable)
             .filter(OrderTable.uid.in_(order_uids), OrderTable.archive == False)  # noqa: E712
+            .order_by(OrderTable.uid.asc())
             .with_for_update()
             .all()
         )
         order_map = {order.uid: order for order in orders}
         if len(order_map) != len(order_uids):
             raise ValueError("部分订单不存在或已归档")
+        customer = session.query(CustomerTable).filter(CustomerTable.id == customer_id).first()
+        if customer is None:
+            raise ValueError("客户不存在")
+        allocation_map = _locked_receipt_allocations(session, order_uids)
 
         prepared = []
+        settlement_remaining = Decimal("0.00")
         for item in item_payloads:
             order = order_map[item["order_uid"]]
             if not _customer_matches_order(order, customer):
@@ -275,21 +891,34 @@ def create_receipt(body: dict, operator_payload: dict) -> dict:
             quote = get_current_quote(session, order.uid)
             if quote is None:
                 raise ValueError(f"订单 {order.order_id or order.uid} 尚无有效报价")
-            if not quote_is_fresh(session, quote):
-                raise ValueError(f"订单 {order.order_id or order.uid} 重量已变更，请重新报价")
+            pricing = quote_pricing_state(session, quote)
             if "admin" not in operator["roles"] and quote.quoter_id != operator["id"]:
                 raise PermissionError(f"订单 {order.order_id or order.uid} 不属于你的跟单范围")
+            if not order_receipt_locked(session, order.uid):
+                quote.weight_snapshot = pricing["weight_snapshot"]
+                quote.billing_weight_snapshot = pricing["billing_weight"]
+                quote.receivable_amount = pricing["receivable_amount"]
+                session.flush()
             amount = money(item.get("amount"))
             if amount <= 0:
                 raise ValueError(f"订单 {order.order_id or order.uid} 的本次收款必须大于 0")
-            allocations = _allocation_totals(session, order.uid)
-            receivable = money(quote.receivable_amount)
+            allocations = allocation_map[order.uid]
+            if allocations["settled_receipts"]:
+                raise ValueError(f"订单 {order.order_id or order.uid} 已结清或存在待审核结清收据，不能重复收款")
+            receivable = pricing["receivable_amount"]
             available = money(receivable - allocations["approved"] - allocations["pending"])
             if amount > available:
                 raise ValueError(
                     f"订单 {order.order_id or order.uid} 最多可收 {available:.2f} CNY"
                 )
             prepared.append((order, receivable, allocations, available, amount))
+            # The default reflects actual received income, not pending reservations.
+            settlement_remaining += money(receivable - allocations["approved"] - amount)
+
+        if settlement_status is None:
+            settlement_status = (
+                "settled" if settlement_remaining < SETTLEMENT_THRESHOLD else "unsettled"
+            )
 
         receipt = PaymentReceiptTable(
             customer_id=customer.id,
@@ -298,6 +927,7 @@ def create_receipt(body: dict, operator_payload: dict) -> dict:
             payment_method=payment_method,
             remark=(body.get("remark") or "").strip() or None,
             status="pending",
+            settlement_status=settlement_status,
             creator_id=operator["id"],
             creator_name=operator["name"],
             create_date=now,
@@ -306,6 +936,7 @@ def create_receipt(body: dict, operator_payload: dict) -> dict:
         session.add(receipt)
         session.flush()
         receipt.receipt_no = f"RCPT-{receipt_date.replace('-', '')}-{receipt.id:06d}"
+        closed_revision_events = []
         for order, receivable, allocations, available, amount in prepared:
             session.add(PaymentReceiptItemTable(
                 receipt_id=receipt.id,
@@ -316,17 +947,41 @@ def create_receipt(body: dict, operator_payload: dict) -> dict:
                 amount=amount,
                 remaining_after=money(available - amount),
             ))
+            closed_revision = _close_revision_for_new_receipt(
+                session, order.uid, receipt.id, operator, now
+            )
+            if closed_revision is not None:
+                closed_revision_events.append(closed_revision)
         session.commit()
-        return get_receipt_detail(receipt.id, operator_payload, session=session)
+        result = get_receipt_detail(receipt.id, operator_payload, session=session)
+        if closed_revision_events:
+            result["_closed_revision_events"] = closed_revision_events
+        return result
 
 
-def _receipt_items(session, receipt_id: int) -> list:
+def _receipt_items(session, receipt: PaymentReceiptTable) -> list:
     rows = (
         session.query(PaymentReceiptItemTable)
-        .filter(PaymentReceiptItemTable.receipt_id == receipt_id)
+        .filter(PaymentReceiptItemTable.receipt_id == receipt.id)
         .order_by(PaymentReceiptItemTable.id.asc())
         .all()
     )
+    preview = receipt.status == "pending" and receipt.settlement_status == "settled"
+    approved = {}
+    if preview and rows:
+        approved = dict(
+            session.query(
+                PaymentReceiptItemTable.order_uid,
+                func.coalesce(func.sum(PaymentReceiptItemTable.amount), 0),
+            )
+            .join(PaymentReceiptTable, PaymentReceiptTable.id == PaymentReceiptItemTable.receipt_id)
+            .filter(
+                PaymentReceiptItemTable.order_uid.in_([row.order_uid for row in rows]),
+                PaymentReceiptTable.status == "approved",
+            )
+            .group_by(PaymentReceiptItemTable.order_uid)
+            .all()
+        )
     return [{
         "id": row.id,
         "order_uid": row.order_uid,
@@ -335,6 +990,16 @@ def _receipt_items(session, receipt_id: int) -> list:
         "received_before": decimal_json(row.received_before),
         "amount": decimal_json(row.amount),
         "remaining_after": decimal_json(row.remaining_after),
+        "settlement_difference": (
+            decimal_json(row.settlement_difference)
+            if row.settlement_difference is not None else None
+        ),
+        "preview_settlement_difference": (
+            decimal_json(max(
+                money(row.receivable_snapshot) - money(approved.get(row.order_uid, 0)) - money(row.amount),
+                Decimal("0.00"),
+            )) if preview else None
+        ),
     } for row in rows]
 
 
@@ -348,6 +1013,7 @@ def _receipt_dict(session, receipt: PaymentReceiptTable, include_items=False) ->
         "payment_method": receipt.payment_method,
         "remark": receipt.remark,
         "status": receipt.status,
+        "settlement_status": receipt.settlement_status,
         "creator_id": receipt.creator_id,
         "creator_name": receipt.creator_name,
         "reviewer_id": receipt.reviewer_id,
@@ -358,7 +1024,7 @@ def _receipt_dict(session, receipt: PaymentReceiptTable, include_items=False) ->
         "update_date": receipt.update_date,
     }
     if include_items:
-        data["items"] = _receipt_items(session, receipt.id)
+        data["items"] = _receipt_items(session, receipt)
         data["total_amount"] = decimal_json(sum((money(row["amount"]) for row in data["items"]), Decimal("0")))
     return data
 
@@ -382,7 +1048,21 @@ def get_receipt_detail(receipt_id: int, operator_payload: dict, session=None) ->
 def list_receipts(operator_payload: dict, status=None, page=1, page_size=20, query_text="") -> dict:
     operator = _operator(operator_payload)
     with SessionFactory() as session:
-        query = session.query(PaymentReceiptTable)
+        receipt_totals = (
+            session.query(
+                PaymentReceiptItemTable.receipt_id.label("receipt_id"),
+                func.coalesce(func.sum(PaymentReceiptItemTable.amount), 0).label("total_amount"),
+            )
+            .group_by(PaymentReceiptItemTable.receipt_id)
+            .subquery()
+        )
+        query = (
+            session.query(
+                PaymentReceiptTable,
+                func.coalesce(receipt_totals.c.total_amount, 0).label("total_amount"),
+            )
+            .outerjoin(receipt_totals, receipt_totals.c.receipt_id == PaymentReceiptTable.id)
+        )
         if not operator["roles"].intersection({"admin", "finance"}):
             query = query.filter(PaymentReceiptTable.creator_id == operator["id"])
         if status:
@@ -398,8 +1078,9 @@ def list_receipts(operator_payload: dict, status=None, page=1, page_size=20, que
             .all()
         )
         items = []
-        for row in rows:
-            item = _receipt_dict(session, row, include_items=True)
+        for row, total_amount in rows:
+            item = _receipt_dict(session, row, include_items=False)
+            item["total_amount"] = decimal_json(total_amount)
             items.append(item)
         return {"items": items, "total": total, "page": page, "page_size": page_size}
 
@@ -412,11 +1093,30 @@ def review_receipt(receipt_id: int, action: str, review_remark: str, operator_pa
         raise ValueError("action 必须为 approve 或 reject")
     if action == "reject" and not (review_remark or "").strip():
         raise ValueError("驳回时必须填写审核意见")
-    now = time.strftime("%Y-%m-%d %H:%M:%S")
     with SessionFactory() as session:
+        # Receipt membership never changes. Read IDs first, then use the same
+        # order -> receipt lock sequence as creation, including for rejections.
+        order_uids = [row[0] for row in (
+            session.query(PaymentReceiptItemTable.order_uid)
+            .filter(PaymentReceiptItemTable.receipt_id == receipt_id)
+            .order_by(PaymentReceiptItemTable.order_uid.asc())
+            .all()
+        )]
+        (
+            session.query(OrderTable)
+            .filter(OrderTable.uid.in_(order_uids))
+            .order_by(OrderTable.uid.asc())
+            .populate_existing()
+            .with_for_update()
+            .all()
+        )
+        allocation_map = _locked_receipt_allocations(
+            session, order_uids, exclude_receipt_id=receipt_id
+        )
         receipt = (
             session.query(PaymentReceiptTable)
             .filter(PaymentReceiptTable.id == receipt_id)
+            .populate_existing()
             .with_for_update()
             .first()
         )
@@ -427,17 +1127,40 @@ def review_receipt(receipt_id: int, action: str, review_remark: str, operator_pa
         if receipt.status != "pending":
             raise ValueError("该收款单已经审核")
         if action == "approve":
-            items = session.query(PaymentReceiptItemTable).filter_by(receipt_id=receipt.id).all()
+            items = (
+                session.query(PaymentReceiptItemTable)
+                .filter_by(receipt_id=receipt.id)
+                .order_by(PaymentReceiptItemTable.order_uid.asc())
+                .populate_existing()
+                .with_for_update()
+                .all()
+            )
+            for item in items:
+                allocations = allocation_map[item.order_uid]
+                if allocations["approved_settled"]:
+                    raise ValueError(f"订单 {item.order_id} 已结清，请驳回本收据")
+                if receipt.settlement_status == "settled" and allocations["pending_receipts"]:
+                    blockers = "、".join(allocations["pending_receipts"])
+                    raise ValueError(f"订单 {item.order_id} 存在其他待审核收据 {blockers}，请先审核或驳回，再批准结清")
             for item in items:
                 quote = get_current_quote(session, item.order_uid)
-                if quote is None or not quote_is_fresh(session, quote):
-                    raise ValueError(f"订单 {item.order_id} 报价已失效，请驳回后重新登记")
-                if money(quote.receivable_amount) != money(item.receivable_snapshot):
+                if quote is None:
+                    raise ValueError(f"订单 {item.order_id} 尚无有效报价，请驳回后重新登记")
+                receivable = quote_pricing_state(session, quote)["receivable_amount"]
+                if money(receivable) != money(item.receivable_snapshot):
                     raise ValueError(f"订单 {item.order_id} 应收已变化，请驳回后重新登记")
-                allocations = _allocation_totals(session, item.order_uid, exclude_receipt_id=receipt.id)
-                available = money(money(quote.receivable_amount) - allocations["approved"] - allocations["pending"])
+                allocations = allocation_map[item.order_uid]
+                available = money(receivable - allocations["approved"] - allocations["pending"])
                 if money(item.amount) > available:
                     raise ValueError(f"订单 {item.order_id} 可收余额不足，请驳回后重新登记")
+                item.settlement_difference = (
+                    money(max(receivable - allocations["approved"] - money(item.amount), Decimal("0.00")))
+                    if receipt.settlement_status == "settled"
+                    else (Decimal("0.00") if receipt.settlement_status == "unsettled" else None)
+                )
+        # The accounting cutoff uses the actual review time, after any wait
+        # for order locks and validation (which can cross midnight).
+        now = time.strftime("%Y-%m-%d %H:%M:%S")
         receipt.status = "approved" if action == "approve" else "rejected"
         receipt.reviewer_id = operator["id"]
         receipt.reviewer_name = operator["name"]
@@ -449,19 +1172,33 @@ def review_receipt(receipt_id: int, action: str, review_remark: str, operator_pa
 
 
 def accounts_receivable_ledger(
-    as_of: str,
+    as_of: str = None,
     page=1,
     page_size=20,
     customer_id=None,
     owner_id=None,
     settlement_status=None,
     query_text="",
+    date_from=None,
+    date_to=None,
 ) -> dict:
+    date_to = date_to or as_of or datetime.now().strftime("%Y-%m-%d")
     try:
-        datetime.strptime(as_of, "%Y-%m-%d")
+        end_date = datetime.strptime(date_to, "%Y-%m-%d")
     except ValueError as exc:
-        raise ValueError("as_of 必须为 YYYY-MM-DD") from exc
-    cutoff = f"{as_of} 23:59:59"
+        raise ValueError("date_to 必须为 YYYY-MM-DD") from exc
+
+    start_cutoff = None
+    if date_from:
+        try:
+            start_date = datetime.strptime(date_from, "%Y-%m-%d")
+        except ValueError as exc:
+            raise ValueError("date_from 必须为 YYYY-MM-DD") from exc
+        if start_date > end_date:
+            raise ValueError("date_from 不能晚于 date_to")
+        start_cutoff = f"{date_from} 00:00:00"
+
+    cutoff = f"{date_to} 23:59:59"
     with SessionFactory() as session:
         quote_rows = (
             session.query(OrderQuoteVersionTable)
@@ -482,13 +1219,18 @@ def accounts_receivable_ledger(
             latest_quotes.setdefault(quote.order_uid, quote)
 
         approved_rows = (
-            session.query(PaymentReceiptItemTable.order_uid, func.coalesce(func.sum(PaymentReceiptItemTable.amount), 0))
+            session.query(
+                PaymentReceiptItemTable.order_uid,
+                func.coalesce(func.sum(PaymentReceiptItemTable.amount), 0),
+                func.coalesce(func.sum(PaymentReceiptItemTable.settlement_difference), 0),
+            )
             .join(PaymentReceiptTable, PaymentReceiptTable.id == PaymentReceiptItemTable.receipt_id)
             .filter(PaymentReceiptTable.status == "approved", PaymentReceiptTable.review_date <= cutoff)
             .group_by(PaymentReceiptItemTable.order_uid)
             .all()
         )
-        approved_map = {uid: money(amount) for uid, amount in approved_rows}
+        approved_map = {uid: money(amount) for uid, amount, _ in approved_rows}
+        settlement_difference_map = {uid: money(difference) for uid, _, difference in approved_rows}
         pending_rows = (
             session.query(PaymentReceiptItemTable.order_uid, func.coalesce(func.sum(PaymentReceiptItemTable.amount), 0))
             .join(PaymentReceiptTable, PaymentReceiptTable.id == PaymentReceiptItemTable.receipt_id)
@@ -507,6 +1249,8 @@ def accounts_receivable_ledger(
         rows = []
         for order in orders:
             quote = latest_quotes[order.uid]
+            if start_cutoff and quote.effective_date < start_cutoff:
+                continue
             customer = order.customers[0] if order.customers else None
             if customer_id and (customer is None or customer.id != customer_id):
                 continue
@@ -516,16 +1260,18 @@ def accounts_receivable_ledger(
                 text = query_text.lower()
                 if text not in (order.order_id or "").lower() and text not in (order.customer_name or "").lower():
                     continue
-            receivable = money(quote.receivable_amount)
+            pricing = quote_pricing_state(session, quote)
+            receivable = pricing["receivable_amount"]
             received = approved_map.get(order.uid, Decimal("0.00"))
-            outstanding = money(max(receivable - received, Decimal("0.00")))
+            settlement_difference = settlement_difference_map.get(
+                order.uid, Decimal("0.00")
+            )
+            outstanding = money(
+                max(receivable - received - settlement_difference, Decimal("0.00"))
+            )
             status = "paid" if outstanding == 0 else ("partial" if received > 0 else "unpaid")
             if settlement_status and settlement_status != status:
                 continue
-            current_quote = get_current_quote(session, order.uid)
-            is_current_stale = bool(
-                quote.is_final and current_quote is not None and current_quote.id == quote.id and not quote_is_fresh(session, quote)
-            )
             rows.append({
                 "order_uid": order.uid,
                 "order_id": order.order_id,
@@ -534,27 +1280,37 @@ def accounts_receivable_ledger(
                 "quoter_id": quote.quoter_id,
                 "quoter_name": quote.quoter_name,
                 "effective_date": quote.effective_date,
-                "weight_snapshot": decimal_json(quote.weight_snapshot, WEIGHT),
+                "weight_snapshot": decimal_json(pricing["weight_snapshot"], WEIGHT),
+                "billing_weight": decimal_json(pricing["billing_weight"], WEIGHT),
                 "unit_price": decimal_json(quote.unit_price, UNIT_PRICE),
                 "surcharge": decimal_json(quote.surcharge),
                 "receivable_amount": decimal_json(receivable),
                 "received_amount": decimal_json(received),
                 "outstanding_amount": decimal_json(outstanding),
+                "settlement_difference": decimal_json(settlement_difference),
                 "pending_amount": decimal_json(pending_map.get(order.uid, 0)),
                 "settlement_status": status,
-                "quote_stale": is_current_stale,
             })
         rows.sort(key=lambda item: (item["effective_date"] or "", item["order_id"] or ""), reverse=True)
         totals = {
             "receivable_amount": decimal_json(sum((money(row["receivable_amount"]) for row in rows), Decimal("0"))),
             "received_amount": decimal_json(sum((money(row["received_amount"]) for row in rows), Decimal("0"))),
             "outstanding_amount": decimal_json(sum((money(row["outstanding_amount"]) for row in rows), Decimal("0"))),
+            "settlement_difference": decimal_json(sum((money(row["settlement_difference"]) for row in rows), Decimal("0"))),
             "pending_amount": decimal_json(sum((money(row["pending_amount"]) for row in rows), Decimal("0"))),
             "order_count": len(rows),
         }
         total = len(rows)
         start = (page - 1) * page_size
-        return {"items": rows[start:start + page_size], "totals": totals, "total": total, "page": page, "page_size": page_size}
+        return {
+            "items": rows[start:start + page_size],
+            "totals": totals,
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "date_from": date_from,
+            "date_to": date_to,
+        }
 
 
 def list_sales_bonus_rates() -> list:
@@ -635,11 +1391,10 @@ def salesperson_followup_bonus(worker_id: int, month: str) -> dict:
         total_weight = Decimal("0.000")
         estimated_bonus = Decimal("0.00")
         for quote, order in quote_rows:
-            if not quote_is_fresh(session, quote):
-                continue
+            pricing = quote_pricing_state(session, quote)
             applied_rate = _rate_for_date(rates, quote.effective_date)
             rate_value = unit_price(applied_rate.rate_per_kg if applied_rate else 0)
-            quote_weight = weight(quote.weight_snapshot)
+            quote_weight = pricing["weight_snapshot"]
             order_bonus = money(quote_weight * rate_value)
             orders.append({
                 "order_uid": order.uid,
