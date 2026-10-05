@@ -136,6 +136,7 @@ def get_packing_lists(
     search: str = None,
     box_status: str = None,
     exclude_box_status: bool = False,
+    creator_id: int = None,
 ) -> dict:
     """获取装箱单列表（分页）
 
@@ -164,6 +165,7 @@ def get_packing_lists(
         search=search,
         box_status=box_status,
         exclude_box_status=exclude_box_status,
+        creator_id=creator_id,
     )
 
 
@@ -211,9 +213,12 @@ def add_box(
     )
 
 
-def update_box(uid: str, data: dict) -> bool:
-    """更新箱子信息"""
-    return box_model.update(uid, data)
+def update_box(uid: str, data: dict, *, return_details: bool = False, confirm_outbound=False):
+    """Pure details by default; HTTP may compose supplemental outbound registration."""
+    from services.outbound_service import update_cargo_details
+    result = update_cargo_details(uid, data, model=box_model,
+                                  confirm_outbound=confirm_outbound, source="box_details")
+    return result if return_details else bool(result)
 
 
 def weigh_box(uid: str, weight: float) -> bool:
@@ -322,9 +327,9 @@ def ship_boxes(packing_list_uid: str, box_uids: List[str]) -> dict:
     return box_model.batch_ship(packing_list_uid, box_uids)
 
 
-def undo_ship_box(uid: str) -> bool:
-    """撤销单箱出货：将已出库回退为待出库。"""
-    return box_model.undo_ship(uid)
+def undo_ship_box(uid: str, *, operator=None) -> bool:
+    """撤销单箱出货：将已出库回退为待出库，并保留原历史。"""
+    return box_model.undo_ship(uid, operator=operator)
 
 
 # ---------------------------------------------------------------------------

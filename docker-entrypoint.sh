@@ -83,8 +83,14 @@ except:
 " 2>/dev/null)
 
     if [ "$HAS_VERSION" = "no" ] && [ "$HAS_TABLES" = "yes" ]; then
-        echo "Existing database detected without Alembic version. Stamping as current..."
-        alembic stamp head
+        if [ -z "${ALEMBIC_BASELINE_REVISION:-}" ] || [ "$ALEMBIC_BASELINE_REVISION" = "head" ] || [ "$ALEMBIC_BASELINE_REVISION" = "heads" ]; then
+            echo "ERROR: Existing database has no Alembic version. Set ALEMBIC_BASELINE_REVISION to the verified schema revision before upgrading."
+            exit 1
+        fi
+        echo "Stamping existing database at verified baseline ${ALEMBIC_BASELINE_REVISION}..."
+        alembic stamp "$ALEMBIC_BASELINE_REVISION"
+        echo "Running pending migrations..."
+        alembic upgrade head
     elif [ "$HAS_VERSION" = "no" ] && [ "$HAS_TABLES" = "no" ]; then
         echo "Fresh database detected. Running all migrations..."
         alembic upgrade head

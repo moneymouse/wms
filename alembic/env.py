@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Import all models to register them with Base.metadata
 from data.database import Base
+from data.intake import IntakeTable, IntakePhotoTable  # noqa: F401
 from data.DB import OrderTable, CargoTable  # noqa: F401
 from data.user.User import UserTable  # noqa: F401
 from data.user.Role import RoleTable  # noqa: F401
@@ -28,6 +29,10 @@ from data.packing.PackingList import (  # noqa: F401
 from data.finance.BonusRate import BonusRateTable  # noqa: F401
 from data.finance.BonusItem import BonusItemTable  # noqa: F401
 from data.DB import CustomsCodeTable, GoodsNameTable, ExcelTemplateTable  # noqa: F401
+from data.order_version import (  # noqa: F401
+    OrderVersionTable,
+    OrderVersionChangeTable,
+)
 
 # this is the Alembic Config object
 config = context.config

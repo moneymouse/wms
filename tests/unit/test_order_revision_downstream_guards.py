@@ -1,14 +1,14 @@
-"""订单收据修订窗口的下游写入守卫。"""
+"""历史修订记录不再限制出库和奖金分配。"""
 
 from unittest.mock import patch
 
 import pytest
+from services.outbound_service import update_cargo_details
 
 from data.DB import (
+    BoxCostRecordTable,
     CargoTable,
-    ORDER_REVISION_OPEN_MESSAGE,
     OrderReceiptRevisionTable,
-    OrderRevisionOpenError,
     OrderTable,
 )
 from data.finance.BonusItem import BonusItemTable
@@ -17,9 +17,12 @@ from data.packing.PackingList import PackingListTable
 from data.user.Role import RoleTable
 from data.user.User import UserTable
 from services import work_finance_service
+from services.order_edit_policy import OrderEditConflictError
 
 
-def _seed_packing_list(session, *, open_revision=True, include_unassigned=False):
+def _seed_packing_list(
+    session, *, open_revision=True, include_unassigned=False, outbound=False
+):
     operator = UserTable(
         phone="13890000001",
         name="修订操作员",
@@ -47,7 +50,7 @@ def _seed_packing_list(session, *, open_revision=True, include_unassigned=False)
         tag="REVISION-PL-001_1",
         count=1,
         weight=2.5,
-        status=0,
+        status=1 if outbound else 0,
         archive=False,
         packing_list_uid=packing_list.uid,
         target_order_uid=order.uid,
@@ -55,11 +58,26 @@ def _seed_packing_list(session, *, open_revision=True, include_unassigned=False)
         real_en_name="测试货物",
         piece_count=1,
         box_number=1,
-        waybill_id="",
+        waybill_id="WB-OLD" if outbound else "",
+        date="2026-09-04 09:02" if outbound else None,
         bonus_assigned=False,
         create_date="2026-09-04 09:01",
     )
     session.add_all([operator, order, packing_list, assigned_box])
+    if outbound:
+        session.add(
+            BoxCostRecordTable(
+                box_uid=assigned_box.uid,
+                packing_list_uid=packing_list.uid,
+                order_uid=order.uid,
+                transportation_name="",
+                waybill_id="WB-OLD",
+                weight=2.5,
+                unit_cost=10,
+                total_cost=25,
+                create_date="2026-09-04 09:02",
+            )
+        )
     if include_unassigned:
         session.add(
             CargoTable(
@@ -101,18 +119,20 @@ def _headers(token):
     return {"x-token": token, "Content-Type": "application/json"}
 
 
-def test_recording_waybill_during_revision_does_not_ship_box(setup_test_database):
+def test_first_waybill_during_revision_creates_outbound_snapshot(
+    setup_test_database,
+):
     session = setup_test_database
     _, box, _ = _seed_packing_list(session)
     box_uid = box.uid
 
-    with pytest.raises(OrderRevisionOpenError, match=ORDER_REVISION_OPEN_MESSAGE):
-        box_model.update(box_uid, {"waybill_id": "WB-REVISION-001"})
+    assert update_cargo_details(box_uid, {"waybill_id": "WB-REVISION-001"}, confirm_outbound=True)
 
     session.expire_all()
-    unchanged = session.query(CargoTable).filter_by(uid=box_uid).one()
-    assert unchanged.status == 0
-    assert unchanged.waybill_id == ""
+    changed = session.query(CargoTable).filter_by(uid=box_uid).one()
+    assert changed.status == 1
+    assert changed.waybill_id == "WB-REVISION-001"
+    assert session.query(BoxCostRecordTable).filter_by(box_uid=box_uid).count() == 1
 
 
 def test_recording_waybill_without_revision_still_ships_box(setup_test_database):
@@ -120,7 +140,7 @@ def test_recording_waybill_without_revision_still_ships_box(setup_test_database)
     _, box, _ = _seed_packing_list(session, open_revision=False)
     box_uid = box.uid
 
-    assert box_model.update(box_uid, {"waybill_id": "WB-NORMAL-001"}) is True
+    assert update_cargo_details(box_uid, {"waybill_id": "WB-NORMAL-001"}, confirm_outbound=True)
 
     session.expire_all()
     shipped = session.query(CargoTable).filter_by(uid=box_uid).one()
@@ -129,23 +149,24 @@ def test_recording_waybill_without_revision_still_ships_box(setup_test_database)
     assert shipped.date is not None
 
 
-def test_legacy_batch_shipping_is_blocked_during_revision(setup_test_database):
+def test_legacy_batch_shipping_implementation_is_removed(setup_test_database):
     session = setup_test_database
     _, box, packing_list = _seed_packing_list(session)
     box_uid = box.uid
     packing_list_uid = packing_list.uid
 
-    with pytest.raises(OrderRevisionOpenError, match=ORDER_REVISION_OPEN_MESSAGE):
-        box_model._legacy_batch_ship(packing_list_uid, [box_uid])
+    assert not hasattr(box_model, "_legacy_batch_ship")
+    with pytest.raises(ValueError, match="旧批量出库方法已停用"):
+        box_model.batch_ship(packing_list_uid, [box_uid])
 
     session.expire_all()
     assert session.query(CargoTable).filter_by(uid=box_uid).one().status == 0
 
 
-def test_box_update_maps_revision_error_to_http_409(client, admin_token):
+def test_box_update_maps_edit_conflict_to_http_409(client, admin_token):
     with patch(
         "services.packing_list_service.update_box",
-        side_effect=OrderRevisionOpenError(),
+        side_effect=OrderEditConflictError("箱子归属已变化，请刷新后重试"),
     ):
         response = client.put(
             "/api/box/revision-box",
@@ -156,15 +177,15 @@ def test_box_update_maps_revision_error_to_http_409(client, admin_token):
     assert response.status_code == 409
     assert response.get_json() == {
         "code": 409,
-        "msg": ORDER_REVISION_OPEN_MESSAGE,
+        "msg": "箱子归属已变化，请刷新后重试",
     }
 
 
-def test_cargo_waybill_update_is_blocked_during_revision(
+def test_outbound_cargo_waybill_update_is_allowed_during_revision(
     client, setup_test_database, admin_token
 ):
     session = setup_test_database
-    _, box, _ = _seed_packing_list(session)
+    _, box, _ = _seed_packing_list(session, outbound=True)
     box_uid = box.uid
 
     response = client.put(
@@ -173,40 +194,45 @@ def test_cargo_waybill_update_is_blocked_during_revision(
         json={"waybill_id": "WB-REVISION-CARGO"},
     )
 
-    assert response.status_code == 409
-    assert response.get_json() == {
-        "code": 409,
-        "msg": ORDER_REVISION_OPEN_MESSAGE,
-    }
+    assert response.status_code == 200
     session.expire_all()
-    unchanged = session.query(CargoTable).filter_by(uid=box_uid).one()
-    assert unchanged.status == 0
-    assert unchanged.waybill_id == ""
+    changed = session.query(CargoTable).filter_by(uid=box_uid).one()
+    assert changed.status == 1
+    assert changed.waybill_id == "WB-REVISION-CARGO"
+    cost = session.query(BoxCostRecordTable).filter_by(box_uid=box_uid).one()
+    assert cost.waybill_id == "WB-OLD"
+    assert cost.total_cost == 25
 
 
-def test_bonus_assignment_during_revision_blocks_entire_batch(setup_test_database):
+def test_legacy_open_revision_allows_bonus_assignment(setup_test_database):
     session = setup_test_database
     _, box, packing_list = _seed_packing_list(session, include_unassigned=True)
-    session.add(
-        BonusItemTable(
-            label="修订守卫测试奖金",
-            base_amount=10,
-            worker_count_rule=1,
-            weight_min=0,
-            weight_max=100,
-            is_active=True,
-        )
+    worker = UserTable(
+        phone="13890000002",
+        name="奖金工人",
+        password="hashed-password",
+        status="approved",
+        roles=[RoleTable(name="worker", label="操作人员")],
     )
+    bonus_item = BonusItemTable(
+        label="历史记录测试奖金",
+        base_amount=10,
+        worker_count_rule=1,
+        weight_min=0,
+        weight_max=100,
+        is_active=True,
+    )
+    session.add_all([worker, bonus_item])
     session.commit()
 
-    with pytest.raises(OrderRevisionOpenError, match=ORDER_REVISION_OPEN_MESSAGE):
-        work_finance_service.assign_bonus_for_packing_list(
-            packing_list.uid,
-            [
-                {"box_uid": "unassigned-box"},
-                {"box_uid": box.uid},
-            ],
-        )
+    result = work_finance_service.assign_bonus_for_packing_list(
+        packing_list.uid,
+        [
+            {"box_uid": uid, "worker_ids": [worker.id], "bonus_item_id": bonus_item.id}
+            for uid in ["unassigned-box", box.uid]
+        ],
+    )
+    assert result["assigned_box_count"] == 2
 
     session.expire_all()
     boxes = {
@@ -215,11 +241,12 @@ def test_bonus_assignment_during_revision_blocks_entire_batch(setup_test_databas
         .filter(CargoTable.uid.in_(["unassigned-box", box.uid]))
         .all()
     }
-    assert boxes["unassigned-box"].bonus_assigned is False
-    assert boxes[box.uid].bonus_assigned is False
+    assert boxes["unassigned-box"].bonus_assigned is True
+    assert boxes[box.uid].bonus_assigned is True
+    assert session.query(OrderReceiptRevisionTable).one().status == "open"
 
 
-def test_unassigned_box_bonus_does_not_require_revision_guard(setup_test_database):
+def test_unassigned_box_bonus_does_not_lock_an_order(setup_test_database):
     session = setup_test_database
     _, _, packing_list = _seed_packing_list(
         session, open_revision=False, include_unassigned=True
@@ -244,7 +271,7 @@ def test_unassigned_box_bonus_does_not_require_revision_guard(setup_test_databas
     session.commit()
 
     with patch(
-        "services.work_finance_service.ensure_order_revision_closed_for_downstream"
+        "services.work_finance_service.lock_order_for_update"
     ) as guard:
         result = work_finance_service.assign_bonus_for_packing_list(
             packing_list.uid,
@@ -266,10 +293,10 @@ def test_unassigned_box_bonus_does_not_require_revision_guard(setup_test_databas
     )
 
 
-def test_bonus_controller_maps_revision_error_to_http_409(client, admin_token):
+def test_bonus_controller_maps_edit_conflict_to_http_409(client, admin_token):
     with patch(
         "services.work_finance_service.assign_bonus_for_packing_list",
-        side_effect=OrderRevisionOpenError(),
+        side_effect=OrderEditConflictError("箱子状态或归属已变化，请刷新后重试"),
     ):
         response = client.put(
             "/api/finance/bonus-allocation/packing-list/revision-packing-list",
@@ -280,5 +307,5 @@ def test_bonus_controller_maps_revision_error_to_http_409(client, admin_token):
     assert response.status_code == 409
     assert response.get_json() == {
         "code": 409,
-        "msg": ORDER_REVISION_OPEN_MESSAGE,
+        "msg": "箱子状态或归属已变化，请刷新后重试",
     }

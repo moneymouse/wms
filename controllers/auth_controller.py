@@ -20,6 +20,7 @@ from services.password_service import (
     reject_password_reset,
     admin_reset_password,
 )
+from services.order_edit_policy import OrderEditConflictError
 
 auth_bp = Blueprint("auth", __name__, url_prefix="/api")
 
@@ -178,7 +179,10 @@ def remove_user(user_id):
     current_user_id = payload.get("user_id")
     if current_user_id == user_id:
         return jsonify({"code": 403, "msg": "不能删除自己"}), 403
-    deleted, err = delete_user(user_id)
+    try:
+        deleted, err = delete_user(user_id)
+    except OrderEditConflictError as exc:
+        return jsonify({"code": 409, "msg": str(exc)}), 409
     if err:
         return jsonify({"code": 404, "msg": err}), 404
     return jsonify({"code": 200, "msg": "用户已删除", "data": deleted})

@@ -4,9 +4,11 @@ from io import BytesIO
 
 from flask import Blueprint, jsonify, make_response, request, send_file
 
-from Auth import verify, allow
+from Auth import get_payload_roles, get_token_payload, verify, allow
 from data import order_model, cargo_model
-from data.DB import OrderRevisionOpenError, ReceiptLockedError
+from data.packing import box_model
+from data.DB import CargoTable
+from data.database import SessionFactory
 from PDF import PDF
 from services.cargo_service import (
     get_cargo_with_tracking,
@@ -18,11 +20,89 @@ from services.cargo_service import (
 from utils.log import log
 from utils.audit import record_audit
 from services import receivable_service
+from services.order_edit_policy import OrderEditConflictError
+from services.outbound_service import (
+    confirm_outbound, parse_confirm_outbound, update_cargo_details,
+)
 
 cargo_bp = Blueprint("cargo", __name__, url_prefix="/api")
 logger = logging.getLogger(__name__)
 
 CARGO_SHIP_ROLES = ["admin", "store_manager", "salesperson", "clerk"]
+BOX_EDIT_ROLES = {"admin", "store_manager", "salesperson", "clerk"}
+BOX_ASSIGN_ROLES = {"admin", "store_manager", "salesperson", "clerk"}
+BOX_WEIGH_ROLES = {"admin", "store_manager", "salesperson", "worker"}
+CARGO_UPDATE_FIELDS = {
+    "origin_id",
+    "transfer_id",
+    "tag",
+    "count",
+    "weight",
+    "real_en_name",
+    "price",
+    "waybill_id",
+    "item_name",
+    "item_details",
+    "remark",
+    "box_number",
+    "piece_count",
+}
+CARGO_FORBIDDEN_UPDATE_FIELDS = {
+    "uid",
+    "target_order_uid",
+    "packing_list_uid",
+    "status",
+    "date",
+    "archive",
+    "bonus_item_id",
+    "bonus_assigned",
+    "bonus_assigned_by",
+    "bonus_assigned_date",
+}
+
+
+def _has_box_ids(cargo_ids) -> bool:
+    normalized = [str(uid) for uid in (cargo_ids or []) if uid]
+    if not normalized:
+        return False
+    with SessionFactory() as session:
+        return (
+            session.query(CargoTable.uid)
+            .filter(
+                CargoTable.uid.in_(normalized),
+                CargoTable.packing_list_uid.isnot(None),
+            )
+            .first()
+            is not None
+        )
+
+
+def _can_mutate_box_ids(cargo_ids, allowed_roles) -> bool:
+    if not _has_box_ids(cargo_ids):
+        return True
+    roles = set(get_payload_roles(get_token_payload() or {}))
+    return bool(roles.intersection(set(allowed_roles)))
+
+
+def _can_update_box_transfers(transfer_ids) -> bool:
+    normalized = [str(value).strip() for value in (transfer_ids or []) if str(value).strip()]
+    if not normalized:
+        return True
+    with SessionFactory() as session:
+        has_boxes = (
+            session.query(CargoTable.uid)
+            .filter(
+                CargoTable.transfer_id.in_(normalized),
+                CargoTable.packing_list_uid.isnot(None),
+            )
+            .first()
+            is not None
+        )
+    if not has_boxes:
+        return True
+    return bool(
+        set(get_payload_roles(get_token_payload() or {})).intersection(BOX_EDIT_ROLES)
+    )
 
 
 def _waybill_upload_response(code, msg, cargo_count=0, success_list=None, cargo_list=None):
@@ -112,10 +192,12 @@ def get_cargo():
 @verify
 @log(desc="Archive cargo.", is_json=True)
 def archive_cargo():
+    cargo_ids = json.loads(request.data)["cargo_id_list"]
+    if not _can_mutate_box_ids(cargo_ids, BOX_EDIT_ROLES):
+        return jsonify({"code": 403, "msg": "Permission denied"}), 403
     try:
-        for cargo_id in json.loads(request.data)["cargo_id_list"]:
-            cargo_model.archive(cargo_id)
-    except ReceiptLockedError as exc:
+        cargo_model.mutate_many(cargo_ids, "archive")
+    except OrderEditConflictError as exc:
         return jsonify({"code": 409, "msg": str(exc)}), 409
     return jsonify({"code": 200, "msg": "success"})
 
@@ -126,10 +208,12 @@ def archive_cargo():
 @verify
 @log(desc="Delete cargo.", is_json=True)
 def delete_cargo():
+    cargo_ids = json.loads(request.data)["cargo_id_list"]
+    if not _can_mutate_box_ids(cargo_ids, BOX_EDIT_ROLES):
+        return jsonify({"code": 403, "msg": "Permission denied"}), 403
     try:
-        for cargo_id in json.loads(request.data)["cargo_id_list"]:
-            cargo_model.delete(cargo_id)
-    except ReceiptLockedError as exc:
+        cargo_model.mutate_many(cargo_ids, "delete")
+    except OrderEditConflictError as exc:
         return jsonify({"code": 409, "msg": str(exc)}), 409
     return jsonify({"code": 200, "msg": "success"})
 
@@ -144,19 +228,12 @@ def unbind_cargo_from_order():
 
     if not isinstance(cargo_id_list, list) or len(cargo_id_list) == 0:
         return jsonify({"code": 400, "msg": "cargo_id_list is required"}), 400
-
-    success_ids = []
-    failed_ids = []
+    if not _can_mutate_box_ids(cargo_id_list, BOX_ASSIGN_ROLES):
+        return jsonify({"code": 403, "msg": "Permission denied"}), 403
 
     try:
-        for cargo_id in cargo_id_list:
-            if not cargo_id:
-                continue
-            if cargo_model.unbind_from_order(cargo_id):
-                success_ids.append(cargo_id)
-            else:
-                failed_ids.append(cargo_id)
-    except ReceiptLockedError as exc:
+        result = cargo_model.mutate_many(cargo_id_list, "unbind")
+    except OrderEditConflictError as exc:
         return jsonify({"code": 409, "msg": str(exc)}), 409
 
     return jsonify(
@@ -164,8 +241,8 @@ def unbind_cargo_from_order():
             "code": 200,
             "msg": "success",
             "data": {
-                "success": success_ids,
-                "failed": failed_ids,
+                "success": result["success"],
+                "failed": result["failed"],
             },
         }
     )
@@ -177,26 +254,67 @@ def unbind_cargo_from_order():
 @verify
 @log(desc="Update cargo.", is_json=True)
 def update_cargo(uid):
-    update_data = json.loads(request.data)
+    update_data = request.get_json() or {}
+    if not isinstance(update_data, dict):
+        return jsonify({"code": 400, "msg": "invalid request payload"}), 400
+    forbidden = sorted(set(update_data).intersection(CARGO_FORBIDDEN_UPDATE_FIELDS))
+    if forbidden:
+        return jsonify({"code": 400, "msg": f"不允许修改字段: {', '.join(forbidden)}"}), 400
+    try:
+        supplement = parse_confirm_outbound(update_data.get("confirm_outbound", True))
+    except ValueError as exc:
+        return jsonify({"code": 400, "msg": str(exc)}), 400
+    update_data = {key: value for key, value in update_data.items() if key in CARGO_UPDATE_FIELDS}
     cargo_record = cargo_model.read(uid)
     if cargo_record is None:
         return jsonify({"code": 404, "msg": "cargo not found"}), 404
-
-    old_waybill = cargo_record.get("waybill_id")
-
-    new_waybill = update_data.get("waybill_id")
-
+    roles = set(get_payload_roles(get_token_payload() or {}))
+    requests_outbound = supplement and bool(str(update_data.get("waybill_id") or "").strip())
+    if (cargo_record.get("packing_list_uid") or requests_outbound) and not roles.intersection(CARGO_SHIP_ROLES):
+        return jsonify({"code": 403, "msg": "Permission denied"}), 403
+    if cargo_record.get("packing_list_uid"):
+        if "real_en_name" in update_data:
+            update_data["item_name"] = update_data.pop("real_en_name")
+        if "count" in update_data:
+            update_data["piece_count"] = update_data.pop("count")
     try:
-        cargo_model.update(uid, update_data)
-    except ReceiptLockedError as e:
-        return jsonify({"code": 409, "msg": str(e)}), 409
-    except OrderRevisionOpenError as e:
-        return jsonify({"code": 409, "msg": str(e)}), 409
-    except ValueError as e:
-        return jsonify({"code": 400, "msg": str(e)}), 400
-    if new_waybill and new_waybill != old_waybill:
-        background_register(uid, new_waybill)
+        result = update_cargo_details(
+            uid, update_data, confirm_outbound=supplement, source="cargo_details",
+            operator=get_token_payload() or {},
+        )
+    except LookupError as exc:
+        return jsonify({"code": 404, "msg": str(exc)}), 404
+    except PermissionError as exc:
+        return jsonify({"code": 403, "msg": str(exc)}), 403
+    except OrderEditConflictError as exc:
+        return jsonify({"code": 409, "msg": str(exc)}), 409
+    except ValueError as exc:
+        return jsonify({"code": 400, "msg": str(exc)}), 400
+    if result["waybill_changed"] and result["new_waybill_id"]:
+        background_register(uid, result["new_waybill_id"])
     return jsonify({"code": 200, "msg": "success"})
+
+
+@cargo_bp.put("/cargo/<string:uid>/outbound")
+@verify
+@allow(role=CARGO_SHIP_ROLES)
+@log(desc="Confirm cargo outbound.", is_json=True)
+def register_outbound(uid):
+    data = request.get_json(silent=True) if request.data else {}
+    if not isinstance(data, dict) or set(data) - {"occurred_at"}:
+        return jsonify({"code": 400, "msg": "only occurred_at may be supplied"}), 400
+    try:
+        result = confirm_outbound([uid], occurred_at=data.get("occurred_at"),
+                                  source="explicit", operator=get_token_payload() or {})
+    except LookupError as exc:
+        return jsonify({"code": 404, "msg": str(exc)}), 404
+    except PermissionError as exc:
+        return jsonify({"code": 403, "msg": str(exc)}), 403
+    except OrderEditConflictError as exc:
+        return jsonify({"code": 409, "msg": str(exc)}), 409
+    except ValueError as exc:
+        return jsonify({"code": 400, "msg": str(exc)}), 400
+    return jsonify({"code": 200, "data": result})
 
 
 # 出货（标记已发货）
@@ -205,7 +323,7 @@ def update_cargo(uid):
 @allow(role=CARGO_SHIP_ROLES)
 @log(desc="Output cargo.")
 def output(uid):
-    return jsonify({"code": 410, "msg": "请通过记录转单号完成出货"}), 410
+    return jsonify({"code": 410, "msg": "旧出库接口已停用，请录入转单号补登记，或调用 PUT /api/cargo/<uid>/outbound"}), 410
 
 
 # 录入货物重量和件数
@@ -217,11 +335,25 @@ def record_input(uid):
     record = json.loads(request.data)
     if not (record.get("weight") and record.get("count")):
         return jsonify({"code": 404, "msg": "lack param"})
+    cargo_record = cargo_model.read(uid)
+    if cargo_record is None:
+        return jsonify({"code": 404, "msg": "cargo not found"}), 404
+    if cargo_record.get("packing_list_uid"):
+        roles = set(get_payload_roles(get_token_payload() or {}))
+        if not roles.intersection(BOX_WEIGH_ROLES):
+            return jsonify({"code": 403, "msg": "Permission denied"}), 403
+        try:
+            box_model.update(uid, {"weight": record.get("weight")})
+        except OrderEditConflictError as exc:
+            return jsonify({"code": 409, "msg": str(exc)}), 409
+        except ValueError as exc:
+            return jsonify({"code": 400, "msg": str(exc)}), 400
+        return jsonify({"code": 200, "msg": "success"})
     try:
         cargo_model.update(
             uid, {"weight": record.get("weight", 0), "count": record.get("count", 0)}
         )
-    except ReceiptLockedError as exc:
+    except OrderEditConflictError as exc:
         return jsonify({"code": 409, "msg": str(exc)}), 409
     return jsonify({"code": 200, "msg": "success"})
 
@@ -338,8 +470,18 @@ def upload_order(mode):
             return _waybill_upload_response(400, "文件名不能为空"), 400
 
         transfer_map = parse_waybill_file(fp, filename)
-        register_list, track_err = apply_waybill_table(cargo_model, transfer_map)
-    except OrderRevisionOpenError as e:
+        if not _can_update_box_transfers(transfer_map.keys()):
+            return _waybill_upload_response(403, "Permission denied"), 403
+        supplement = parse_confirm_outbound(request.form.get("confirm_outbound", "true"))
+        if supplement and not set(get_payload_roles(get_token_payload() or {})).intersection(CARGO_SHIP_ROLES):
+            return _waybill_upload_response(403, "Permission denied"), 403
+        register_list, track_err = apply_waybill_table(
+            cargo_model, transfer_map, confirm_outbound=supplement,
+            operator=get_token_payload() or {},
+        )
+    except PermissionError as e:
+        return _waybill_upload_response(403, str(e), cargo_list=transfer_map), 403
+    except OrderEditConflictError as e:
         return (
             _waybill_upload_response(409, str(e), cargo_list=transfer_map),
             409,

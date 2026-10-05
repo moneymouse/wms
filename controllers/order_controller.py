@@ -3,9 +3,9 @@ import json
 import time
 
 from flask import Blueprint, jsonify, request
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 
-from Auth import verify, allow, get_token_payload
+from Auth import verify, allow, get_payload_roles, get_token_payload
 from data import (
     order_model,
     cargo_model,
@@ -17,8 +17,7 @@ from data.DB import (
     CargoTable,
     OrderQuoteVersionTable,
     OrderTable,
-    ReceiptLockedError,
-    ensure_order_receipt_unlocked,
+    lock_order_for_update,
 )
 from data.user.User import UserTable, user_model
 from utils.audit import record_audit
@@ -26,6 +25,14 @@ from utils.log import log
 from utils.quote_pdf import build_quote_pdf
 from services import receivable_service
 from services.cargo_service import add_cargos_to_order
+from services.order_edit_policy import OrderEditConflictError, build_edit_policy
+from services.address_recognition import AddressRecognitionError, parse_address
+from data.order_version import (
+    current_version_no,
+    get_version_detail,
+    list_historical_orders,
+    list_versions,
+)
 
 order_bp = Blueprint("order", __name__, url_prefix="/api")
 
@@ -56,6 +63,25 @@ ORDER_SEARCH_FIELDS = [
     "update_date",
     "tag_all",
 ]
+
+ORDER_UPDATE_FIELDS = {
+    "order_id",
+    "transportation",
+    "receiver",
+    "receiver_phone",
+    "mail",
+    "country",
+    "province",
+    "city",
+    "address",
+    "en_name",
+    "cn_name",
+    "total_weight",
+    "post_code",
+    "zip_code",
+    "order_date",
+    "tag_all",
+}
 
 
 def _serialize_order_list_row(order):
@@ -123,6 +149,30 @@ def _order_pdf_dict(order):
         "address": order.address,
         "transportation": order.transportation,
     }
+
+
+@order_bp.post("/orders/parse-address")
+@verify
+def parse_order_address():
+    """Parse a draft address without order writes or raw-address audit logs."""
+    try:
+        if request.content_length and request.content_length > 32 * 1024:
+            raise AddressRecognitionError("请求过大，地址最多可输入 4000 个字符", 413)
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            raise AddressRecognitionError("请求须为 JSON 对象")
+        result = parse_address(data.get("address"))
+        response = jsonify({"code": 200, "data": result})
+    except AddressRecognitionError as exc:
+        response = jsonify({"code": exc.status, "msg": str(exc)})
+        response.status_code = exc.status
+    except Exception:
+        from flask import current_app
+        current_app.logger.error("Address recognition request failed")
+        response = jsonify({"code": 500, "msg": "地址解析暂时失败，请稍后重试或手动填写"})
+        response.status_code = 500
+    response.headers["Cache-Control"] = "private, no-store"
+    return response
 
 
 # 创建订单
@@ -205,10 +255,6 @@ def create_order():
         record["order_date"] = time.strftime("%Y-%m-%d %H:%M")
         order_uid = order_model.create(record)
 
-        # 关联客户
-        if customer_id:
-            order_model.add_customer(order_uid, customer_id)
-
     except RecordExist:
         return jsonify({"code": 500, "msg": "Record Existed"})
 
@@ -285,92 +331,76 @@ def get_order(uid):
     data = order_model.read(uid)
     if data is not None:
         with SessionFactory() as session:
-            lock_state = receivable_service.get_order_receipt_lock_state(session, uid)
-            data["receipt_locked"] = lock_state["status"] == "locked"
-            data["receipt_lock"] = lock_state
+            payload = get_token_payload() or {}
+            try:
+                policy = build_edit_policy(
+                    session,
+                    uid,
+                    get_payload_roles(payload),
+                    payload.get("user_id") or payload.get("id"),
+                )
+                data.update(policy)
+                data["current_version"] = current_version_no(session, uid)
+            except LookupError:
+                # Compatibility for legacy/model-mocked callers. A real persisted
+                # order always resolves through the policy query above.
+                pass
     return jsonify({"code": 200, "data": data})
 
 
-@order_bp.post("/orders/<string:uid>/receipt-unlock")
+@order_bp.get("/orders/<string:uid>/versions")
 @verify
-@allow(role=["admin"])
-def unlock_order_receipt_revision(uid):
-    body = request.get_json(silent=True) or {}
-    reason = body.get("reason")
-    try:
-        before = receivable_service.get_order_receipt_lock_state_by_uid(uid)
-        result = receivable_service.open_order_receipt_revision(
-            order_uid=uid,
-            reason=reason,
-            operator_payload=get_token_payload() or {},
-        )
-        record_audit(
-            event_type="order_receipt_revision",
-            target_type="order",
-            target_id=uid,
-            action="order_unlock",
-            before_data=before,
-            after_data=result,
-            remark=result["revision"]["reason"],
-        )
-        return jsonify({"code": 200, "msg": "订单已进入修订状态", "data": result})
-    except receivable_service.OrderReceiptRevisionConflictError as exc:
-        return jsonify({"code": 409, "msg": str(exc)}), 409
-    except PermissionError as exc:
-        return jsonify({"code": 403, "msg": str(exc)}), 403
-    except LookupError as exc:
-        return jsonify({"code": 404, "msg": str(exc)}), 404
-    except ValueError as exc:
-        return jsonify({"code": 400, "msg": str(exc)}), 400
+@allow(role=["admin", "store_manager"])
+def get_order_versions(uid):
+    page = request.args.get("p", 1, type=int)
+    page_size = request.args.get("s", 20, type=int)
+    return jsonify({"code": 200, "data": list_versions(uid, page, page_size)})
 
 
-@order_bp.post("/orders/<string:uid>/receipt-relock")
+@order_bp.get("/orders/<string:uid>/versions/<int:version_no>")
 @verify
-@allow(role=["admin"])
-def relock_order_receipt_revision(uid):
-    body = request.get_json(silent=True) or {}
-    remark = body.get("remark")
-    try:
-        before = receivable_service.get_order_receipt_lock_state_by_uid(uid)
-        result = receivable_service.close_order_receipt_revision(
-            order_uid=uid,
-            remark=remark,
-            operator_payload=get_token_payload() or {},
-        )
-        record_audit(
-            event_type="order_receipt_revision",
-            target_type="order",
-            target_id=uid,
-            action="order_relock",
-            before_data=before,
-            after_data=result,
-            remark=(remark or "").strip() or "管理员手动完成修订",
-        )
-        return jsonify({"code": 200, "msg": "订单已重新锁定", "data": result})
-    except receivable_service.OrderReceiptRevisionConflictError as exc:
-        return jsonify({"code": 409, "msg": str(exc)}), 409
-    except PermissionError as exc:
-        return jsonify({"code": 403, "msg": str(exc)}), 403
-    except LookupError as exc:
-        return jsonify({"code": 404, "msg": str(exc)}), 404
-    except ValueError as exc:
-        return jsonify({"code": 400, "msg": str(exc)}), 400
+@allow(role=["admin", "store_manager"])
+def get_order_version(uid, version_no):
+    result = get_version_detail(uid, version_no)
+    if result is None:
+        return jsonify({"code": 404, "msg": "订单版本不存在"}), 404
+    return jsonify({"code": 200, "data": result})
 
 
-# 更新订单
+@order_bp.get("/order-history")
+@verify
+@allow(role=["admin", "store_manager"])
+def get_order_history():
+    deleted_only = request.args.get("deleted_only", "1").lower() not in {
+        "0",
+        "false",
+        "no",
+    }
+    result = list_historical_orders(
+        deleted_only=deleted_only,
+        query_text=request.args.get("q", "", type=str),
+        page=request.args.get("p", 1, type=int),
+        page_size=request.args.get("s", 20, type=int),
+    )
+    return jsonify({"code": 200, "data": result})
+
+
 @order_bp.put("/orders/<string:uid>")
 @allow()
 @verify
 @log(desc="Update order.", is_json=True)
 def update_order(uid):
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        return jsonify({"code": 400, "msg": "订单字段格式不正确"}), 400
+    record = {key: value for key, value in body.items() if key in ORDER_UPDATE_FIELDS}
     try:
-        order_model.update(uid, json.loads(request.data))
-    except ReceiptLockedError as exc:
+        order_model.update(uid, record)
+    except OrderEditConflictError as exc:
         return jsonify({"code": 409, "msg": str(exc)}), 409
     return jsonify({"code": 200, "msg": "success"})
 
 
-# 归档单个订单
 @order_bp.post("/orders/<string:uid>/archive")
 @allow()
 @verify
@@ -378,7 +408,7 @@ def update_order(uid):
 def archive_order(uid):
     try:
         order_model.archive(uid)
-    except ReceiptLockedError as exc:
+    except OrderEditConflictError as exc:
         return jsonify({"code": 409, "msg": str(exc)}), 409
     return jsonify({"code": 200, "msg": "success"})
 
@@ -391,9 +421,8 @@ def archive_order(uid):
 def archive_order_list():
     uid_list = json.loads(request.data)["uid_list"]
     try:
-        for uid in uid_list:
-            order_model.archive(uid)
-    except ReceiptLockedError as exc:
+        order_model.archive_many(uid_list)
+    except OrderEditConflictError as exc:
         return jsonify({"code": 409, "msg": str(exc)}), 409
     return jsonify({"code": 200, "msg": "success"})
 
@@ -406,7 +435,7 @@ def archive_order_list():
 def delete_order(uid):
     try:
         order_model.delete(uid)
-    except ReceiptLockedError as exc:
+    except OrderEditConflictError as exc:
         return jsonify({"code": 409, "msg": str(exc)}), 409
     return jsonify({"code": 200, "msg": "success"})
 
@@ -419,9 +448,8 @@ def delete_order(uid):
 def delete_order_list():
     uid_list = json.loads(request.data)["uid_list"]
     try:
-        for uid in uid_list:
-            order_model.delete(uid)
-    except ReceiptLockedError as exc:
+        order_model.delete_many(uid_list)
+    except OrderEditConflictError as exc:
         return jsonify({"code": 409, "msg": str(exc)}), 409
     return jsonify({"code": 200, "msg": "success"})
 
@@ -439,7 +467,7 @@ def add_cargo(uid):
 
     try:
         result = add_cargos_to_order(uid, cargo_delta)
-    except ReceiptLockedError as exc:
+    except OrderEditConflictError as exc:
         return jsonify({"code": 409, "msg": str(exc)}), 409
     except LookupError as exc:
         return jsonify({"code": 404, "msg": str(exc)}), 404
@@ -470,11 +498,11 @@ def update_order_salesman(uid):
     if not payload:
         return jsonify({"code": 401, "msg": "Unauthorized"}), 401
 
-    current_user_id = payload.get("id")
-    current_user_role = payload.get("role")
+    current_user_id = payload.get("user_id") or payload.get("id")
+    current_user_roles = set(get_payload_roles(payload))
 
     # Check permission: only admin or current salesman can modify
-    is_admin = current_user_role == "admin"
+    is_admin = "admin" in current_user_roles
     is_current_salesman = order_model.is_salesman(uid, current_user_id)
 
     if not is_admin and not is_current_salesman:
@@ -493,7 +521,10 @@ def update_order_salesman(uid):
 
     # If user_id is None, remove the salesman
     if user_id is None:
-        success = order_model.remove_salesman(uid)
+        try:
+            success = order_model.remove_salesman(uid)
+        except OrderEditConflictError as exc:
+            return jsonify({"code": 409, "msg": str(exc)}), 409
         if success:
             return jsonify({"code": 200, "msg": "success", "data": None})
         return jsonify({"code": 404, "msg": "Order not found"}), 404
@@ -503,7 +534,10 @@ def update_order_salesman(uid):
     if not user:
         return jsonify({"code": 404, "msg": "User not found"}), 404
 
-    success = order_model.set_salesman(uid, user_id)
+    try:
+        success = order_model.set_salesman(uid, user_id)
+    except OrderEditConflictError as exc:
+        return jsonify({"code": 409, "msg": str(exc)}), 409
     if success:
         return jsonify(
             {"code": 200, "msg": "success", "data": order_model.get_salesman(uid)}
@@ -516,12 +550,22 @@ def update_order_salesman(uid):
 @allow(role=["admin", "store_manager", "salesperson", "finance"])
 def get_order_quotes(uid):
     with SessionFactory() as session:
-        order = session.query(OrderTable).filter(OrderTable.uid == uid).first()
+        order = (
+            session.query(OrderTable)
+            .filter(
+                OrderTable.uid == uid,
+                OrderTable.archive == False,  # noqa: E712
+            )
+            .first()
+        )
         if order is None:
             return jsonify({"code": 404, "msg": "订单不存在"}), 404
         rows = (
             session.query(OrderQuoteVersionTable)
-            .filter(OrderQuoteVersionTable.order_uid == uid)
+            .filter(
+                OrderQuoteVersionTable.order_uid == uid,
+                OrderQuoteVersionTable.archive == False,  # noqa: E712
+            )
             .order_by(OrderQuoteVersionTable.version_no.desc())
             .all()
         )
@@ -540,8 +584,6 @@ def create_order_quote(uid):
             operator_payload=get_token_payload() or {},
         )
     except receivable_service.QuoteConflictError as exc:
-        return jsonify({"code": 409, "msg": str(exc)}), 409
-    except ReceiptLockedError as exc:
         return jsonify({"code": 409, "msg": str(exc)}), 409
     except PermissionError as exc:
         return jsonify({"code": 403, "msg": str(exc)}), 403
@@ -570,7 +612,11 @@ def get_quote_approvals():
         rows = (
             session.query(OrderQuoteVersionTable, OrderTable)
             .join(OrderTable, OrderQuoteVersionTable.order_uid == OrderTable.uid)
-            .filter(OrderQuoteVersionTable.status == "pending")
+            .filter(
+                OrderTable.archive == False,  # noqa: E712
+                OrderQuoteVersionTable.archive == False,  # noqa: E712
+                OrderQuoteVersionTable.status == "pending",
+            )
             .order_by(OrderQuoteVersionTable.create_date.desc())
             .all()
         )
@@ -601,7 +647,12 @@ def review_quote_approval(quote_id):
     with SessionFactory() as session:
         quote = (
             session.query(OrderQuoteVersionTable)
-            .filter(OrderQuoteVersionTable.id == quote_id)
+            .join(OrderTable, OrderTable.uid == OrderQuoteVersionTable.order_uid)
+            .filter(
+                OrderQuoteVersionTable.id == quote_id,
+                OrderQuoteVersionTable.archive == False,  # noqa: E712
+                OrderTable.archive == False,  # noqa: E712
+            )
             .first()
         )
         if quote is None:
@@ -610,11 +661,37 @@ def review_quote_approval(quote_id):
             return jsonify({"code": 409, "msg": "该报价已审核"}), 409
 
         before_data = _quote_dict(session, quote)
+        order_before = None
         if action == "approve":
-            try:
-                ensure_order_receipt_unlocked(session, quote.order_uid)
-            except ReceiptLockedError as exc:
-                return jsonify({"code": 409, "msg": str(exc)}), 409
+            lock_order_for_update(session, quote.order_uid)
+            quote = (
+                session.query(OrderQuoteVersionTable)
+                .filter(
+                    OrderQuoteVersionTable.id == quote_id,
+                    OrderQuoteVersionTable.archive == False,  # noqa: E712
+                )
+                .populate_existing()
+                .with_for_update()
+                .first()
+            )
+            if quote is None:
+                return jsonify({"code": 404, "msg": "报价记录不存在"}), 404
+            if quote.status != "pending":
+                return jsonify({"code": 409, "msg": "该报价已审核"}), 409
+            from data.order_version import record_mutation, snapshot_order
+
+            order_before = snapshot_order(session, quote.order_uid)
+            previous_quote = receivable_service.get_current_quote(
+                session, quote.order_uid, for_update=True
+            )
+            previous_receivable = (
+                receivable_service.quote_pricing_state(
+                    session, previous_quote
+                )["receivable_amount"]
+                if previous_quote is not None
+                else None
+            )
+            approved_pricing = receivable_service.quote_pricing_state(session, quote)
             (
                 session.query(OrderQuoteVersionTable)
                 .filter(OrderQuoteVersionTable.order_uid == quote.order_uid)
@@ -623,6 +700,9 @@ def review_quote_approval(quote_id):
             quote.status = "approved"
             quote.is_final = True
             quote.effective_date = now
+            quote.weight_snapshot = approved_pricing["weight_snapshot"]
+            quote.billing_weight_snapshot = approved_pricing["billing_weight"]
+            quote.receivable_amount = approved_pricing["receivable_amount"]
             order = (
                 session.query(OrderTable)
                 .filter(OrderTable.uid == quote.order_uid)
@@ -639,6 +719,27 @@ def review_quote_approval(quote_id):
         quote.reviewer_id = operator["id"]
         quote.reviewer_name = operator["name"]
         quote.review_date = now
+        if action == "approve":
+            session.flush()
+            receivable_service._create_price_adjustment(
+                session,
+                order_uid=quote.order_uid,
+                previous_quote=previous_quote,
+                previous_receivable=previous_receivable,
+                new_quote=quote,
+                new_receivable=quote.receivable_amount,
+                creator=operator,
+                now=now,
+            )
+            record_mutation(
+                session,
+                quote.order_uid,
+                before=order_before,
+                after=snapshot_order(session, quote.order_uid),
+                action="order_transportation_updated",
+                summary="报价审核更新订单运输方式",
+                operator_payload=get_token_payload() or {},
+            )
         session.commit()
         session.refresh(quote)
         after_data = _quote_dict(session, quote)
@@ -670,6 +771,7 @@ def get_order_quote_pdf(uid):
             session.query(OrderQuoteVersionTable)
             .filter(
                 OrderQuoteVersionTable.order_uid == uid,
+                OrderQuoteVersionTable.archive == False,  # noqa: E712
                 OrderQuoteVersionTable.is_final == True,  # noqa: E712
             )
             .order_by(OrderQuoteVersionTable.version_no.desc())

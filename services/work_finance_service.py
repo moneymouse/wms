@@ -17,7 +17,7 @@ from data.DB import (
     CargoTable,
     OrderQuoteVersionTable,
     OrderTable,
-    ensure_order_revision_closed_for_downstream,
+    lock_order_for_update,
 )
 from data.finance import bonus_item_model
 from data.finance.BonusItem import BonusItemTable
@@ -185,7 +185,7 @@ def _pick_bonus_item(
 
 
 def get_worker_work_details(worker_id: int, month: Optional[str] = None) -> dict:
-    """获取某个员工的工作详情（打包工作 + 业务员订单）。"""
+    """获取工作详情；跟单归属和重量均实时读取订单现状，不使用快照。"""
     month = normalize_month(month)
 
     with SessionFactory() as session:
@@ -302,7 +302,8 @@ def get_worker_work_details(worker_id: int, month: Optional[str] = None) -> dict
             .join(OrderTable, OrderTable.uid == OrderQuoteVersionTable.order_uid)
             .filter(
                 OrderTable.archive == False,  # noqa: E712
-                OrderQuoteVersionTable.quoter_id == worker_id,
+                OrderTable.salesman_id == worker_id,
+                OrderQuoteVersionTable.archive == False,  # noqa: E712
                 OrderQuoteVersionTable.is_final == True,  # noqa: E712
                 OrderQuoteVersionTable.status.in_(["adopted", "approved"]),
                 OrderQuoteVersionTable.effective_date.like(f"{month}-%"),
@@ -312,11 +313,13 @@ def get_worker_work_details(worker_id: int, month: Optional[str] = None) -> dict
         )
         orders = []
         for quote, order in order_rows:
-            pricing = receivable_service.quote_pricing_state(session, quote)
+            current_weight = receivable_service.current_order_weight(
+                session, order.uid
+            )
             orders.append({
                 "uid": order.uid,
                 "order_id": order.order_id,
-                "total_weight": float(pricing["weight_snapshot"]),
+                "total_weight": float(current_weight),
                 "transportation": order.transportation,
                 "create_date": order.create_date,
                 "quote_effective_date": quote.effective_date,
@@ -452,6 +455,7 @@ def assign_bonus_for_packing_list(
     packing_list_uid: str,
     assignments: List[dict],
     operator_id: Optional[int] = None,
+    operator_payload: Optional[dict] = None,
 ) -> dict:
     """对某装箱单进行奖金分配。"""
     now = time.strftime("%Y-%m-%d %H:%M")
@@ -491,7 +495,43 @@ def assign_bonus_for_packing_list(
             assignment_rows.append((row, box))
 
         for order_uid in sorted(guarded_order_uids):
-            ensure_order_revision_closed_for_downstream(session, order_uid)
+            lock_order_for_update(session, order_uid)
+
+        candidate_order_by_box = {
+            box.uid: box.target_order_uid for _, box in assignment_rows
+        }
+        locked_boxes = (
+            session.query(BoxTable)
+            .filter(BoxTable.uid.in_(sorted(candidate_order_by_box)))
+            .order_by(BoxTable.uid.asc())
+            .populate_existing()
+            .with_for_update()
+            .all()
+        )
+        locked_box_map = {box.uid: box for box in locked_boxes}
+        from services.order_edit_policy import OrderEditConflictError
+
+        if len(locked_box_map) != len(candidate_order_by_box) or any(
+            box.archive
+            or box.packing_list_uid != packing_list_uid
+            or box.target_order_uid != candidate_order_by_box[box.uid]
+            for box in locked_boxes
+        ):
+            raise OrderEditConflictError("箱子状态或归属已变化，请刷新后重试")
+        assignment_rows = [
+            (row, locked_box_map[row["box_uid"]]) for row, _ in assignment_rows
+        ]
+
+        from data.order_version import (
+            new_correlation_id,
+            record_mutation,
+            snapshot_order,
+        )
+
+        before_by_order = {
+            order_uid: snapshot_order(session, order_uid)
+            for order_uid in sorted(guarded_order_uids)
+        }
 
         active_item_ids = {
             item.id
@@ -510,6 +550,8 @@ def assign_bonus_for_packing_list(
 
             worker_ids = [int(worker_id) for worker_id in worker_ids]
             worker_ids = list(dict.fromkeys(worker_ids))
+
+            current_worker_ids = sorted(worker.worker_id for worker in box.workers)
 
             if len(worker_ids) == 0:
                 raise ValueError(f"box {box_uid} must have at least one worker")
@@ -561,6 +603,19 @@ def assign_bonus_for_packing_list(
             box.bonus_assigned_date = now
             box.update_date = now
 
+        session.flush()
+        correlation_id = new_correlation_id()
+        for order_uid in sorted(guarded_order_uids):
+            record_mutation(
+                session,
+                order_uid,
+                before=before_by_order[order_uid],
+                after=snapshot_order(session, order_uid),
+                action="box_workers_updated",
+                summary="奖金分配时确认箱子操作员",
+                operator_payload=operator_payload or {"user_id": operator_id},
+                correlation_id=correlation_id,
+            )
         session.commit()
 
         remaining_unassigned = (

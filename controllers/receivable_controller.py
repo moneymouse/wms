@@ -42,6 +42,7 @@ def get_receivable_orders():
             date_from=request.args.get("date_from"),
             date_to=request.args.get("date_to"),
             owner_id=request.args.get("owner_id", type=int),
+            order_uid=request.args.get("order_uid"),
         )
         return jsonify({
             "code": 200,
@@ -49,6 +50,44 @@ def get_receivable_orders():
             **{k: result[k] for k in ("total", "page", "page_size")},
         })
     except (ValueError, PermissionError) as exc:
+        return _error_response(exc)
+
+
+@receivable_bp.get("/receivable-adjustments")
+@verify
+@allow(role=RECEIPT_VIEW_ROLES)
+def get_receivable_adjustments():
+    page = max(request.args.get("p", 1, type=int) or 1, 1)
+    page_size = min(max(request.args.get("s", 20, type=int) or 20, 1), 200)
+    try:
+        result = receivable_service.list_price_adjustments(
+            get_token_payload() or {},
+            status=request.args.get("status", "pending") or None,
+            query_text=request.args.get("q", ""),
+            page=page,
+            page_size=page_size,
+            owner_id=request.args.get("owner_id", type=int),
+            order_uid=request.args.get("order_uid"),
+        )
+        return jsonify({
+            "code": 200,
+            "data": result["items"],
+            **{key: result[key] for key in ("total", "page", "page_size")},
+        })
+    except (ValueError, PermissionError) as exc:
+        return _error_response(exc)
+
+
+@receivable_bp.get("/receivable-adjustments/<int:adjustment_id>")
+@verify
+@allow(role=RECEIPT_VIEW_ROLES)
+def get_receivable_adjustment(adjustment_id):
+    try:
+        result = receivable_service.get_price_adjustment_detail(
+            adjustment_id, get_token_payload() or {}
+        )
+        return jsonify({"code": 200, "data": result})
+    except (ValueError, PermissionError, LookupError) as exc:
         return _error_response(exc)
 
 
@@ -60,7 +99,6 @@ def create_receipt():
         result = receivable_service.create_receipt(
             request.get_json() or {}, get_token_payload() or {}
         )
-        closed_revision_events = result.pop("_closed_revision_events", [])
         record_audit(
             event_type="payment_receipt",
             target_type="receipt",
@@ -69,23 +107,6 @@ def create_receipt():
             after_data=result,
             remark=result.get("remark"),
         )
-        for revision in closed_revision_events:
-            record_audit(
-                event_type="order_receipt_revision",
-                target_type="order",
-                target_id=revision["order_uid"],
-                action="order_relock",
-                before_data={
-                    "status": "revision_open",
-                    "revision": revision,
-                },
-                after_data={
-                    "status": "locked",
-                    "closing_receipt_id": result["id"],
-                    "closing_receipt_no": result["receipt_no"],
-                },
-                remark=f"生成收款单 {result['receipt_no']} 后自动锁定",
-            )
         return jsonify({"code": 200, "msg": "收款单已提交审核", "data": result})
     except (ValueError, PermissionError) as exc:
         return _error_response(exc)
@@ -103,6 +124,7 @@ def get_receipts():
         page=page,
         page_size=page_size,
         query_text=request.args.get("q", ""),
+        owner_id=request.args.get("owner_id", type=int),
     )
     return jsonify({"code": 200, "data": result["items"], **{k: result[k] for k in ("total", "page", "page_size")}})
 

@@ -18,8 +18,6 @@ from data.DB import (
     CargoTable,
     OrderTable,
     TransportationModeTable,
-    ensure_order_revision_closed_for_downstream,
-    ensure_order_receipt_unlocked,
 )
 from data.customer.Customer import CustomerTable
 from data.database import Base, SessionFactory
@@ -206,6 +204,7 @@ class PackingListModel:
         search: str = None,
         box_status: str = None,
         exclude_box_status: bool = False,
+        creator_id: int = None,
     ) -> dict:
         page = max(int(page or 1), 1)
         page_size = min(max(int(page_size or 20), 1), 200)
@@ -239,6 +238,8 @@ class PackingListModel:
 
             if customer_id:
                 query = query.filter(PackingListTable.customer_id == customer_id)
+            if creator_id is not None:
+                query = query.filter(PackingListTable.creator_id == creator_id)
             if status:
                 query = query.filter(PackingListTable.status == status)
             if search:
@@ -302,6 +303,69 @@ class PackingListModel:
             record = s.query(PackingListTable).filter_by(uid=uid).first()
             if record is None:
                 return False
+            original_mark = record.list_number
+
+            assigned_order_uids = []
+            before_by_order = {}
+            mark_requested = "list_number" in data or "mark" in data
+            requested_mark = data.get("list_number")
+            if requested_mark is None:
+                requested_mark = data.get("mark")
+            mark_will_change = bool(
+                mark_requested
+                and self._normalize_mark(str(requested_mark or ""))
+                != record.list_number
+            )
+            if mark_will_change:
+                assigned_order_uids = sorted(
+                    {
+                        row[0]
+                        for row in s.query(BoxTable.target_order_uid)
+                        .filter(
+                            BoxTable.packing_list_uid == uid,
+                            BoxTable.target_order_uid.isnot(None),
+                        )
+                        .all()
+                    }
+                )
+                if assigned_order_uids:
+                    (
+                        s.query(OrderTable.uid)
+                        .filter(OrderTable.uid.in_(assigned_order_uids))
+                        .order_by(OrderTable.uid.asc())
+                        .with_for_update()
+                        .all()
+                    )
+                    from data.order_version import snapshot_order
+
+                    for order_uid in assigned_order_uids:
+                        before_by_order[order_uid] = snapshot_order(s, order_uid)
+                locked_boxes = (
+                    s.query(BoxTable)
+                    .filter(BoxTable.packing_list_uid == uid)
+                    .order_by(BoxTable.uid.asc())
+                    .populate_existing()
+                    .with_for_update()
+                    .all()
+                )
+                current_order_uids = sorted(
+                    {box.target_order_uid for box in locked_boxes if box.target_order_uid}
+                )
+                if current_order_uids != assigned_order_uids:
+                    from services.order_edit_policy import OrderEditConflictError
+
+                    raise OrderEditConflictError("箱子归属已变化，请刷新后重试")
+                record = (
+                    s.query(PackingListTable)
+                    .filter_by(uid=uid)
+                    .populate_existing()
+                    .with_for_update()
+                    .first()
+                )
+                if record is None or record.list_number != original_mark:
+                    from services.order_edit_policy import OrderEditConflictError
+
+                    raise OrderEditConflictError("装箱单已变化，请刷新后重试")
 
             if "list_number" in data or "mark" in data:
                 next_mark = data.get("list_number")
@@ -355,6 +419,25 @@ class PackingListModel:
                     record.customer_id = customer_id
 
             record.update_date = time.strftime("%Y-%m-%d %H:%M")
+            s.flush()
+            if mark_will_change and assigned_order_uids:
+                from data.order_version import (
+                    new_correlation_id,
+                    record_mutation,
+                    snapshot_order,
+                )
+
+                correlation_id = new_correlation_id()
+                for order_uid in assigned_order_uids:
+                    record_mutation(
+                        s,
+                        order_uid,
+                        before=before_by_order[order_uid],
+                        after=snapshot_order(s, order_uid),
+                        action="box_mark_updated",
+                        summary="修改箱子唛头",
+                        correlation_id=correlation_id,
+                    )
             s.commit()
             return True
         except Exception:
@@ -381,13 +464,90 @@ class PackingListModel:
             s.close()
 
     def delete(self, uid: str) -> bool:
-        """硬删除装箱单"""
+        """删除装箱单；存在成本历史时保留归档记录及箱子。"""
         s = SessionFactory()
         try:
             record = s.query(PackingListTable).filter_by(uid=uid).first()
             if record is None:
                 return False
-            s.delete(record)
+            order_uids = sorted(
+                {
+                    box.target_order_uid
+                    for box in record.boxes
+                    if box.target_order_uid
+                }
+            )
+            if order_uids:
+                (
+                    s.query(OrderTable.uid)
+                    .filter(OrderTable.uid.in_(order_uids))
+                    .order_by(OrderTable.uid.asc())
+                    .with_for_update()
+                    .all()
+                )
+            locked_boxes = (
+                s.query(BoxTable)
+                .filter(BoxTable.packing_list_uid == uid)
+                .order_by(BoxTable.uid.asc())
+                .populate_existing()
+                .with_for_update()
+                .all()
+            )
+            current_order_uids = sorted(
+                {box.target_order_uid for box in locked_boxes if box.target_order_uid}
+            )
+            if current_order_uids != order_uids:
+                from services.order_edit_policy import OrderEditConflictError
+
+                raise OrderEditConflictError("箱子归属已变化，请刷新后重试")
+            record = (
+                s.query(PackingListTable)
+                .filter(PackingListTable.uid == uid)
+                .populate_existing()
+                .with_for_update()
+                .first()
+            )
+            if record is None:
+                return False
+            from data.intake import IntakeTable
+
+            if s.query(IntakeTable.uid).filter(IntakeTable.packing_list_uid == uid).first() is not None:
+                from services.order_edit_policy import OrderEditConflictError
+
+                raise OrderEditConflictError("装箱单存在纸单回传来源，不能硬删除，请归档并保留原始记录")
+            from data.order_version import (
+                new_correlation_id,
+                record_mutation,
+                snapshot_order,
+            )
+            before = {order_uid: snapshot_order(s, order_uid) for order_uid in order_uids}
+            has_cost_history = (
+                s.query(BoxCostRecordTable.id)
+                .filter(BoxCostRecordTable.packing_list_uid == uid)
+                .first()
+                is not None
+            )
+            if has_cost_history:
+                now = time.strftime("%Y-%m-%d %H:%M")
+                record.archive = True
+                record.update_date = now
+                for box in locked_boxes:
+                    box.archive = True
+                    box.update_date = now
+            else:
+                s.delete(record)
+            s.flush()
+            correlation_id = new_correlation_id()
+            for order_uid in order_uids:
+                record_mutation(
+                    s,
+                    order_uid,
+                    before=before[order_uid],
+                    after=snapshot_order(s, order_uid),
+                    action="packing_list_deleted",
+                    summary="删除装箱单" if has_cost_history else "删除装箱单并解除箱子属性",
+                    correlation_id=correlation_id,
+                )
             s.commit()
             return True
         except Exception:
@@ -417,8 +577,12 @@ class PackingListModel:
 
     def _box_to_dict(self, box: "BoxTable") -> dict:
         """箱子简要信息"""
+        from sqlalchemy.orm import object_session
+        from services.order_edit_policy import box_identity_editable
+
         return {
             "uid": box.uid,
+            "identity_editable": box_identity_editable(object_session(box), box),
             "box_number": box.box_number,
             "item_name": box.item_name,
             "item_details": json.loads(box.item_details) if box.item_details else [],
@@ -451,6 +615,34 @@ class BoxModel:
     def __init__(self):
         self.table_class = BoxTable
 
+    def _lock_after_order(self, session, uid: str):
+        """Resolve ownership first, then consistently lock order before box."""
+        candidate = (
+            session.query(BoxTable.uid, BoxTable.target_order_uid)
+            .filter(BoxTable.uid == uid)
+            .first()
+        )
+        if candidate is None:
+            return None
+        candidate_order_uid = candidate.target_order_uid
+        if candidate_order_uid:
+            (
+                session.query(OrderTable.uid)
+                .filter(OrderTable.uid == candidate_order_uid)
+                .with_for_update()
+                .first()
+            )
+        record = (
+            session.query(BoxTable)
+            .filter(BoxTable.uid == uid)
+            .populate_existing()
+            .with_for_update()
+            .first()
+        )
+        if record is not None and record.target_order_uid != candidate_order_uid:
+            raise ValueError("箱子归属已变化，请刷新后重试")
+        return record
+
     def _build_box_tag(self, list_number: str, box_number: int) -> str:
         mark = (list_number or "").strip()
         if mark and box_number:
@@ -462,52 +654,9 @@ class BoxModel:
         return "BOX"
 
     def _lock_box_cost(self, session, box, now: str) -> None:
-        if not box.target_order_uid:
-            raise ValueError("Box must be assigned to an order before shipment")
-        if not str(box.waybill_id or "").strip():
-            raise ValueError("waybill_id is required before shipment")
-        try:
-            weight = float(box.weight or 0)
-        except (TypeError, ValueError):
-            weight = 0
-        if weight <= 0:
-            raise ValueError("Box weight is required before shipment")
-
-        order = session.query(OrderTable).filter(OrderTable.uid == box.target_order_uid).first()
-        if order is None:
-            raise ValueError("Target order not found")
-        transportation_name = str(order.transportation or "").strip()
-        mode = None
-        if transportation_name:
-            mode = (
-                session.query(TransportationModeTable)
-                .filter(
-                    TransportationModeTable.name == transportation_name,
-                    TransportationModeTable.archive == False,  # noqa: E712
-                )
-                .first()
-            )
-
-        unit_cost = 0 if not mode else float(mode.cost)
-        transportation_mode_id = mode.id if mode else None
-        locked_transportation_name = mode.name if mode else transportation_name
-        session.query(BoxCostRecordTable).filter(
-            BoxCostRecordTable.box_uid == box.uid
-        ).delete(synchronize_session=False)
-        session.add(
-            BoxCostRecordTable(
-                box_uid=box.uid,
-                packing_list_uid=box.packing_list_uid,
-                order_uid=box.target_order_uid,
-                transportation_mode_id=transportation_mode_id,
-                transportation_name=locked_transportation_name,
-                waybill_id=str(box.waybill_id or "").strip(),
-                weight=weight,
-                unit_cost=unit_cost,
-                total_cost=round(unit_cost * weight, 4),
-                create_date=now,
-            )
-        )
+        """Compatibility delegate to the single outbound cost implementation."""
+        from services.outbound_service import freeze_box_cost
+        return freeze_box_cost(session, box, now)
 
     def create(
         self,
@@ -651,44 +800,115 @@ class BoxModel:
         finally:
             s.close()
 
-    def update(self, uid: str, data: dict) -> bool:
+    def update(self, uid: str, data: dict, *, return_details: bool = False, session=None, record_version=True):
         """更新箱子信息"""
-        s = SessionFactory()
+        owned_session = session is None
+        s = SessionFactory() if owned_session else session
         try:
-            record = (
-                s.query(BoxTable)
-                .filter_by(uid=uid)
-                .with_for_update()
-                .first()
-            )
+            record = self._lock_after_order(s, uid)
             if record is None:
                 return False
             if record.packing_list_uid is None:
                 return False
             if not isinstance(data, dict):
                 raise ValueError("invalid payload")
+            if set(data).intersection({"status", "date"}):
+                raise ValueError("出库状态和时间必须通过确认出库服务写入")
 
-            if "weight" in data and record.target_order_uid:
-                raw_weight = data.get("weight")
-                try:
-                    next_weight = None if raw_weight in [None, ""] else float(raw_weight)
-                    current_weight = None if record.weight is None else float(record.weight)
-                    weight_changed = next_weight != current_weight
-                except (TypeError, ValueError):
-                    weight_changed = raw_weight != record.weight
-                if weight_changed:
-                    ensure_order_receipt_unlocked(s, record.target_order_uid)
+            worker_ids_supplied = "worker_ids" in data
+            worker_ids = data.get("worker_ids") if worker_ids_supplied else None
+            if worker_ids_supplied:
+                worker_ids = self._normalize_worker_ids(worker_ids)
+
+            old_waybill_id = str(record.waybill_id or "").strip()
+
+            before = None
+            current_worker_ids = [
+                row[0]
+                for row in s.query(BoxWorkerTable.worker_id)
+                .filter(BoxWorkerTable.box_uid == uid)
+                .order_by(BoxWorkerTable.worker_id.asc())
+                .all()
+            ]
+            policy_fields = set()
+            for field in (
+                "item_name",
+                "item_details",
+                "piece_count",
+                "weight",
+                "price",
+                "box_number",
+                "remark",
+                "transfer_id",
+                "waybill_id",
+            ):
+                if field not in data:
+                    continue
+                current_value = getattr(record, field, None)
+                next_value = data.get(field)
+                if field == "item_details":
+                    try:
+                        current_value = json.loads(current_value) if current_value else []
+                    except (TypeError, ValueError):
+                        current_value = []
+                    if isinstance(next_value, str):
+                        try:
+                            next_value = json.loads(next_value)
+                        except (TypeError, ValueError):
+                            pass
+                elif field in {"transfer_id", "waybill_id", "remark", "item_name"}:
+                    current_value = str(current_value or "").strip()
+                    next_value = str(next_value or "").strip()
+                elif field == "weight":
+                    try:
+                        current_value = None if current_value is None else float(current_value)
+                        next_value = None if next_value in [None, ""] else float(next_value)
+                    except (TypeError, ValueError):
+                        pass
+                elif field in {"piece_count", "box_number"}:
+                    try:
+                        current_value = int(current_value)
+                        next_value = int(next_value)
+                    except (TypeError, ValueError):
+                        pass
+                elif field == "price":
+                    try:
+                        current_value = None if current_value is None else float(current_value)
+                        next_value = None if next_value in [None, ""] else float(next_value)
+                    except (TypeError, ValueError):
+                        pass
+                if current_value != next_value:
+                    policy_fields.add(field)
+            if worker_ids_supplied and sorted(worker_ids) != current_worker_ids:
+                policy_fields.add("workers")
+
+            from services.order_edit_policy import ensure_box_identity_editable
+
+            ensure_box_identity_editable(
+                s, record, {field: data[field] for field in policy_fields if field in data}
+            )
+
+            if record.target_order_uid:
+                from data.order_version import record_mutation, snapshot_order
+
+                (
+                    s.query(OrderTable.uid)
+                    .filter(OrderTable.uid == record.target_order_uid)
+                    .with_for_update()
+                    .first()
+                )
+                before = snapshot_order(s, record.target_order_uid)
+
+            if "weight" in policy_fields:
+                from services.order_edit_policy import ensure_outbound_weight_editable
+
+                ensure_outbound_weight_editable(
+                    record.status,
+                    current_weight=record.weight,
+                    next_weight=data.get("weight"),
+                )
 
             now = time.strftime("%Y-%m-%d %H:%M")
-            if int(record.status or 0) == CARGO_STATUS_OUTBOUND:
-                for locked_field in ("transfer_id", "waybill_id"):
-                    if locked_field in data:
-                        next_value = str(data.get(locked_field) or "").strip()
-                        current_value = str(getattr(record, locked_field) or "").strip()
-                        if next_value != current_value:
-                            raise ValueError(
-                                "Outbound box waybill cannot be modified; undo shipment first"
-                            )
 
             has_item_details = "item_details" in data
             if has_item_details:
@@ -774,6 +994,19 @@ class BoxModel:
                         raise ValueError("weight must be greater than 0")
                     record.weight = weight
 
+            if "price" in data:
+                raw_price = data.get("price")
+                if raw_price in [None, ""]:
+                    record.price = None
+                else:
+                    try:
+                        price = float(raw_price)
+                    except (TypeError, ValueError):
+                        raise ValueError("price must be a number")
+                    if price < 0:
+                        raise ValueError("price cannot be negative")
+                    record.price = price
+
             if "box_number" in data:
                 try:
                     box_number = int(data.get("box_number"))
@@ -809,58 +1042,118 @@ class BoxModel:
                     else None
                 )
 
-            if "transfer_id" in data:
+            if "transfer_id" in policy_fields:
                 record.transfer_id = str(data.get("transfer_id") or "").strip()
 
-            if "waybill_id" in data:
+            if "waybill_id" in policy_fields:
                 next_waybill_id = str(data.get("waybill_id") or "").strip()
                 if (
-                    record.packing_list_uid
-                    and record.target_order_uid
-                    and next_waybill_id
-                    and int(record.status or 0) != CARGO_STATUS_OUTBOUND
+                    int(record.status or 0) == CARGO_STATUS_OUTBOUND
+                    and not next_waybill_id
                 ):
-                    ensure_order_revision_closed_for_downstream(
-                        s, record.target_order_uid
-                    )
+                    raise ValueError("已出库箱不能清空转单号；如需撤销出库请使用撤销出库操作")
                 record.waybill_id = next_waybill_id
-                if (
-                    record.packing_list_uid
-                    and record.target_order_uid
-                    and next_waybill_id
-                    and int(record.status or 0) != CARGO_STATUS_OUTBOUND
-                ):
-                    record.status = CARGO_STATUS_OUTBOUND
-                    record.date = now
-                    self._lock_box_cost(s, record, now)
 
-            record.update_date = now
-            s.commit()
+            if worker_ids_supplied and sorted(worker_ids) != current_worker_ids:
+                self._set_workers_in_session(s, uid, worker_ids, now)
+
+            if policy_fields:
+                record.update_date = now
+            s.flush()
+            if record.target_order_uid and record_version:
+                record_mutation(
+                    s,
+                    record.target_order_uid,
+                    before=before,
+                    after=snapshot_order(s, record.target_order_uid),
+                    action="box_updated",
+                    summary="修改箱子内容和操作员",
+                )
+            if owned_session:
+                s.commit()
+            if return_details:
+                new_waybill_id = str(record.waybill_id or "").strip()
+                return {
+                    "updated": True,
+                    "changed": bool(policy_fields),
+                    "old_waybill_id": old_waybill_id,
+                    "new_waybill_id": new_waybill_id,
+                    "waybill_changed": old_waybill_id != new_waybill_id,
+                }
             return True
         except Exception:
-            s.rollback()
+            if owned_session:
+                s.rollback()
             raise
         finally:
-            s.close()
+            if owned_session:
+                s.close()
+
+    def _normalize_worker_ids(self, worker_ids: List[int]) -> List[int]:
+        if not isinstance(worker_ids, list):
+            raise ValueError("worker_ids must be a list")
+        normalized = []
+        for worker_id in worker_ids:
+            try:
+                parsed = int(worker_id)
+            except (TypeError, ValueError):
+                raise ValueError("worker_ids must be integers")
+            if parsed <= 0:
+                raise ValueError("worker_ids must be positive integers")
+            if parsed not in normalized:
+                normalized.append(parsed)
+        if len(normalized) > self.MAX_WORKERS:
+            raise ValueError(f"Maximum {self.MAX_WORKERS} workers allowed per box")
+        return sorted(normalized)
+
+    def _set_workers_in_session(
+        self, session, box_uid: str, worker_ids: List[int], now: str
+    ) -> None:
+        session.query(BoxWorkerTable).filter_by(box_uid=box_uid).delete(
+            synchronize_session=False
+        )
+        for worker_id in worker_ids:
+            session.add(
+                BoxWorkerTable(
+                    box_uid=box_uid,
+                    worker_id=worker_id,
+                    create_date=now,
+                )
+            )
 
     def archive(self, uid: str) -> bool:
         """归档箱子"""
         s = SessionFactory()
         try:
-            record = (
-                s.query(BoxTable)
-                .filter_by(uid=uid)
-                .with_for_update()
-                .first()
-            )
+            record = self._lock_after_order(s, uid)
             if record is None:
                 return False
             if record.packing_list_uid is None:
                 return False
             if record.target_order_uid:
-                ensure_order_receipt_unlocked(s, record.target_order_uid)
+                from data.order_version import record_mutation, snapshot_order
+
+                (
+                    s.query(OrderTable.uid)
+                    .filter(OrderTable.uid == record.target_order_uid)
+                    .with_for_update()
+                    .first()
+                )
+                before = snapshot_order(s, record.target_order_uid)
+            else:
+                before = None
             record.archive = True
             record.update_date = time.strftime("%Y-%m-%d %H:%M")
+            s.flush()
+            if record.target_order_uid:
+                record_mutation(
+                    s,
+                    record.target_order_uid,
+                    before=before,
+                    after=snapshot_order(s, record.target_order_uid),
+                    action="box_archived",
+                    summary="归档箱子",
+                )
             s.commit()
             return True
         except Exception:
@@ -870,25 +1163,47 @@ class BoxModel:
             s.close()
 
     def delete(self, uid: str) -> bool:
-        """硬删除箱子"""
+        """删除箱子；存在历史引用时保留归档记录。"""
         s = SessionFactory()
         try:
-            record = (
-                s.query(BoxTable)
-                .filter_by(uid=uid)
-                .with_for_update()
-                .first()
-            )
+            record = self._lock_after_order(s, uid)
             if record is None:
                 return False
             if record.packing_list_uid is None:
                 return False
             if record.target_order_uid:
-                ensure_order_receipt_unlocked(s, record.target_order_uid)
-            s.query(BoxWorkerTable).filter_by(box_uid=uid).delete(
-                synchronize_session=False
-            )
-            s.delete(record)
+                from data.order_version import record_mutation, snapshot_order
+
+                (
+                    s.query(OrderTable.uid)
+                    .filter(OrderTable.uid == record.target_order_uid)
+                    .with_for_update()
+                    .first()
+                )
+                order_uid = record.target_order_uid
+                before = snapshot_order(s, order_uid)
+            else:
+                order_uid, before = None, None
+            from data.DB import cargo_requires_archival
+
+            if cargo_requires_archival(s, uid):
+                record.archive = True
+                record.update_date = time.strftime("%Y-%m-%d %H:%M")
+            else:
+                s.query(BoxWorkerTable).filter_by(box_uid=uid).delete(
+                    synchronize_session=False
+                )
+                s.delete(record)
+            s.flush()
+            if order_uid:
+                record_mutation(
+                    s,
+                    order_uid,
+                    before=before,
+                    after=snapshot_order(s, order_uid),
+                    action="box_deleted",
+                    summary="删除箱子",
+                )
             s.commit()
             return True
         except Exception:
@@ -899,32 +1214,48 @@ class BoxModel:
 
     def set_workers(self, box_uid: str, worker_ids: List[int]) -> bool:
         """设置箱子的打包工人（最多4人）"""
-        if len(worker_ids) > self.MAX_WORKERS:
-            raise ValueError(f"Maximum {self.MAX_WORKERS} workers allowed per box")
+        worker_ids = self._normalize_worker_ids(worker_ids)
 
         s = SessionFactory()
         try:
             # 验证箱子存在
-            box = (
-                s.query(BoxTable).filter_by(uid=box_uid).with_for_update().first()
-            )
+            box = self._lock_after_order(s, box_uid)
             if box is None:
                 return False
             if box.packing_list_uid is None:
                 return False
+            current_ids = sorted(
+                row[0]
+                for row in s.query(BoxWorkerTable.worker_id)
+                .filter(BoxWorkerTable.box_uid == box_uid)
+                .all()
+            )
+            before = None
+            if box.target_order_uid:
+                from data.order_version import record_mutation, snapshot_order
 
-            # 清除现有工人关联
-            s.query(BoxWorkerTable).filter_by(box_uid=box_uid).delete()
-
-            # 添加新工人关联
-            for worker_id in worker_ids:
-                worker_record = BoxWorkerTable(
-                    box_uid=box_uid,
-                    worker_id=worker_id,
-                    create_date=time.strftime("%Y-%m-%d %H:%M"),
+                (
+                    s.query(OrderTable.uid)
+                    .filter(OrderTable.uid == box.target_order_uid)
+                    .with_for_update()
+                    .first()
                 )
-                s.add(worker_record)
-
+                before = snapshot_order(s, box.target_order_uid)
+            if current_ids != worker_ids:
+                self._set_workers_in_session(
+                    s, box_uid, worker_ids, time.strftime("%Y-%m-%d %H:%M")
+                )
+                box.update_date = time.strftime("%Y-%m-%d %H:%M")
+            s.flush()
+            if box.target_order_uid:
+                record_mutation(
+                    s,
+                    box.target_order_uid,
+                    before=before,
+                    after=snapshot_order(s, box.target_order_uid),
+                    action="box_workers_updated",
+                    summary="修改箱子操作员",
+                )
             s.commit()
             return True
         except Exception:
@@ -938,29 +1269,27 @@ class BoxModel:
         if not isinstance(worker_ids, list) or len(worker_ids) == 0:
             raise ValueError("worker_ids is required")
 
-        normalized_worker_ids: List[int] = []
-        for worker_id in worker_ids:
-            try:
-                parsed_worker_id = int(worker_id)
-            except (TypeError, ValueError):
-                raise ValueError("worker_ids must be integers")
-            if parsed_worker_id <= 0:
-                raise ValueError("worker_ids must be positive integers")
-            if parsed_worker_id not in normalized_worker_ids:
-                normalized_worker_ids.append(parsed_worker_id)
-
-        if len(normalized_worker_ids) > self.MAX_WORKERS:
-            raise ValueError(f"Maximum {self.MAX_WORKERS} workers allowed per box")
+        normalized_worker_ids = self._normalize_worker_ids(worker_ids)
 
         s = SessionFactory()
         try:
-            box = (
-                s.query(BoxTable).filter_by(uid=box_uid).with_for_update().first()
-            )
+            box = self._lock_after_order(s, box_uid)
             if box is None:
                 return False
             if box.packing_list_uid is None:
                 return False
+
+            before = None
+            if box.target_order_uid:
+                from data.order_version import record_mutation, snapshot_order
+
+                (
+                    s.query(OrderTable.uid)
+                    .filter(OrderTable.uid == box.target_order_uid)
+                    .with_for_update()
+                    .first()
+                )
+                before = snapshot_order(s, box.target_order_uid)
 
             existing_worker = (
                 s.query(BoxWorkerTable.id).filter_by(box_uid=box_uid).first()
@@ -976,6 +1305,17 @@ class BoxModel:
                 )
                 s.add(worker_record)
 
+            box.update_date = time.strftime("%Y-%m-%d %H:%M")
+            s.flush()
+            if box.target_order_uid:
+                record_mutation(
+                    s,
+                    box.target_order_uid,
+                    before=before,
+                    after=snapshot_order(s, box.target_order_uid),
+                    action="box_workers_updated",
+                    summary="新增箱子操作员",
+                )
             s.commit()
             return True
         except Exception:
@@ -1004,12 +1344,7 @@ class BoxModel:
         """将箱子分配到订单"""
         s = SessionFactory()
         try:
-            box = (
-                s.query(BoxTable)
-                .filter_by(uid=box_uid)
-                .with_for_update()
-                .first()
-            )
+            box = s.query(BoxTable).filter_by(uid=box_uid).first()
             if box is None:
                 return False
             if box.packing_list_uid is None:
@@ -1020,7 +1355,26 @@ class BoxModel:
             if box.target_order_uid:
                 raise ValueError(f"Box {box_uid} is already assigned")
 
-            ensure_order_receipt_unlocked(s, order_uid)
+            from data.order_version import record_mutation, snapshot_order
+
+            order = (
+                s.query(OrderTable)
+                .filter(OrderTable.uid == order_uid)
+                .with_for_update()
+                .first()
+            )
+            if order is None:
+                raise ValueError("Target order not found")
+            box = (
+                s.query(BoxTable)
+                .filter_by(uid=box_uid)
+                .populate_existing()
+                .with_for_update()
+                .first()
+            )
+            if box is None or box.target_order_uid:
+                raise ValueError(f"Box {box_uid} is already assigned")
+            before = snapshot_order(s, order_uid)
 
             box.target_order_uid = order_uid
             box.tag = self._build_box_tag(
@@ -1030,6 +1384,15 @@ class BoxModel:
             # 兼容旧系统：status=0 代表未出库。
             box.status = CARGO_STATUS_PENDING_OUTBOUND
             box.update_date = time.strftime("%Y-%m-%d %H:%M")
+            s.flush()
+            record_mutation(
+                s,
+                order_uid,
+                before=before,
+                after=snapshot_order(s, order_uid),
+                action="box_assigned",
+                summary="分配箱子到订单",
+            )
             s.commit()
             return True
         except Exception:
@@ -1043,10 +1406,21 @@ class BoxModel:
         results = {"success": [], "failed": []}
         s = SessionFactory()
         try:
-            ensure_order_receipt_unlocked(s, order_uid)
+            from data.order_version import record_mutation, snapshot_order
+
+            order = (
+                s.query(OrderTable)
+                .filter(OrderTable.uid == order_uid)
+                .with_for_update()
+                .first()
+            )
+            if order is None:
+                raise ValueError("Target order not found")
+            before = snapshot_order(s, order_uid)
             boxes = (
                 s.query(BoxTable)
                 .filter(BoxTable.uid.in_(box_uids))
+                .order_by(BoxTable.uid.asc())
                 .with_for_update()
                 .all()
             )
@@ -1071,6 +1445,15 @@ class BoxModel:
                 box.status = CARGO_STATUS_PENDING_OUTBOUND
                 box.update_date = now
                 results["success"].append(box_uid)
+            s.flush()
+            record_mutation(
+                s,
+                order_uid,
+                before=before,
+                after=snapshot_order(s, order_uid),
+                action="boxes_assigned",
+                summary=f"分配 {len(results['success'])} 个箱子到订单",
+            )
             s.commit()
             return results
         except Exception:
@@ -1189,87 +1572,42 @@ class BoxModel:
 
     def batch_ship(self, packing_list_uid: str, box_uids: List[str]) -> dict:
         """显式出货已停用，保留方法仅兼容旧调用。"""
-        raise ValueError("Shipment is completed by recording a waybill number")
+        raise ValueError("旧批量出库方法已停用，请调用统一出库服务或 /api/cargo/<uid>/outbound")
 
-    def _legacy_batch_ship(self, packing_list_uid: str, box_uids: List[str]) -> dict:
-        results = {"success": [], "failed": []}
-        if not box_uids:
-            return results
+    def undo_ship(self, uid: str, *, operator=None) -> bool:
+        """重新入库箱子，保留原出库、成本、收款和奖金历史。"""
+        from flask import has_request_context
+        from data.order_version import normalize_operator, record_mutation, snapshot_order
+        from services.order_edit_policy import OrderEditConflictError, cargo_is_outbound_or_later
+
+        actor = normalize_operator(operator)
+        if (operator is not None or has_request_context()) and not set(actor["roles"]).intersection({"admin", "store_manager"}):
+            raise PermissionError("Permission denied")
 
         s = SessionFactory()
         try:
-            records = (
+            candidate = (
                 s.query(BoxTable)
                 .filter(
                     BoxTable.archive == False,
-                    BoxTable.packing_list_uid == packing_list_uid,
-                    BoxTable.uid.in_(box_uids),
+                    BoxTable.uid == uid,
+                    BoxTable.packing_list_uid.isnot(None),
                 )
-                .all()
+                .first()
             )
-            record_map = {r.uid: r for r in records}
+            if candidate is None:
+                return False
 
-            for order_uid in sorted(
-                {
-                    box.target_order_uid
-                    for box in records
-                    if box.target_order_uid
-                    and int(box.status or 0) != CARGO_STATUS_OUTBOUND
-                }
-            ):
-                ensure_order_revision_closed_for_downstream(s, order_uid)
-
-            now = time.strftime("%Y-%m-%d %H:%M")
-            for uid in box_uids:
-                box = record_map.get(uid)
-                if box is None:
-                    results["failed"].append({"uid": uid, "error": "Box not found"})
-                    continue
-
-                if int(box.status or 0) == CARGO_STATUS_OUTBOUND:
-                    results["failed"].append(
-                        {
-                            "uid": uid,
-                            "error": "Box is already outbound",
-                        }
-                    )
-                    continue
-
-                if not box.target_order_uid:
-                    results["failed"].append(
-                        {
-                            "uid": uid,
-                            "error": "Box is not assigned to order",
-                        }
-                    )
-                    continue
-
-                # if not str(box.waybill_id or "").strip():
-                #     results["failed"].append(
-                #         {
-                #             "uid": uid,
-                #             "error": "Box has no waybill yet",
-                #         }
-                #     )
-                #     continue
-
-                box.status = CARGO_STATUS_OUTBOUND
-                box.date = now
-                box.update_date = now
-                results["success"].append(uid)
-
-            s.commit()
-            return results
-        except Exception:
-            s.rollback()
-            raise
-        finally:
-            s.close()
-
-    def undo_ship(self, uid: str) -> bool:
-        """撤销单箱出货：清空运单号、回退状态并删除成本锁定记录。"""
-        s = SessionFactory()
-        try:
+            order_uid = candidate.target_order_uid
+            before = None
+            if order_uid:
+                (
+                    s.query(OrderTable.uid)
+                    .filter(OrderTable.uid == order_uid)
+                    .with_for_update()
+                    .first()
+                )
+                before = snapshot_order(s, order_uid)
             box = (
                 s.query(BoxTable)
                 .filter(
@@ -1277,22 +1615,55 @@ class BoxModel:
                     BoxTable.uid == uid,
                     BoxTable.packing_list_uid.isnot(None),
                 )
+                .populate_existing()
                 .with_for_update()
                 .first()
             )
             if box is None:
                 return False
+            if box.target_order_uid != order_uid:
+                raise OrderEditConflictError("箱子归属已变化，请刷新后重试")
 
-            if int(box.status or 0) != CARGO_STATUS_OUTBOUND:
+            if not cargo_is_outbound_or_later(box.status):
                 raise ValueError("Box is not outbound")
 
             now = time.strftime("%Y-%m-%d %H:%M")
+            old_status = box.status
+            # FOR UPDATE serializes MySQL; the conditional write also detects
+            # a changed box on SQLite, where row locking is not supported.
+            changed = s.query(BoxTable).filter(
+                BoxTable.uid == box.uid,
+                BoxTable.status == old_status,
+                BoxTable.target_order_uid == order_uid,
+                BoxTable.archive == False,  # noqa: E712
+                BoxTable.packing_list_uid == box.packing_list_uid,
+            ).update({
+                "waybill_id": "",
+                "status": CARGO_STATUS_PENDING_OUTBOUND,
+                "date": None,
+                "update_date": now,
+            }, synchronize_session=False)
+            if changed != 1:
+                raise OrderEditConflictError("箱子出库状态已变化，请刷新后重试")
             box.waybill_id = ""
             box.status = CARGO_STATUS_PENDING_OUTBOUND
+            box.date = None
             box.update_date = now
             s.query(BoxCostRecordTable).filter(
-                BoxCostRecordTable.box_uid == box.uid
-            ).delete(synchronize_session=False)
+                BoxCostRecordTable.box_uid == box.uid,
+                BoxCostRecordTable.archive == False,  # noqa: E712
+            ).update({"archive": True}, synchronize_session=False)
+            s.flush()
+            if order_uid:
+                record_mutation(
+                    s,
+                    order_uid,
+                    before=before,
+                    after=snapshot_order(s, order_uid),
+                    action="box_shipment_undone",
+                    summary="撤销箱子出库",
+                    operator_payload=operator,
+                )
             s.commit()
             return True
         except Exception:
@@ -1321,8 +1692,12 @@ class BoxModel:
 
     def _to_dict(self, record: BoxTable) -> dict:
         """转换为字典"""
+        from sqlalchemy.orm import object_session
+        from services.order_edit_policy import box_identity_editable
+
         return {
             "uid": record.uid,
+            "identity_editable": box_identity_editable(object_session(record), record),
             "packing_list_uid": record.packing_list_uid,
             "list_number": (
                 record.packing_list.list_number if record.packing_list else None

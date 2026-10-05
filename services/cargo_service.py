@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import time
 import uuid
 from threading import Thread
 
@@ -12,7 +13,7 @@ from data.database import SessionFactory
 from data.DB import (
     CargoTable,
     ExcelTemplateTable,
-    ensure_order_receipt_unlocked,
+    OrderTable,
 )
 from utils.l7track import getTrackInfo, registerTrack
 
@@ -23,9 +24,19 @@ _TEMPLATE_DIR = os.path.join(os.path.dirname(__file__), "..", "uploads", "excel_
 
 
 def add_cargos_to_order(order_uid: str, cargo_delta: int) -> dict:
-    """在同一事务内锁定订单、检查收据锁并批量新增普通包裹。"""
+    """在同一事务内锁定订单行并批量新增普通包裹。"""
     with SessionFactory() as session:
-        order = ensure_order_receipt_unlocked(session, order_uid)
+        order = (
+            session.query(OrderTable)
+            .filter(OrderTable.uid == order_uid)
+            .with_for_update()
+            .first()
+        )
+        if order is None:
+            raise LookupError("订单不存在")
+        from data.order_version import record_mutation, snapshot_order
+
+        before = snapshot_order(session, order_uid)
         cargo_count = int(order.cargo_count or 0)
         next_count = cargo_count + cargo_delta
         created = []
@@ -57,6 +68,14 @@ def add_cargos_to_order(order_uid: str, cargo_delta: int) -> dict:
             )
             .all()
         ]
+        record_mutation(
+            session,
+            order_uid,
+            before=before,
+            after=snapshot_order(session, order_uid),
+            action="cargo_added",
+            summary=f"新增 {len(created)} 件货物",
+        )
         session.commit()
         return {"data": data, "cargo_id_list": cargo_ids}
 
@@ -321,27 +340,18 @@ def parse_waybill_file(fp, filename: str) -> dict:
     return table
 
 
-def apply_waybill_table(cargo_model, transfer_map: dict):
-    """
-    将转运单映射批量写入货物记录并在 17track 注册。
-    返回 (register_list, error_exception)。
-    即使 17track 注册失败，register_list 仍包含所有已更新的记录，
-    error 不为 None 时调用方可检查 error.args[0] 获取 17track 错误详情。
-    """
-    register_list = []
-    for cargo_uid, cargo in cargo_model.data_point.items():
-        transfer_id = cargo.get("transfer_id")
-        if transfer_id and transfer_map.get(str(transfer_id)):
-            waybill_id = transfer_map[str(transfer_id)]
-            update_payload = {"waybill_id": waybill_id}
-
-            cargo_model.update(cargo_uid, update_payload)
-            register_list.append((cargo_uid, waybill_id))
+def apply_waybill_table(cargo_model, transfer_map: dict, *, confirm_outbound=True, operator=None):
+    """Persist the atomic service mutation, then register tracking after commit."""
+    from services.outbound_service import update_waybill_table
+    register_list = update_waybill_table(
+        SessionFactory, transfer_map, confirm_outbound=confirm_outbound, operator=operator
+    )
     try:
-        registerTrack(register_list)
+        if register_list:
+            registerTrack(register_list)
         return register_list, None
     except Exception as e:
-        logger.error("apply_waybill_table: 17track registration failed: %s", e)
+        logger.error("apply_waybill_table: committed; 17track registration failed: %s", e)
         return register_list, e
 
 

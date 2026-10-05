@@ -8,22 +8,59 @@ import json
 
 from flask import Blueprint, jsonify, request, send_file
 
-from Auth import verify, allow, get_token_payload
+from Auth import verify, allow, get_payload_roles, get_token_payload
 from services import packing_list_service
-from data.DB import OrderRevisionOpenError, ReceiptLockedError
+from data.database import SessionFactory
+from services.order_edit_policy import OrderEditConflictError, build_edit_policy
 from utils.packing_list_pdf import build_packing_list_pdf, build_packing_lists_pdf
 from utils.log import log
 
 packing_bp = Blueprint("packing", __name__, url_prefix="/api")
 
 # 允许创建装箱单的角色
-PACKING_CREATE_ROLES = ["admin", "store_manager", "salesperson", "worker"]
+PACKING_CREATE_ROLES = ["admin", "store_manager", "salesperson", "worker", "employee"]
 # 允许编辑装箱单/箱子详情的角色
 PACKING_EDIT_ROLES = ["admin", "store_manager", "salesperson"]
 # 允许分配箱子的角色
 BOX_ASSIGN_ROLES = ["admin", "store_manager", "salesperson", "clerk"]
 # 允许出货的角色
 BOX_SHIP_ROLES = ["admin", "store_manager", "salesperson", "clerk", "worker"]
+
+
+def _worker_creator_scope():
+    payload = get_token_payload() or {}
+    roles = set(get_payload_roles(payload))
+    full_scope_roles = {"admin", "store_manager", "salesperson", "clerk", "finance"}
+    if roles.intersection({"worker", "employee"}) and not roles.intersection(full_scope_roles):
+        # A malformed worker identity must never turn into an unrestricted query.
+        return payload.get("user_id") or payload.get("id") or -1
+    return None
+
+
+def _can_read_packing_list(detail):
+    creator_id = _worker_creator_scope()
+    return creator_id is None or detail.get("creator_id") == creator_id
+
+
+def _decorate_box_policies(boxes):
+    payload = get_token_payload() or {}
+    roles = get_payload_roles(payload)
+    user_id = payload.get("user_id") or payload.get("id")
+    with SessionFactory() as session:
+        policy_by_order = {}
+        for box in boxes or []:
+            order_uid = box.get("target_order_uid")
+            if not order_uid:
+                continue
+            try:
+                if order_uid not in policy_by_order:
+                    policy_by_order[order_uid] = build_edit_policy(
+                        session, order_uid, roles, user_id
+                    )
+                box.update(policy_by_order[order_uid])
+            except LookupError:
+                continue
+    return boxes
 
 
 # ---------------------------------------------------------------------------
@@ -161,6 +198,7 @@ def get_packing_lists():
         search=search,
         box_status=box_status,
         exclude_box_status=exclude_box_status,
+        creator_id=_worker_creator_scope(),
     )
     return jsonify({"code": 200, "data": result})
 
@@ -191,6 +229,9 @@ def get_packing_list(uid):
     result = packing_list_service.get_packing_list(uid)
     if result is None:
         return jsonify({"code": 404, "msg": "Packing list not found"}), 404
+    if not _can_read_packing_list(result):
+        return jsonify({"code": 403, "msg": "只能查看自己创建的装箱单"}), 403
+    _decorate_box_policies(result.get("boxes") or [])
     return jsonify({"code": 200, "data": result})
 
 
@@ -211,6 +252,8 @@ def update_packing_list(uid):
 
     try:
         success = packing_list_service.update_packing_list(uid, data)
+    except OrderEditConflictError as e:
+        return jsonify({"code": 409, "msg": str(e)}), 409
     except ValueError as e:
         return jsonify({"code": 400, "msg": str(e)}), 400
 
@@ -237,7 +280,10 @@ def archive_packing_list(uid):
 @log(desc="Delete packing list.")
 def delete_packing_list(uid):
     """删除装箱单"""
-    success = packing_list_service.delete_packing_list(uid)
+    try:
+        success = packing_list_service.delete_packing_list(uid)
+    except OrderEditConflictError as e:
+        return jsonify({"code": 409, "msg": str(e)}), 409
     if not success:
         return jsonify({"code": 404, "msg": "Packing list not found"}), 404
     return jsonify({"code": 200, "msg": "success"})
@@ -263,6 +309,8 @@ def export_packing_list_pdf(uid):
     detail = packing_list_service.get_packing_list(uid)
     if detail is None:
         return jsonify({"code": 404, "msg": "Packing list not found"}), 404
+    if not _can_read_packing_list(detail):
+        return jsonify({"code": 403, "msg": "只能查看自己创建的装箱单"}), 403
 
     selected_uids = set(request.args.getlist("box_uids"))
     box_uids_param = (request.args.get("box_uids") or "").strip()
@@ -323,6 +371,8 @@ def export_packing_lists_pdf():
                 ),
                 404,
             )
+        if not _can_read_packing_list(detail):
+            return jsonify({"code": 403, "msg": "只能查看自己创建的装箱单"}), 403
 
         box_uids = item.get("box_uids")
         if box_uids is not None:
@@ -434,6 +484,7 @@ def get_box(uid):
     result = packing_list_service.get_box(uid)
     if result is None:
         return jsonify({"code": 404, "msg": "Box not found"}), 404
+    _decorate_box_policies([result])
     return jsonify({"code": 200, "data": result})
 
 
@@ -455,14 +506,30 @@ def update_box(uid):
         return jsonify({"code": 400, "msg": "invalid request payload"}), 400
 
     try:
-        success = packing_list_service.update_box(uid, data)
-    except (OrderRevisionOpenError, ReceiptLockedError) as e:
+        from services.outbound_service import parse_confirm_outbound
+        supplement = parse_confirm_outbound(data.pop("confirm_outbound", True))
+        result = packing_list_service.update_box(
+            uid, data, return_details=True, confirm_outbound=supplement
+        )
+    except LookupError as e:
+        return jsonify({"code": 404, "msg": str(e)}), 404
+    except PermissionError as e:
+        return jsonify({"code": 403, "msg": str(e)}), 403
+    except OrderEditConflictError as e:
         return jsonify({"code": 409, "msg": str(e)}), 409
     except ValueError as e:
         return jsonify({"code": 400, "msg": str(e)}), 400
 
-    if not success:
+    if not result:
         return jsonify({"code": 404, "msg": "Box not found"}), 404
+    if (
+        isinstance(result, dict)
+        and result.get("waybill_changed")
+        and result.get("new_waybill_id")
+    ):
+        from services.cargo_service import background_register
+
+        background_register(uid, result["new_waybill_id"])
     return jsonify({"code": 200, "msg": "success"})
 
 
@@ -486,7 +553,7 @@ def weigh_box(uid):
 
     try:
         success = packing_list_service.weigh_box(uid, weight)
-    except ReceiptLockedError as e:
+    except OrderEditConflictError as e:
         return jsonify({"code": 409, "msg": str(e)}), 409
     if not success:
         return jsonify({"code": 404, "msg": "Box not found"}), 404
@@ -501,7 +568,7 @@ def archive_box(uid):
     """归档箱子"""
     try:
         success = packing_list_service.archive_box(uid)
-    except ReceiptLockedError as e:
+    except OrderEditConflictError as e:
         return jsonify({"code": 409, "msg": str(e)}), 409
     if not success:
         return jsonify({"code": 404, "msg": "Box not found"}), 404
@@ -516,7 +583,7 @@ def delete_box(uid):
     """删除箱子"""
     try:
         success = packing_list_service.delete_box(uid)
-    except ReceiptLockedError as e:
+    except OrderEditConflictError as e:
         return jsonify({"code": 409, "msg": str(e)}), 409
     if not success:
         return jsonify({"code": 404, "msg": "Box not found"}), 404
@@ -548,6 +615,8 @@ def set_box_workers(uid):
         if not success:
             return jsonify({"code": 404, "msg": "Box not found"}), 404
         return jsonify({"code": 200, "msg": "success"})
+    except OrderEditConflictError as e:
+        return jsonify({"code": 409, "msg": str(e)}), 409
     except ValueError as e:
         return jsonify({"code": 400, "msg": str(e)}), 400
 
@@ -572,6 +641,8 @@ def add_box_workers_if_empty(uid):
         if not success:
             return jsonify({"code": 404, "msg": "Box not found"}), 404
         return jsonify({"code": 200, "msg": "success"})
+    except OrderEditConflictError as e:
+        return jsonify({"code": 409, "msg": str(e)}), 409
     except ValueError as e:
         error_message = str(e)
         status_code = 409 if "already set" in error_message else 400
@@ -689,7 +760,7 @@ def assign_boxes():
 
     try:
         result = packing_list_service.batch_assign_boxes(box_uids, order_uid)
-    except ReceiptLockedError as e:
+    except OrderEditConflictError as e:
         return jsonify({"code": 409, "msg": str(e)}), 409
     return jsonify({"code": 200, "data": result})
 
@@ -699,8 +770,8 @@ def assign_boxes():
 @allow(role=BOX_SHIP_ROLES)
 @log(desc="Ship selected boxes.", is_json=True)
 def ship_selected_boxes(uid):
-    """显式出货已停用：通过记录转单号自动出货。"""
-    return jsonify({"code": 410, "msg": "请通过记录转单号完成出货"}), 410
+    """旧批量出货入口停用，统一服务提供独立确认出库。"""
+    return jsonify({"code": 410, "msg": "旧出库接口已停用，请录入转单号补登记，或调用 PUT /api/cargo/<uid>/outbound"}), 410
 
 
 @packing_bp.post("/box/<string:uid>/undo-ship")
@@ -708,9 +779,13 @@ def ship_selected_boxes(uid):
 @allow(role=["admin", "store_manager"])
 @log(desc="Undo box shipping.")
 def undo_ship_box(uid):
-    """撤销单箱出货：清空转单号、回退状态并删除成本记录。"""
+    """管理员或店长将箱子重新入库，清空转单号和出库时间，保留历史。"""
     try:
-        success = packing_list_service.undo_ship_box(uid)
+        success = packing_list_service.undo_ship_box(uid, operator=get_token_payload())
+    except PermissionError as e:
+        return jsonify({"code": 403, "msg": str(e)}), 403
+    except OrderEditConflictError as e:
+        return jsonify({"code": 409, "msg": str(e)}), 409
     except ValueError as e:
         return jsonify({"code": 400, "msg": str(e)}), 400
 
@@ -725,6 +800,7 @@ def undo_ship_box(uid):
 def get_assigned_boxes_by_order(order_uid):
     """获取指定订单下已分配的箱子列表。"""
     result = packing_list_service.get_boxes_by_order(order_uid)
+    _decorate_box_policies(result)
     return jsonify({"code": 200, "data": result})
 
 

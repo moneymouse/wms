@@ -3,7 +3,7 @@
 from flask import Blueprint, jsonify, request
 
 from Auth import allow, get_payload_roles, get_token_payload, verify
-from data.DB import OrderRevisionOpenError
+from services.order_edit_policy import OrderEditConflictError
 from services import work_finance_service
 
 work_finance_bp = Blueprint("work_finance", __name__, url_prefix="/api")
@@ -213,9 +213,10 @@ def allocate_bonus_for_packing_list(packing_list_uid: str):
             packing_list_uid=packing_list_uid,
             assignments=assignments,
             operator_id=operator_id,
+            operator_payload=payload,
         )
         return jsonify({"code": 200, "data": result, "msg": "bonus allocated"})
-    except OrderRevisionOpenError as exc:
+    except OrderEditConflictError as exc:
         return jsonify({"code": 409, "msg": str(exc)}), 409
     except ValueError as exc:
         return jsonify({"code": 400, "msg": str(exc)}), 400

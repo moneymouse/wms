@@ -47,6 +47,7 @@ services:
       mysql_test:
         condition: service_healthy
     volumes:
+      - ./env.toml:/app/env.toml:ro
       - ./log_test:/app/log
       - ./excels_test:/app/excels
       - ./data/history_test:/app/data/history

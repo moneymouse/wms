@@ -3,4 +3,5 @@ frontend/
 *.pyc
 *.env
 log/
+env.toml
 .DS_Store

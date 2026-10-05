@@ -2,7 +2,7 @@
 
 **Base URL:** `http://localhost:5001`
 
-**版本:** 1.0
+**版本:** 1.18
 
 ---
 
@@ -466,11 +466,29 @@ x-token: <JWT_TOKEN>
     "receiver_phone": "13800138000",
     "address": "收件地址",
     "cargo_count": 3,
-    "receipt_locked": true,
+    "current_version": 3,
+    "edit_policy": {
+      "order_fields": true,
+      "transportation": true,
+      "order_weight": true,
+      "salesman": true,
+      "customer_assignment": true,
+      "cargo_content": true,
+      "cargo_weight": true,
+      "box_content": true,
+      "box_weight": true,
+      "tracking_numbers": true,
+      "box_workers": true,
+      "box_membership": true,
+      "archive_or_delete": true,
+      "fully_outbound": true
+    },
     "cargo_uid_list": ["cargo1", "cargo2", "cargo3"]
   }
 }
 ```
+
+`edit_policy` 由服务端按当前角色计算，前端应直接使用。全部出库或已有收据均不再阻止编辑；`fully_outbound` 沿用所有有效装箱单箱子均为 `status=1` 且有转单号的兼容判断，不参与编辑权限计算。详情不再返回订单业务锁、财务锁和修订窗口字段。
 
 ---
 
@@ -600,6 +618,84 @@ x-token: <JWT_TOKEN>
 
 ---
 
+### 2.8 获取订单版本列表
+
+- **URL:** `GET /api/orders/<uid>/versions?p=1&s=20`
+- **认证:** 需要
+- **权限:** `admin`、`store_manager`
+- **分页:** `p` 默认 1；`s` 默认 20，最大 100
+
+版本按 `version_no` 倒序返回。`change_summary` 只返回本版涉及的实体、操作和字段；完整前后值通过版本详情获取。
+
+```json
+{
+  "code": 200,
+  "data": {
+    "items": [
+      {
+        "id": 12,
+        "order_uid": "ORDER-UID",
+        "version_no": 3,
+        "action": "box_updated",
+        "summary": "修改箱子内容和操作员",
+        "operator_id": 7,
+        "operator_name": "张三",
+        "operator_roles": ["store_manager"],
+        "reason": null,
+        "correlation_id": "4ba9b14e9b6242ef9d2ebf29e210931c",
+        "created_at": "2026-09-16 10:30:00",
+        "order_id": "ERP-001",
+        "customer_name": "客户A",
+        "deleted": false,
+        "change_count": 1,
+        "change_summary": [
+          {
+            "sequence_no": 1,
+            "entity_type": "box",
+            "entity_uid": "BOX-UID",
+            "operation": "update",
+            "fields": ["item_details", "workers"]
+          }
+        ]
+      }
+    ],
+    "total": 3,
+    "page": 1,
+    "page_size": 20
+  }
+}
+```
+
+硬删除订单后，只要知道其 `order_uid`，仍可读取版本列表。
+
+### 2.9 获取订单版本详情
+
+- **URL:** `GET /api/orders/<uid>/versions/<version_no>`
+- **认证:** 需要
+- **权限:** `admin`、`store_manager`
+
+响应在版本元数据之外返回：
+
+- `changes`：该版增量，每项包含 `sequence_no`、`entity_type`、`entity_uid`、`operation`、`fields`、`before_data`、`after_data`。
+- `snapshot`：从 V1 顺序应用增量后得到的完整订单、普通货物和箱子快照。
+- `last_existing_snapshot`：仅删除订单版本返回，用于展示删除前最后一份完整订单。
+
+`entity_type` 为 `order`、`cargo` 或 `box`；`operation` 为 `create`、`update` 或 `delete`。找不到版本时返回 `404`。`item_details` 始终以完整前后列表返回。
+
+### 2.10 查询已删除订单历史
+
+- **URL:** `GET /api/order-history?deleted_only=1&q=&p=1&s=20`
+- **认证:** 需要
+- **权限:** `admin`、`store_manager`
+
+`deleted_only` 默认是 `1`，返回最新版本为删除墓碑的订单；传 `0`、`false` 或 `no` 时返回所有订单的最新历史元数据。`q` 仅匹配订单 UID、订单号或客户名称。响应的 `data` 为 `{ items, total, page, page_size }`，其中 `items` 使用与版本列表相同的元数据结构。
+
+历史旧 `transfer_id` 和 `waybill_id` 不进入订单列表或删除历史的全局搜索，只能在已知订单的版本详情中查看。
+
+订单历史为只读且长期保留。系统没有恢复旧版本或删除版本的普通 UI/API。字段、重建和保留规则详见 [API v1.6](API-v1.6.md)。
+
+---
+
 ## 3. 货物模块 (Cargo)
 
 ### 3.1 获取订单货物列表
@@ -642,7 +738,7 @@ x-token: <JWT_TOKEN>
 
 ### 3.2 获取所有货物运单信息
 
-获取所有订单下货物的转运号和运单号。
+获取所有订单下货物的原单号和转单号（运单号）。
 
 - **URL:** `GET /api/cargo`
 - **认证:** 需要
@@ -694,6 +790,19 @@ x-token: <JWT_TOKEN>
 ### 3.4 更新货物信息
 
 更新货物信息，运单号变更时会自动注册物流追踪。
+
+字段语义统一为：`transfer_id` 是原单号，`waybill_id` 是转单号（运单号）。历史旧值不参与订单列表全局搜索。
+
+货物状态进入出库（`status=1`）或任一后续物流状态后，`weight` 不可修改；待出库（`status=0`）货物仍可按权限称重。首次登记转单号时允许在同一请求中提交最终重量，成功后状态转为出库。后续修改重量返回 HTTP `409`：
+
+```json
+{
+  "code": 409,
+  "msg": "货物已出库，重量不可修改；如需调整重量，请使用新的原单号创建包裹"
+}
+```
+
+`status` 和出库日期 `date` 由出库/撤销出库流程维护，不能通过本接口直接提交；提交时返回 HTTP `400`。
 
 - **URL:** `PUT /api/cargo/<uid>`
 - **认证:** 需要
@@ -752,6 +861,8 @@ x-token: <JWT_TOKEN>
 | ------ | ------ | ---- | ---- |
 | weight | number | 是   | 重量 |
 | count  | int    | 是   | 件数 |
+
+若货物已处于出库或后续状态，本接口修改重量会返回 HTTP `409`。箱子经专用撤销出库接口回到待出库状态后可重新称重。
 
 **响应示例:**
 
@@ -899,6 +1010,32 @@ x-token: <JWT_TOKEN>
   "success_list": []
 }
 ```
+
+---
+
+### 3.11 原子更新箱内容和操作员
+
+- **URL:** `PUT /api/box/<uid>`
+- **认证:** 需要
+- **权限:** 沿用现有箱子编辑角色
+
+请求可在保存箱内容时一并提交 `worker_ids`：
+
+```json
+{
+  "item_details": [
+    {"item_name": "SHOES", "customs_code": "6404", "piece_count": 3}
+  ],
+  "remark": "重新核对",
+  "transfer_id": "ORIGINAL-001",
+  "waybill_id": "TRACK-002",
+  "worker_ids": [3, 5]
+}
+```
+
+`worker_ids` 最多包含 4 个正整数；传空数组表示清空操作员，未传表示保留。箱内容、操作员和对应订单版本在同一事务内提交，并且一次请求最多生成一个订单版本。原 `PUT /api/box/<uid>/workers` 和 `POST /api/box/<uid>/workers/add` 继续兼容。
+
+箱子一旦出库，箱号 `box_number` 和原单号 `transfer_id` 不可修改，撤销出库后仍保持固定。转单号 `waybill_id` 继续按角色权限修改，原成本、收款和奖金历史继续保留。改箱号或原单号返回 `409`，具体规则见 [API v1.17](API-v1.17.md)。
 
 ---
 
@@ -1312,7 +1449,7 @@ x-token: <JWT_TOKEN>
 }
 ```
 
-`receipt_locked=true` 表示订单存在收据历史且当前没有管理员开启的修订窗口，包裹重量、包裹归属、包裹增删和报价处于锁定状态。
+订单全部出库不再自动锁定，已有收据也不再限制重量、客户归属和箱子成员关系。具体变更见 [API v1.16](API-v1.16.md)。
 
 ---
 
@@ -1427,13 +1564,13 @@ x-token: <JWT_TOKEN>
 
 响应增加 `weight_snapshot`、`billing_weight`、`current_weight`、`receivable_amount`、`effective_date`、`is_effective` 和 `validity_status`。`weight_snapshot` 为订单原始总重量，`billing_weight` 为每个未归档包裹分别向上取整后再求和的计费重量；`receivable_amount` 按 `round(billing_weight × unit_price + surcharge, 2)` 计算。低于渠道 `min_price` 的每公斤单价进入 `pending`，附加费不参与最低报价判断。
 
-`validity_status` 取值：`effective`、`pending`、`rejected`、`superseded`。有效报价始终使用当前未归档包裹实时计算原始重量、计费重量和应收，报价快照仅作审计记录。任意收据明细生成后，订单的重量、包裹归属、包裹增删和新报价均锁定；满足条件时可由管理员开启受控修订窗口进行更正。
+`validity_status` 取值：`effective`、`pending`、`rejected`、`superseded`。有效报价使用当前未归档包裹计算原始重量、计费重量和应收，报价快照保留为历史记录。全部出库及已有收据不再限制编辑或报价；编辑仍遵循角色权限。
 
 - **待审核报价:** `GET /api/finance/quote-approvals`，权限为 `admin`
 - **审核:** `PUT /api/finance/quote-approvals/<quote_id>`，请求体为 `{ "action": "approve|reject", "review_remark": "..." }`
 - **双语报价单:** `GET /api/orders/<uid>/quote-pdf`
 
-订单已生成任意状态的收据时，新报价或待审报价批准返回 `409`。
+订单全部出库后仍可提交新报价和批准待审报价。已有收据历史的订单重报价真正生效后，继续按新旧有效报价应收差生成待处理差价单。
 
 ### 7.2 可收款订单与收款单
 
@@ -1442,6 +1579,8 @@ x-token: <JWT_TOKEN>
 - **收款单列表:** `GET /api/receipts?p=1&s=20&status=pending&q=<单号或客户>`
 - **收款单详情:** `GET /api/receipts/<id>`
 - **双语 PDF:** `GET /api/receipts/<id>/pdf`
+
+可收款订单可传 `order_uid` 精确查询当前订单。管理员及财务查询收款单列表可传 `owner_id` 按创建人筛选，不传仍查看全部；业务员始终仅查看本人创建的收款单。管理员在收款管理页面默认选择本人，允许切换负责人或全部。完整参数契约见 [API v1.18](API-v1.18.md)。
 
 ```json
 {
@@ -1460,30 +1599,29 @@ x-token: <JWT_TOKEN>
 
 审核状态 `status` 为 `pending`、`approved`、`rejected`。三种状态均可打印，PDF 响应为 Base64 编码，字段 `mime_type` 为 `application/pdf`。
 
-结清状态 `settlement_status` 为 `settled`（已结清）或 `unsettled`（未结清），统一作用于整张收据。未传时按所选订单 `应收 − 已审核实收 − 本次收款` 合计小于30元默认已结清，否则未结清；默认判断不扣其他待审核金额，业务员可以覆盖。历史记录为空并保持原逻辑。结清须审核通过后生效，保留实际收款及原报价，明细新增最终 `settlement_difference` 和待审 `preview_settlement_difference`。完整规则见 [API v1.5](API-v1.5.md)。
+结清状态 `settlement_status` 为 `settled`（已结清）或 `unsettled`（未结清），统一作用于整张收据。未传时按所选订单 `应收 − 已审核实收 − 已生效结清差额 − 本次收款` 合计小于30元默认已结清，否则未结清；默认判断不扣其他待审核金额，业务员可以覆盖。历史记录为空并保持原逻辑。结清须审核通过后生效，保留实际收款及原报价，明细新增最终 `settlement_difference` 和待审 `preview_settlement_difference`。完整规则见 [API v1.5](API-v1.5.md)。
 
-#### 7.2.1 管理员订单修订窗口
+#### 7.2.1 订单编辑与箱子重新入库
 
-- **解锁订单:** `POST /api/orders/<uid>/receipt-unlock`，仅限 `admin`，请求体 `{ "reason": "必填，最多 512 个字符" }`
-- **重新锁定:** `POST /api/orders/<uid>/receipt-relock`，仅限 `admin`，请求体 `{ "remark": "可选，最多 512 个字符" }`
+订单锁定、解锁、重新锁定及修订窗口流程已删除，原 `receipt-unlock`、`receipt-relock` 和管理员开放修订查询接口已移除。历史修订记录继续保留，不影响当前操作。
 
-仅当订单关联的所有收款单均为 `rejected`，且没有已分配奖金的包裹时允许解锁；已有出库包裹不影响解锁。创建新收款单也会在同一事务内自动关闭其订单的开放修订窗口。完整规则见 [API v1.3](API-v1.3.md)。
+订单与包裹的重量、客户归属、箱子增删、分配和解绑均按普通角色权限处理，不因已有收据历史受限。已出库包裹的重量约束独立保留；装箱单箱子撤销出库后可重新称重。
 
-`GET /api/orders/<uid>` 保留兼容字段 `receipt_locked`，并增加：
+`clerk` 属于箱子编辑角色，可编辑箱子内容、原单号、转单号和操作员；箱子重量仍由独立的 `box_weight` 角色权限控制。
 
-```json
-{
-  "receipt_lock": {
-    "status": "none|locked|revision_open",
-    "has_history": true,
-    "unlock_eligible": true,
-    "blockers": [],
-    "revision": null
-  }
-}
-```
+`POST /api/box/<uid>/undo-ship` 允许管理员和店长撤销装箱单箱子出库：清空转单号及出库时间，状态恢复为待出库（`0`）；保留订单归属、原单号、重量及奖金。当前成本归档，出库记录、原成本金额与收款历史继续保留，再次出库创建新成本和新的出库记录。成功后前端刷新装箱单箱子列表。
 
-`blockers` 可取 `pending_receipt`、`approved_receipt`、`bonus_assigned`。业务状态冲突返回 `409`。
+删除被报价、成本或收款外键引用的订单，以及有成本记录的箱子时，执行归档并保留历史；无引用记录仍可物理删除。订单归档在同一事务内级联归档关联货物/箱子、成本、报价、差价单和收款明细。
+
+#### 7.2.2 重报价差价单
+
+`GET /api/receivable-adjustments?status=pending&q=&p=1&s=20` 查询重报价生效后自动生成的待处理差价。`delta_amount` 为新应收减旧应收；正数表示待补收，负数表示待退款，零差不生成。差价单不代表现金已经收取或退还，也不进入收款金额汇总。详细规则见 [API v1.7](API-v1.7.md)。
+
+`GET /api/receivable-adjustments/<id>` 查询单笔差价。列表和详情新增 `customer_id`、`approved_received`、`pending_amount`、`available_amount`、`collection_blocked_reason`。业务员按订单当前有效报价负责人查看，管理员及财务查看全部。
+
+差价列表可传 `order_uid` 精确查询订单；管理员及财务可传 `owner_id` 按当前有效报价人筛选。业务员的跟单范围不受传入 `owner_id` 影响，见 [API v1.18](API-v1.18.md)。
+
+`POST /api/receipts` 明细可传 `adjustment_id` 登记补收；关联差价的收款单只包含一笔明细并固定使用 `unsettled`，支持分次实收且不自动减免余款。同差价已有待审补收单时禁止重复登记；批准后更新差价余额，补足差价或订单实际应收时关闭待补收任务，驳回释放占用。退款差价仍只读。新增外键需先执行数据库迁移，完整契约见 [API v1.8](API-v1.8.md)。
 
 ### 7.3 收款审核
 
@@ -1581,4 +1719,18 @@ Docker 部署时通过环境变量配置初始管理员：
 
 ---
 
-*文档更新时间: 2026-09-04*
+## 订单版本发布步骤
+
+生产发布必须先停止业务写入并备份数据库，然后按顺序执行：
+
+1. `alembic upgrade head`
+2. `python -m scripts.backfill_order_versions`（幂等，失败后保持停写并重跑）
+3. 核对脚本输出的 `orders`、`baseline_imports`、`v1_coverage` 和 `verified`
+4. 确认 `verified=True`（即 `orders == v1_coverage`），并在首次冻结发布中确认 `orders == baseline_imports == v1_coverage`
+5. 抽查 V1 完整快照后，再发布应用并恢复写入
+
+`baseline_imports` 只统计 V1 基线导入，`v1_coverage` 统计所有 V1（包括新订单的 `order_created`）；脚本的 `verified` 只比较 `orders` 与 `v1_coverage`。写路径的“缺少基线时自动补 V1”仅是安全兜底，不能代替正式回填。历史长期保留，业务数据硬删除不清除版本，也没有普通历史删除 API。上线前已经硬删除的数据无法补录，不从旧操作日志推断或回放历史。完整迁移与校验说明见 [API v1.6](API-v1.6.md)。
+
+---
+
+*文档更新时间: 2026-09-16*

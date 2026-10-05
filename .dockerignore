@@ -1,6 +1,7 @@
 .git
 .gitignore
 *.env
+env.toml
 __pycache__/
 *.py[cod]
 .pytest_cache/

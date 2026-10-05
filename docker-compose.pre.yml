@@ -42,6 +42,7 @@ services:
       mysql:
         condition: service_healthy
     volumes:
+      - ./env.toml:/app/env.toml:ro
       - ./log_pre:/app/log
       - ./excels_pre:/app/excels
       - ./data/history_pre:/app/data/history

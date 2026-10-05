@@ -1,7 +1,7 @@
 import time
 import json
 
-from sqlalchemy import Column, String, Integer, Enum as SAEnum
+from sqlalchemy import Column, String, Integer, Enum as SAEnum, or_
 from sqlalchemy.orm import relationship
 from sqlalchemy.orm import Mapped
 from data.database import Base, SessionFactory
@@ -169,6 +169,7 @@ class UserModel:
 
             from data.DB import (
                 CargoTable,
+                BoxCostRecordTable,
                 OrderReceiptRevisionTable,
                 OrderQuoteVersionTable,
                 OrderTable,
@@ -176,9 +177,139 @@ class UserModel:
                 SalesFollowupBonusRateTable,
             )
             from data.packing.PackingList import PackingListTable, BoxWorkerTable
+            from data.intake import IntakeTable
             from data.user.PasswordResetRequest import PasswordResetRequestTable
             from data.finance.BonusItem import BonusItemTable
             from data.finance.BonusRate import BonusRateTable
+
+            if (
+                session.query(IntakeTable.uid)
+                .outerjoin(PackingListTable, PackingListTable.uid == IntakeTable.packing_list_uid)
+                .filter(or_(
+                    IntakeTable.submitted_by == user_id,
+                    IntakeTable.confirmed_by == user_id,
+                    PackingListTable.creator_id == user_id,
+                ))
+                .first()
+                is not None
+            ):
+                from services.order_edit_policy import OrderEditConflictError
+
+                raise OrderEditConflictError("该账号关联纸单来源或核对记录，不能硬删除，请保留操作人员身份")
+
+            salesman_order_uids = {
+                row[0]
+                for row in session.query(OrderTable.uid)
+                .filter(OrderTable.salesman_id == user_id)
+                .all()
+            }
+            worker_order_uids = {
+                row[0]
+                for row in session.query(CargoTable.target_order_uid)
+                .join(BoxWorkerTable, BoxWorkerTable.box_uid == CargoTable.uid)
+                .filter(
+                    BoxWorkerTable.worker_id == user_id,
+                    CargoTable.target_order_uid.isnot(None),
+                )
+                .all()
+            }
+            packing_list_uids = [
+                uid
+                for (uid,) in session.query(PackingListTable.uid)
+                .filter(PackingListTable.creator_id == user_id)
+                .all()
+            ]
+            worker_box_uids = {
+                row[0]
+                for row in session.query(BoxWorkerTable.box_uid)
+                .filter(BoxWorkerTable.worker_id == user_id)
+                .all()
+            }
+            packing_box_uids = set()
+            if packing_list_uids:
+                packing_box_uids = {
+                    row[0]
+                    for row in session.query(CargoTable.uid)
+                    .filter(CargoTable.packing_list_uid.in_(packing_list_uids))
+                    .all()
+                }
+            candidate_box_uids = sorted(worker_box_uids | packing_box_uids)
+            candidate_box_state = {
+                row.uid: (row.target_order_uid, row.packing_list_uid)
+                for row in session.query(
+                    CargoTable.uid,
+                    CargoTable.target_order_uid,
+                    CargoTable.packing_list_uid,
+                )
+                .filter(CargoTable.uid.in_(candidate_box_uids))
+                .all()
+            }
+            packing_order_uids = set()
+            if packing_list_uids:
+                packing_order_uids = {
+                    row[0]
+                    for row in session.query(CargoTable.target_order_uid)
+                    .filter(
+                        CargoTable.packing_list_uid.in_(packing_list_uids),
+                        CargoTable.target_order_uid.isnot(None),
+                    )
+                    .all()
+                }
+            affected_order_uids = sorted(
+                salesman_order_uids | worker_order_uids | packing_order_uids
+            )
+            if affected_order_uids:
+                (
+                    session.query(OrderTable.uid)
+                    .filter(OrderTable.uid.in_(affected_order_uids))
+                    .order_by(OrderTable.uid.asc())
+                    .with_for_update()
+                    .all()
+                )
+            locked_boxes = (
+                session.query(CargoTable)
+                .filter(CargoTable.uid.in_(candidate_box_uids))
+                .order_by(CargoTable.uid.asc())
+                .populate_existing()
+                .with_for_update()
+                .all()
+                if candidate_box_uids
+                else []
+            )
+            if any(
+                (box.target_order_uid, box.packing_list_uid)
+                != candidate_box_state.get(box.uid)
+                for box in locked_boxes
+            ) or len(locked_boxes) != len(candidate_box_state):
+                from services.order_edit_policy import OrderEditConflictError
+
+                raise OrderEditConflictError("箱子状态或归属已变化，请刷新后重试")
+            if packing_list_uids:
+                locked_packing_lists = (
+                    session.query(PackingListTable)
+                    .filter(PackingListTable.uid.in_(packing_list_uids))
+                    .order_by(PackingListTable.uid.asc())
+                    .populate_existing()
+                    .with_for_update()
+                    .all()
+                )
+                if len(locked_packing_lists) != len(packing_list_uids) or any(
+                    packing_list.creator_id != user_id
+                    for packing_list in locked_packing_lists
+                ):
+                    from services.order_edit_policy import OrderEditConflictError
+
+                    raise OrderEditConflictError("装箱单已变化，请刷新后重试")
+            from data.order_version import (
+                new_correlation_id,
+                record_mutation,
+                snapshot_order,
+            )
+
+            before_by_order = {
+                order_uid: snapshot_order(session, order_uid)
+                for order_uid in affected_order_uids
+            }
 
             session.query(OrderTable).filter(OrderTable.salesman_id == user_id).update(
                 {"salesman_id": None}, synchronize_session=False
@@ -221,13 +352,18 @@ class UserModel:
                 PasswordResetRequestTable.user_id == user_id
             ).delete(synchronize_session=False)
 
-            packing_list_uids = [
-                uid
-                for (uid,) in session.query(PackingListTable.uid)
-                .filter(PackingListTable.creator_id == user_id)
-                .all()
-            ]
             if packing_list_uids:
+                if (
+                    session.query(BoxCostRecordTable.id)
+                    .filter(BoxCostRecordTable.packing_list_uid.in_(packing_list_uids))
+                    .first()
+                    is not None
+                ):
+                    from services.order_edit_policy import (
+                        OrderEditConflictError,
+                    )
+
+                    raise OrderEditConflictError("该账号仍是历史装箱单的创建人，不能硬删除该账号记录")
                 session.query(CargoTable).filter(
                     CargoTable.packing_list_uid.in_(packing_list_uids)
                 ).update({"packing_list_uid": None}, synchronize_session=False)
@@ -236,6 +372,21 @@ class UserModel:
                 ).delete(synchronize_session=False)
 
             session.delete(user)
+            session.flush()
+            # Bulk updates above bypass the identity map. Reload live rows before
+            # deriving the after snapshots so salesman/box transitions are real.
+            session.expire_all()
+            correlation_id = new_correlation_id()
+            for order_uid in affected_order_uids:
+                record_mutation(
+                    session,
+                    order_uid,
+                    before=before_by_order[order_uid],
+                    after=snapshot_order(session, order_uid),
+                    action="operator_removed",
+                    summary="删除用户并清理订单关联",
+                    correlation_id=correlation_id,
+                )
             session.commit()
             return True
 

@@ -233,13 +233,81 @@ def del_customer_record(customer_id: int = 0):
 
     s = SessionFactory()
     try:
-        # Cascade: delete receivers first
-        s.query(ReceiverTable).filter_by(customer_id=customer_id).delete()
         customer = s.query(CustomerTable).filter_by(id=customer_id).first()
         if customer is None:
             s.commit()
             return
+        from data.DB import OrderTable, PaymentReceiptTable, order_customers
+        from data.order_version import (
+            new_correlation_id,
+            record_mutation,
+            snapshot_order,
+        )
+
+        if (
+            s.query(PaymentReceiptTable.id)
+            .filter(PaymentReceiptTable.customer_id == customer_id)
+            .first()
+            is not None
+        ):
+            from services.order_edit_policy import (
+                OrderEditConflictError,
+            )
+
+            raise OrderEditConflictError("客户仍被收款记录引用，不能硬删除该客户记录")
+
+        order_uids = sorted(order.uid for order in customer.orders)
+        if order_uids:
+            (
+                s.query(OrderTable.uid)
+                .filter(OrderTable.uid.in_(order_uids))
+                .order_by(OrderTable.uid.asc())
+                .with_for_update()
+                .all()
+            )
+        current_order_uids = sorted(
+            row[0]
+            for row in s.query(order_customers.c.order_uid)
+            .filter(order_customers.c.customer_id == customer_id)
+            .with_for_update()
+            .all()
+        )
+        if current_order_uids != order_uids:
+            from services.order_edit_policy import OrderEditConflictError
+
+            raise OrderEditConflictError("客户归属已变化，请刷新后重试")
+        customer = (
+            s.query(CustomerTable)
+            .filter(CustomerTable.id == customer_id)
+            .populate_existing()
+            .with_for_update()
+            .first()
+        )
+        if customer is None:
+            return
+        before = {order_uid: snapshot_order(s, order_uid) for order_uid in order_uids}
+        for order in list(customer.orders):
+            order.customers.remove(customer)
+        from data.packing.PackingList import PackingListTable
+
+        s.query(PackingListTable).filter(
+            PackingListTable.customer_id == customer_id
+        ).update({"customer_id": None}, synchronize_session=False)
+        # Cascade: delete receivers first
+        s.query(ReceiverTable).filter_by(customer_id=customer_id).delete()
         s.delete(customer)
+        s.flush()
+        correlation_id = new_correlation_id()
+        for order_uid in order_uids:
+            record_mutation(
+                s,
+                order_uid,
+                before=before[order_uid],
+                after=snapshot_order(s, order_uid),
+                action="customer_removed",
+                summary="删除客户并解除订单归属",
+                correlation_id=correlation_id,
+            )
         s.commit()
     except Exception:
         s.rollback()

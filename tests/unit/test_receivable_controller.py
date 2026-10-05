@@ -9,7 +9,6 @@ from data.DB import (
     OrderQuoteVersionTable,
     OrderTable,
     PaymentReceiptTable,
-    RECEIPT_LOCKED_MESSAGE,
     TransportationModeTable,
 )
 from data.packing.PackingList import PackingListTable
@@ -381,7 +380,7 @@ def test_only_current_order_salesperson_can_quote(
     assert session.query(OrderQuoteVersionTable).filter_by(order_uid=order.uid).count() == 0
 
 
-def test_quote_formula_is_live_until_receipt_then_order_mutations_are_blocked(
+def test_receipt_preserves_its_snapshot_but_allows_pending_cargo_weight_changes(
     client, setup_test_database, salesperson_token
 ):
     session = setup_test_database
@@ -430,18 +429,23 @@ def test_quote_formula_is_live_until_receipt_then_order_mutations_are_blocked(
         f"/api/orders/{order.uid}",
         headers=_headers(salesperson_token),
     )
-    assert order_detail.get_json()["data"]["receipt_locked"] is True
+    detail_data = order_detail.get_json()["data"]
+    for field in ("receipt_locked", "receipt_lock", "business_lock", "financial_lock"):
+        assert field not in detail_data
+    assert detail_data["edit_policy"]["cargo_weight"] is True
 
-    blocked = client.put(
+    edited = client.put(
         f"/api/cargo/{cargo.uid}",
         headers=_headers(salesperson_token),
         json={"weight": 11.3},
     )
-    assert blocked.status_code == 409
-    assert blocked.get_json()["msg"] == RECEIPT_LOCKED_MESSAGE
+    assert edited.status_code == 200
+    session.expire_all()
+    assert session.query(CargoTable).filter_by(uid=cargo.uid).one().weight == 11.3
+    assert float(session.query(OrderQuoteVersionTable).filter_by(order_uid=order.uid).one().weight_snapshot) == 11.2
 
 
-def test_rejected_receipt_permanently_blocks_all_receivable_basis_mutations(
+def test_rejected_receipt_does_not_restrict_order_or_member_edits(
     client, setup_test_database, salesperson_token, admin_token
 ):
     session = setup_test_database
@@ -512,7 +516,7 @@ def test_rejected_receipt_permanently_blocks_all_receivable_basis_mutations(
     )
     assert rejected.status_code == 200
 
-    locked_requests = [
+    edit_requests = [
         client.post(
             f"/api/orders/{order_uid}/add_cargo",
             headers=_headers(salesperson_token),
@@ -522,21 +526,6 @@ def test_rejected_receipt_permanently_blocks_all_receivable_basis_mutations(
             f"/api/cargo/{cargo_uid}",
             headers=_headers(salesperson_token),
             json={"weight": 11.0},
-        ),
-        client.post(
-            "/api/cargo/unbind",
-            headers=_headers(salesperson_token),
-            json={"cargo_id_list": [cargo_uid]},
-        ),
-        client.post(
-            "/api/cargo/archive",
-            headers=_headers(salesperson_token),
-            json={"cargo_id_list": [cargo_uid]},
-        ),
-        client.delete(
-            "/api/cargo",
-            headers=_headers(salesperson_token),
-            json={"cargo_id_list": [cargo_uid]},
         ),
         client.put(
             f"/api/box/{assigned_box_uid}/weigh",
@@ -548,41 +537,54 @@ def test_rejected_receipt_permanently_blocks_all_receivable_basis_mutations(
             headers=_headers(salesperson_token),
             json={"box_uids": [unassigned_box_uid], "order_uid": order_uid},
         ),
-        client.post(
-            f"/api/orders/{order_uid}/quotes",
-            headers=_headers(salesperson_token),
-            json={"unit_price": 13, "surcharge": 5},
-        ),
-        client.put(
-            f"/api/finance/quote-approvals/{pending_quote['id']}",
-            headers=_headers(admin_token),
-            json={"action": "approve", "review_remark": "不应批准"},
-        ),
-        client.post(
-            f"/api/orders/{order_uid}/archive",
-            headers=_headers(salesperson_token),
-        ),
-        client.delete(
-            f"/api/orders/{order_uid}",
-            headers=_headers(salesperson_token),
-        ),
     ]
-    for response in locked_requests:
-        assert response.status_code == 409
-        assert response.get_json()["msg"] == RECEIPT_LOCKED_MESSAGE
+    for response in edit_requests:
+        assert response.status_code == 200, response.get_json()
 
     session.expire_all()
-    assert session.query(CargoTable).filter_by(uid=unassigned_box_uid).one().target_order_uid is None
-    assert session.query(CargoTable).filter_by(uid=cargo_uid).one().archive is False
+    assert session.query(CargoTable).filter_by(uid=unassigned_box_uid).one().target_order_uid == order_uid
+    assert session.query(CargoTable).filter_by(uid=assigned_box_uid).one().weight == 3.0
+    assert session.query(CargoTable).filter_by(uid=cargo_uid).one().weight == 11.0
 
-    allowed = client.put(
+    non_financial_edit = client.put(
         f"/api/cargo/{cargo_uid}",
         headers=_headers(salesperson_token),
-        json={"real_en_name": "SHOES", "weight": 10.5},
+        json={"real_en_name": "SHOES"},
     )
-    assert allowed.status_code == 200
+    assert non_financial_edit.status_code == 200
+
+    requote = client.post(
+        f"/api/orders/{order_uid}/quotes",
+        headers=_headers(salesperson_token),
+        json={"unit_price": 13, "surcharge": 5},
+    )
+    assert requote.status_code == 200
+    approved_pending = client.put(
+        f"/api/finance/quote-approvals/{pending_quote['id']}",
+        headers=_headers(admin_token),
+        json={"action": "approve", "review_remark": "批准重报价"},
+    )
+    assert approved_pending.status_code == 200
+
     session.expire_all()
     assert session.query(CargoTable).filter_by(uid=cargo_uid).one().real_en_name == "SHOES"
+    for endpoint, method in [
+        ("/api/cargo/unbind", client.post),
+        ("/api/cargo/archive", client.post),
+        ("/api/cargo", client.delete),
+    ]:
+        response = method(
+            endpoint,
+            headers=_headers(salesperson_token),
+            json={"cargo_id_list": [cargo_uid]},
+        )
+        assert response.status_code == 200, response.get_json()
+    deleted = client.delete(
+        f"/api/orders/{order_uid}", headers=_headers(salesperson_token),
+    )
+    assert deleted.status_code == 200, deleted.get_json()
+    session.expire_all()
+    assert session.query(PaymentReceiptTable).filter_by(id=receipt["id"]).one().status == "rejected"
 
 
 def test_low_unit_price_requires_review_even_with_large_surcharge(

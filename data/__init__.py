@@ -28,6 +28,14 @@ from .packing import (
     box_model,
 )  # noqa: F401  registers packing tables
 
+# Import append-only order history after order/packing models to avoid circular
+# registration while still exposing the tables through Base.metadata.
+from .order_version import (  # noqa: F401
+    OrderVersionTable,
+    OrderVersionChangeTable,
+)
+
 # Import finance models so they are registered
 from .finance import bonus_rate_model  # noqa: F401  registers bonus_rates table
 from .finance import bonus_item_model  # noqa: F401  registers bonus_items table
+from .intake import IntakeTable, IntakePhotoTable  # noqa: F401

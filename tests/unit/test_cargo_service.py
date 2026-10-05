@@ -1,6 +1,8 @@
 """货物服务层测试"""
 
 import pytest
+from data.packing.PackingList import PackingListTable
+from services.outbound_service import update_cargo_details
 from unittest.mock import Mock, patch, MagicMock
 from io import BytesIO
 import pandas as pd
@@ -372,71 +374,102 @@ class TestCargoService(BaseServiceTest, FileTestMixin):
             }
             assert result == expected
 
-    def test_apply_waybill_table_success(self):
+    def test_apply_waybill_table_success(self, setup_test_database):
         """测试成功应用转运单"""
+        session = setup_test_database
         transfer_map = {"TR001": "WB001", "TR002": "WB002"}
+        session.add(OrderTable(uid="import-order", order_id="IMPORT", archive=False))
+        session.add_all(
+            [
+                CargoTable(
+                    uid=f"cargo{index}",
+                    origin_id=f"CARGO-{index}",
+                    transfer_id=transfer_id,
+                    waybill_id="",
+                    status=0, weight=1, target_order_uid="import-order",
+                    archive=False,
+                    create_date="2023-01-01 09:00",
+                )
+                for index, transfer_id in enumerate(
+                    ("TR001", "TR002", "TR003"), start=1
+                )
+            ]
+        )
+        session.commit()
 
-        mock_cargo_model = Mock()
-        mock_cargo_model.data_point = {
-            "cargo1": {"transfer_id": "TR001"},
-            "cargo2": {"transfer_id": "TR002"},
-            "cargo3": {"transfer_id": "TR003"},  # 不在转运单中
-        }
-
-        with patch("services.cargo_service.registerTrack") as mock_register, patch(
-            "datetime.datetime"
-        ) as mock_datetime:
-
-            mock_datetime.now.return_value.strftime.return_value = "2023-01-01 10:00"
-
-            register_list, error = apply_waybill_table(mock_cargo_model, transfer_map)
+        with patch("services.cargo_service.registerTrack") as mock_register:
+            register_list, error = apply_waybill_table(cargo_model, transfer_map)
 
             assert error is None
             assert len(register_list) == 2
             assert ("cargo1", "WB001") in register_list
             assert ("cargo2", "WB002") in register_list
-
-            # 验证货物更新调用
-            assert mock_cargo_model.update.call_count == 2
             mock_register.assert_called_once_with(register_list)
-
-    def test_apply_waybill_table_marks_box_as_shipped(self):
-        """测试箱子上传转单号后自动变为已出货"""
-        transfer_map = {"TR001": "WB001"}
-
-        mock_cargo_model = Mock()
-        mock_cargo_model.data_point = {
-            "box1": {
-                "transfer_id": "TR001",
-                "packing_list_uid": "pl1",
-                "target_order_uid": "order1",
-                "status": 0,
+            session.expire_all()
+            persisted = {
+                row.uid: row.waybill_id
+                for row in session.query(CargoTable)
+                .filter(CargoTable.uid.in_(["cargo1", "cargo2", "cargo3"]))
+                .all()
             }
-        }
+            assert persisted == {
+                "cargo1": "WB001",
+                "cargo2": "WB002",
+                "cargo3": "",
+            }
 
-        with patch("services.cargo_service.registerTrack") as mock_register, patch(
-            "datetime.datetime"
-        ) as mock_datetime:
-            mock_datetime.now.return_value.strftime.return_value = "2023-01-01 10:00"
+    def test_apply_waybill_table_delegates_atomic_shipping_to_service(
+        self, setup_test_database
+    ):
+        """批量上传由统一出库服务在同事务处理状态和成本。"""
+        session = setup_test_database
+        transfer_map = {"TR001": "WB001"}
+        session.add(PackingListTable(uid="pl1", list_number="PL1", creator_id=1, archive=False))
+        session.add_all(
+            [
+                OrderTable(
+                    uid="order1",
+                    order_id="ORDER001",
+                    transportation="",
+                    archive=False,
+                    create_date="2023-01-01 09:00",
+                ),
+                CargoTable(
+                    uid="box1",
+                    origin_id="BOX001",
+                    transfer_id="TR001",
+                    waybill_id="",
+                    packing_list_uid="pl1",
+                    target_order_uid="order1",
+                    status=0,
+                    weight=1,
+                    archive=False,
+                    create_date="2023-01-01 09:00",
+                ),
+            ]
+        )
+        session.commit()
+        mock_cargo_model = Mock()
+
+        with patch("services.cargo_service.registerTrack") as mock_register:
 
             register_list, error = apply_waybill_table(mock_cargo_model, transfer_map)
 
             assert error is None
             assert register_list == [("box1", "WB001")]
-            mock_cargo_model.update.assert_called_once_with(
-                "box1",
-                {
-                    "waybill_id": "WB001",
-                    "status": 1,
-                    "date": "2023-01-01 10:00",
-                },
-            )
+            assert session.query(BoxCostRecordTable).filter_by(box_uid="box1").count() == 1
             mock_register.assert_called_once_with(register_list)
+            session.expire_all()
+            box = session.query(CargoTable).filter_by(uid="box1").one()
+            assert box.waybill_id == "WB001"
+            assert box.status == 1
+            assert box.date is not None
 
-    def test_cargo_model_update_marks_box_as_shipped(self):
-        """测试箱子直接更新运单号后自动变为已出货"""
+    def test_application_update_marks_box_as_shipped(self):
+        """测试应用组合更新号码和确认出库"""
         session = SessionFactory()
         try:
+            session.add(PackingListTable(uid="pl1", list_number="PL1", creator_id=1, archive=False))
             session.add_all(
                 [
                     OrderTable(
@@ -466,17 +499,18 @@ class TestCargoService(BaseServiceTest, FileTestMixin):
         finally:
             session.close()
 
-        cargo_model.update("box1", {"waybill_id": "WB001"})
+        update_cargo_details("box1", {"waybill_id": "WB001"}, confirm_outbound=True)
         updated = cargo_model.read("box1")
 
         assert updated["waybill_id"] == "WB001"
         assert updated["status"] == 1
         assert updated["date"] is not None
 
-    def test_cargo_model_update_locks_box_cost_without_transportation(self):
+    def test_application_update_locks_box_cost_without_transportation(self):
         """测试订单无运输方式时上传转单号也能锁单，成本记录渠道留空"""
         session = SessionFactory()
         try:
+            session.add(PackingListTable(uid="pl1", list_number="PL1", creator_id=1, archive=False))
             session.add_all(
                 [
                     OrderTable(
@@ -506,7 +540,7 @@ class TestCargoService(BaseServiceTest, FileTestMixin):
         finally:
             session.close()
 
-        cargo_model.update("box-no-transport", {"waybill_id": "WB002"})
+        update_cargo_details("box-no-transport", {"waybill_id": "WB002"}, confirm_outbound=True)
 
         session = SessionFactory()
         try:
@@ -525,41 +559,49 @@ class TestCargoService(BaseServiceTest, FileTestMixin):
         finally:
             session.close()
 
-    def test_apply_waybill_table_register_error(self):
+    def test_apply_waybill_table_register_error(self, setup_test_database):
         """测试17track注册失败"""
+        session = setup_test_database
         transfer_map = {"TR001": "WB001"}
-
-        mock_cargo_model = Mock()
-        mock_cargo_model.data_point = {"cargo1": {"transfer_id": "TR001"}}
+        session.add(OrderTable(uid="import-order", order_id="IMPORT", archive=False))
+        session.add(
+            CargoTable(
+                uid="cargo1",
+                origin_id="CARGO-1",
+                transfer_id="TR001",
+                waybill_id="",
+                status=0, weight=1, target_order_uid="import-order",
+                archive=False,
+                create_date="2023-01-01 09:00",
+            )
+        )
+        session.commit()
 
         with patch(
             "services.cargo_service.registerTrack", side_effect=Exception("API Error")
-        ) as mock_register, patch("datetime.datetime") as mock_datetime:
-
-            mock_datetime.now.return_value.strftime.return_value = "2023-01-01 10:00"
-
-            register_list, error = apply_waybill_table(mock_cargo_model, transfer_map)
+        ) as mock_register:
+            register_list, error = apply_waybill_table(cargo_model, transfer_map)
 
             assert error is not None
             assert len(register_list) == 1  # 货物仍然更新了
             assert ("cargo1", "WB001") in register_list
-
-            # 验证仍然尝试了注册
             mock_register.assert_called_once_with(register_list)
+            session.expire_all()
+            assert (
+                session.query(CargoTable).filter_by(uid="cargo1").one().waybill_id
+                == "WB001"
+            )
 
     def test_apply_waybill_table_empty_map(self):
         """测试空转运单映射"""
         transfer_map = {}
 
-        mock_cargo_model = Mock()
-        mock_cargo_model.data_point = {"cargo1": {"transfer_id": "TR001"}}
-
         with patch("services.cargo_service.registerTrack") as mock_register:
-            register_list, error = apply_waybill_table(mock_cargo_model, transfer_map)
+            register_list, error = apply_waybill_table(cargo_model, transfer_map)
 
             assert error is None
             assert len(register_list) == 0
-            mock_register.assert_called_once_with([])
+            mock_register.assert_not_called()
 
     def test_background_register_success(self):
         """测试后台注册成功"""

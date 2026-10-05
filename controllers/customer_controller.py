@@ -20,6 +20,7 @@ from data.customer.Customer import (
     update_customer_info,
     ALLOWED_ROLES,
 )
+from services.order_edit_policy import OrderEditConflictError
 from utils.audit_log import (
     log_sensitive_access,
     ACTION_VIEW_ALL,
@@ -95,7 +96,10 @@ def del_customer(customer_id):
         ip_address=request.remote_addr,
     )
 
-    del_customer_record(customer_id=customer_id)
+    try:
+        del_customer_record(customer_id=customer_id)
+    except OrderEditConflictError as exc:
+        return jsonify({"code": 409, "msg": str(exc)}), 409
     return jsonify({"code": 200, "msg": "success"})
 
 
@@ -282,7 +286,7 @@ def update_customer(customer_id):
         # 更新字段
         if "name" in record:
             new_name = record["name"].strip()
-            if new_name:
+            if new_name and new_name != customer.name:
                 # 检查名称是否与其他客户冲突
                 existing = (
                     s.query(CustomerTable)
@@ -296,7 +300,53 @@ def update_customer(customer_id):
                         jsonify({"code": 400, "msg": "Customer name already exists"}),
                         400,
                     )
+                from data.DB import OrderTable
+                from data.order_version import (
+                    new_correlation_id,
+                    record_mutation,
+                    snapshot_order,
+                )
+
+                old_name = customer.name
+                order_uids = sorted(order.uid for order in customer.orders)
+                if order_uids:
+                    orders = (
+                        s.query(OrderTable)
+                        .filter(OrderTable.uid.in_(order_uids))
+                        .order_by(OrderTable.uid.asc())
+                        .with_for_update()
+                        .all()
+                    )
+                else:
+                    orders = []
+                customer = (
+                    s.query(CustomerTable)
+                    .filter(CustomerTable.id == customer_id)
+                    .populate_existing()
+                    .with_for_update()
+                    .first()
+                )
+                if customer is None or customer.name != old_name:
+                    raise OrderEditConflictError("客户资料已变化，请刷新后重试")
+                before_by_order = {
+                    order_uid: snapshot_order(s, order_uid)
+                    for order_uid in order_uids
+                }
                 customer.name = new_name
+                for order in orders:
+                    order.customer_name = new_name
+                s.flush()
+                correlation_id = new_correlation_id()
+                for order_uid in order_uids:
+                    record_mutation(
+                        s,
+                        order_uid,
+                        before=before_by_order[order_uid],
+                        after=snapshot_order(s, order_uid),
+                        action="customer_updated",
+                        summary="修改客户名称",
+                        correlation_id=correlation_id,
+                    )
 
         if "phone" in record:
             customer.phone = record["phone"].strip() if record["phone"] else None
@@ -317,6 +367,9 @@ def update_customer(customer_id):
                 },
             }
         )
+    except OrderEditConflictError as e:
+        s.rollback()
+        return jsonify({"code": 409, "msg": str(e)}), 409
     except Exception as e:
         s.rollback()
         return (

@@ -1,7 +1,7 @@
 import logging
 import sys
 
-from flask import Flask, request, send_file
+from flask import Flask, jsonify, request, send_file
 
 
 from data import backup
@@ -17,6 +17,7 @@ from controllers.customs_code_controller import customs_code_bp
 from controllers.excel_template_controller import excel_template_bp
 from controllers.transportation_controller import transportation_bp
 from controllers.receivable_controller import receivable_bp
+from controllers.intake_controller import intake_bp
 from services.auth_service import init_admin_user
 
 # ---------------------------------------------------------------------------
@@ -53,6 +54,7 @@ app.register_blueprint(customs_code_bp)
 app.register_blueprint(excel_template_bp)
 app.register_blueprint(transportation_bp)
 app.register_blueprint(receivable_bp)
+app.register_blueprint(intake_bp)
 
 
 # ---------------------------------------------------------------------------
@@ -68,6 +70,8 @@ def get_ip():
 @app.route("/", defaults={"path": ""})
 @app.route("/<path:path>")
 def static_world(path):
+    if path == "api" or path.startswith("api/"):
+        return jsonify({"code": 404, "msg": "API接口不存在"}), 404
     try:
         return app.send_static_file(path)
     except Exception:
