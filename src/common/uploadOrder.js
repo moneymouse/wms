@@ -99,8 +99,8 @@ const FileComponent = ({mode}) => {
 const UploadOrder = () => (<>
     <Typography.Title level={4} style={{marginBottom: '2rem'}}>上传文件</Typography.Title>
     <Typography.Text style={{marginBottom: '2rem'}}>原单号-转单号表中，请将原单号列名改为`<Typography.Text
-        style={{color: "#1677ff"}}>origin_id</Typography.Text>`, 转单号名改为`<Typography.Text
-        style={{color: "#1677ff"}}>transfer_id</Typography.Text>`</Typography.Text>
+        style={{color: "#1677ff"}}>transfer_id</Typography.Text>`, 转单号（运单号）列名改为`<Typography.Text
+        style={{color: "#1677ff"}}>waybill_id</Typography.Text>`</Typography.Text>
     <Tabs style={{marginTop: '1rem'}} items={[{
         key: 'transfer_table', label: '原单号-转单号表', children: <FileComponent mode={'transfer_table'}/>
     }, // {

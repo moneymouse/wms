@@ -18,10 +18,14 @@ import {
 import {
     SearchOutlined,
     PrinterOutlined,
-    ReloadOutlined
+    ReloadOutlined,
+    FileSearchOutlined
 } from '@ant-design/icons';
 import { endpoint } from '../config';
 import getSafeHeader from '../common/safeHeader';
+import { canReviewIntake, getIntakeRoles } from '../common/intakeApi';
+import MyPackingLists from '../components/MyPackingLists';
+import entryStyles from './packingListEntry.module.css';
 
 const { Title, Text } = Typography;
 const { Option } = Select;
@@ -85,6 +89,13 @@ const getPackingListStatusMeta = (record) => {
 };
 
 export default function PackingListList() {
+    const roles = getIntakeRoles();
+    const workerOnly = roles.some(role => ['worker', 'employee'].includes(role)) &&
+        !roles.some(role => ['admin', 'store_manager', 'salesperson', 'clerk', 'finance'].includes(role));
+    return workerOnly ? <MyPackingLists /> : <PackingListWorkspace />;
+}
+
+function PackingListWorkspace() {
     const [messageApi, contextHolder] = message.useMessage();
     const navigate = useNavigate();
     const [searchParams, setSearchParams] = useSearchParams();
@@ -370,7 +381,10 @@ export default function PackingListList() {
         <div style={{ padding: screens.md ? '24px' : '12px' }}>
             {contextHolder}
 
-            <Title level={screens.md ? 2 : 4} style={{ marginBottom: 16 }}>装箱单列表</Title>
+            <div className={entryStyles.listHeading}>
+                <Title level={screens.md ? 2 : 4} style={{ margin: 0 }}>装箱单列表</Title>
+                {canReviewIntake() && <Button type="link" icon={<FileSearchOutlined />} onClick={() => navigate('/intakes')}>待核对纸质单?</Button>}
+            </div>
 
             {/* 搜索筛选 */}
             <Card style={{ marginBottom: 16 }} bodyStyle={screens.md ? {} : { padding: 12 }}>

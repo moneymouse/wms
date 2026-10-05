@@ -2,9 +2,11 @@
 
 **Base URL:** `http://localhost:5001`
 
-**版本:** 1.0
+**版本:** 1.17
 
 ---
+
+订单不再提供锁定、解锁或修订窗口；装箱单箱子操作栏恢复管理员和店长的“撤销出库”按钮。
 
 ## 通用说明
 
@@ -415,10 +417,29 @@ x-token: <JWT_TOKEN>
     "receiver_phone": "13800138000",
     "address": "收件地址",
     "cargo_count": 3,
+    "current_version": 3,
+    "edit_policy": {
+      "order_fields": true,
+      "transportation": true,
+      "order_weight": true,
+      "salesman": true,
+      "customer_assignment": true,
+      "cargo_content": true,
+      "cargo_weight": true,
+      "box_content": true,
+      "box_weight": true,
+      "tracking_numbers": true,
+      "box_workers": true,
+      "box_membership": true,
+      "archive_or_delete": true,
+      "fully_outbound": true
+    },
     "cargo_uid_list": ["cargo1", "cargo2", "cargo3"]
   }
 }
 ```
+
+前端以服务端 `edit_policy` 控制角色权限。全部出库及已有收据均不再禁用订单、客户归属、重量或包裹成员编辑；已出库包裹自身的重量限制仍有效，箱子重新入库后可称重。
 
 ---
 
@@ -548,6 +569,124 @@ x-token: <JWT_TOKEN>
 
 ---
 
+### 2.8 订单修改历史前端契约
+
+订单详情标题旁的“修改历史”按钮只对 `admin` 和 `store_manager` 显示。订单列表中的“已删除订单历史”入口使用相同权限。三个只读接口为：
+
+| 用途 | 接口 |
+| --- | --- |
+| 版本列表 | `GET /api/orders/<uid>/versions?p=1&s=20` |
+| 版本详情 | `GET /api/orders/<uid>/versions/<version_no>` |
+| 删除历史 | `GET /api/order-history?deleted_only=1&q=&p=1&s=20` |
+
+版本列表和删除历史的响应均包装在 `data` 中：
+
+```json
+{
+  "code": 200,
+  "data": {
+    "items": [
+      {
+        "id": 12,
+        "order_uid": "ORDER-UID",
+        "version_no": 3,
+        "action": "box_updated",
+        "summary": "修改箱子内容和操作员",
+        "operator_id": 7,
+        "operator_name": "张三",
+        "operator_roles": ["store_manager"],
+        "reason": null,
+        "correlation_id": "4ba9b14e9b6242ef9d2ebf29e210931c",
+        "created_at": "2026-09-16 10:30:00",
+        "order_id": "ERP-001",
+        "customer_name": "客户A",
+        "deleted": false,
+        "change_count": 1,
+        "change_summary": [
+          {
+            "sequence_no": 1,
+            "entity_type": "box",
+            "entity_uid": "BOX-UID",
+            "operation": "update",
+            "fields": ["item_details", "workers"]
+          }
+        ]
+      }
+    ],
+    "total": 3,
+    "page": 1,
+    "page_size": 20
+  }
+}
+```
+
+版本详情在同一元数据结构上增加：
+
+- `changes[]`：本次增量，包含 `before_data` 和 `after_data`，用于“旧值 → 新值”。
+- `snapshot`：目标版本的完整 `order`、`cargos`、`boxes` 和 `deleted` 状态。
+- `last_existing_snapshot`：仅硬删除版本返回，用于展示删除前完整订单。
+
+`item_details` 是完整数组，应以前后两张表展示，不按数组下标生成逐行 diff。`entity_type` 为 `order|cargo|box`，`operation` 为 `create|update|delete`。
+
+历史抽屉行为要求：
+
+- 列表按版本号倒序分页，展开项显示字段差异，“查看该版本”显示完整快照。
+- 保存操作只在后端成功后更新页面；返回 `409` 时保留原表单和本地状态。
+- 历史抽屉已打开时，成功保存后刷新版本列表和 `current_version`。
+- 删除历史入口先取墓碑列表，再以其中的 `order_uid` 复用同一历史抽屉。
+- 不提供恢复、编辑或删除历史的按钮。
+- 订单列表搜索不匹配历史旧原单号或转单号。
+
+### 2.9 角色编辑权限
+
+`edit_policy` 的布尔字段直接对应前端控件：
+
+| 字段 | 控件范围 |
+| --- | --- |
+| `order_fields` | 订单非重量字段 |
+| `order_weight` | 订单重量 |
+| `salesman` | 业务员选择 |
+| `customer_assignment` | 客户归属 |
+| `cargo_content` / `cargo_weight` | 普通货物内容 / 重量 |
+| `box_content` / `box_weight` | 箱内容 / 重量 |
+| `tracking_numbers` | `transfer_id`、`waybill_id` |
+| `box_workers` | 箱子操作员 |
+| `box_membership` | 新增、移除、分配、解绑箱子 |
+| `archive_or_delete` | 归档和删除 |
+
+上述权限按角色计算，不再叠加订单锁或收据历史约束。详情不再返回 `receipt_locked`、`receipt_lock`、`business_lock`、`financial_lock`、`lock_warnings`，编辑策略不再包含锁定、修订或财务锁字段。
+
+`clerk` 计入箱子编辑角色，可编辑箱子内容、原单号、转单号和操作员；称重权限仍单独由 `box_weight` 控制。
+
+订单列表执行归档后，后端会在同一事务内归档关联货物/箱子及订单所属财务信息。前端无需再逐项调用箱子或财务接口；收款单和订单历史仍作为审计记录保留。
+
+### 2.10 箱内容、操作员和单号
+
+`PUT /api/box/<uid>` 可原子提交箱内容与 `worker_ids`：
+
+```json
+{
+  "item_details": [
+    {"item_name": "SHOES", "customs_code": "6404", "piece_count": 3}
+  ],
+  "remark": "重新核对",
+  "transfer_id": "ORIGINAL-001",
+  "waybill_id": "TRACK-002",
+  "worker_ids": [3, 5]
+}
+```
+
+未传 `worker_ids` 表示保留，空数组表示清空，最多 4 个操作员。新页面应使用该原子保存入口；旧操作员接口仅作兼容。
+
+字段标签统一为：
+
+- `transfer_id`：原单号。
+- `waybill_id`：转单号（运单号）。
+
+箱子一旦出库，箱号和原单号固定，撤销出库后也不能修改。箱子响应 `identity_editable=false` 时这两个字段只读且保存时不提交，当前出库/后续状态也作只读兜底；转单号仍按角色权限编辑。装箱单操作栏允许管理员和店长通过 `POST /api/box/<uid>/undo-ship` 撤销出库，确认后刷新箱子列表；恢复待出库、清空转单号和出库时间，保留订单归属、原单号与历史记录。操作区每行两个按钮：第一行“编辑、撤销出库”，第二行“归档、删除”；归档带垃圾桶图标，删除无图标。
+
+---
+
 ## 3. 货物模块 (Cargo)
 
 ### 3.1 获取订单货物列表
@@ -590,7 +729,7 @@ x-token: <JWT_TOKEN>
 
 ### 3.2 获取所有货物运单信息
 
-获取所有订单下货物的转运号和运单号。
+获取所有订单下货物的原单号和转单号（运单号）。
 
 - **URL:** `GET /api/cargo`
 - **认证:** 需要
@@ -642,6 +781,8 @@ x-token: <JWT_TOKEN>
 ### 3.4 更新货物信息
 
 更新货物信息，运单号变更时会自动注册物流追踪。
+
+`transfer_id` 显示为“原单号”，`waybill_id` 显示为“转单号（运单号）”。
 
 - **URL:** `PUT /api/cargo/<uid>`
 - **认证:** 需要
@@ -1059,9 +1200,36 @@ x-token: <JWT_TOKEN>
 
 ---
 
-## 6. 其他
+## 6. 差价补收
 
-### 6.1 获取客户端 IP
+`GET /api/receivable-adjustments?status=pending&p=1&s=20` 返回待处理重报价差价；`GET /api/receivable-adjustments/<id>` 返回单条差价详情，供驳回收款单复制新建时获取最新余额。业务员只查看本人负责的报价，管理员、财务查看全部。
+
+差价返回 `customer_id`、`approved_received`（关联该差价的审核通过实收）、`pending_amount`（关联待审金额）、`available_amount`（当前可补收金额）和 `collection_blocked_reason`（无法补收原因）。可补收金额同时受差价剩余金额和订单真实可收余额限制；退款差价、已有待审补收、未关联客户或无可收余额时禁止登记。
+
+在待处理差价表点击「登记补收」，录入本次补收金额、收款日期、收款方式和备注，调用现有收款单接口：
+
+```json
+{
+  "customer_id": 1,
+  "receipt_date": "2026-09-30",
+  "payment_method": "cash",
+  "settlement_status": "unsettled",
+  "remark": "补收重报价差价",
+  "items": [{ "order_uid": "ORDER-UID", "amount": 20, "adjustment_id": 3 }]
+}
+```
+
+`POST /api/receipts` 的明细可选 `adjustment_id`；关联差价的收款单只包含一笔明细并固定使用 `unsettled`，支持分次实收且不自动减免余款。提交后占用余额，财务审核通过才计入实收并更新差价处理状态；同一差价需先审核或驳回上一笔，再登记下一笔。驳回后释放占用，可保留差价关联复制新建。详情明细返回 `adjustment_id`。退款差价保留财务处理提示，不生成正数收款单。
+
+### 6.1 订单详情收款与业务员筛选
+
+订单详情加载报价历史后，在存在有效最终报价且登录人为管理员或该报价人时显示「收款」。点击后用 `GET /api/receivables/orders?order_uid=<uid>` 精确读取当前可收余额，复用收款管理的金额、日期、方式、结清状态和备注流程；提交 `POST /api/receipts` 后通过 `GET /api/receipts/<id>/pdf` 打开收据。没有普通可收余额时，使用 `GET /api/receivable-adjustments?order_uid=<uid>&status=pending` 查询可补收差价；两者均无可收余额时仅提示，不能提交收款。
+
+管理员进入收款管理时，业务员筛选默认选择本人，可清空查看全部或切换其他业务员。筛选位于页签上方，适用于可收款订单、待处理差价及收款单记录。`owner_id` 在订单和差价列表按当前有效报价人筛选，在 `GET /api/receipts` 按收款单创建人筛选；管理员代登记的收据归创建该单的管理员。业务员的范围继续由服务端限制，传入他人的 `owner_id` 不会扩大权限。
+
+## 7. 其他
+
+### 7.1 获取客户端 IP
 
 获取当前请求的客户端 IP 地址。
 
@@ -1076,13 +1244,34 @@ x-token: <JWT_TOKEN>
 
 ---
 
+## 手写装箱单
+
+使用标准 `/api` 前缀，所有请求均发送系统的 `x-token`、`x-time` 认证头。
+
+| 接口 | 用途 |
+| --- | --- |
+| `GET /api/intakes/template` | 下载 `application/pdf` 格式的 A4 空白装箱单，下载名 `paper-packing-list-a4.pdf`；有上传权限的用户可用 |
+| `POST /api/intakes` | 上传 `multipart/form-data` 的 `photos`，后台自动识别；`mark_hint`、`note`、`operation_at` 可选 |
+| `GET /api/intakes/my-packing-lists` | 本人手动创建的装箱单和上传纸单；支持 `page`、`page_size`、`mark`，不返回内部识别结果 |
+| `GET /api/intakes?status=pending` | 审核员待核对纸单清单，支持 `page`、`page_size`、`mark` |
+| `GET /api/intakes/:uid` | 审核详情及原图引用 |
+| `GET /api/intakes/workers` | 审核员可选择的已批准实际操作人员，返回 `{id, name}` 数组 |
+| `PUT /api/intakes/:uid/draft` | 保存 `{version, draft}`，草稿可不完整；`draft` 包含 `mark`、`operator_name`、`worker_ids`、`boxes` |
+| `POST /api/intakes/:uid/recognize` | 审核员重试识别，发送 `{version}` |
+| `POST /api/intakes/:uid/confirm` | 审核员确认生成正式装箱单，发送 `{version}`；至少绑定 1 名、最多 4 名实际工人 |
+
+上传最多 8 张，每张不超过 10MB，合计不超过 24MB。`draft_is_manual` 标识已人工保存的草稿；客户端仅在尚无人工草稿且本地未编辑时自动填入识别结果。`operator_name` 是纸面署名提示，实际员工关系使用 `worker_ids`。工人通过正式 `/packing-list/new` 上传，并在 `/packing-lists` 查看个人记录；解析详情 `/intakes/:uid` 仅审核角色可访问。
+
 ## 角色权限说明
 
 | 角色            | 说明     | 权限范围                                      |
 | --------------- | -------- | --------------------------------------------- |
 | `admin`         | 管理员   | 所有权限                                      |
 | `store_manager` | 店长     | 除管理员专属外的所有权限，不能分配 admin 角色 |
-| `staff`         | 普通员工 | 基础业务操作                                  |
+| `salesperson`   | 业务员   | 报价、收款登记、本人跟单与奖金查询            |
+| `finance`       | 财务     | 应收台账、收款审核、奖金配置                  |
+| `worker`        | 操作人员 | 本人工作详情和操作奖金查询                    |
+| `clerk`         | 文员     | 基础业务操作                                  |
 
 ---
 
@@ -1098,4 +1287,10 @@ Docker 部署时通过环境变量配置初始管理员：
 
 ---
 
-*文档生成时间: 2026-03-26*
+## v1.6 发布协调
+
+启用订单版本相关前端入口前，后端基线脚本应输出 `verified=True`。该字段表示 `orders == v1_coverage`；首次冻结发布还应满足 `orders == baseline_imports == v1_coverage`。其中 `baseline_imports` 只统计上线基线，`v1_coverage` 统计所有 V1（包括新订单的 `order_created`）。
+
+---
+
+*文档更新时间: 2026-09-16*

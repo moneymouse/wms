@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-    Button, Card, Col, DatePicker, Form, Input, InputNumber, Modal, Row, Select, Space,
+    Button, Card, Col, DatePicker, Form, InputNumber, Row, Select, Space,
     Table, Tabs, Tag, Typography, message
 } from 'antd';
 import { CopyOutlined, PrinterOutlined, ReloadOutlined } from '@ant-design/icons';
@@ -9,6 +9,8 @@ import { Link } from 'react-router-dom';
 
 import { endpoint } from '../config';
 import getSafeHeader from '../common/safeHeader';
+import { createReceipt, printReceipt } from '../common/receiptApi';
+import ReceiptModal, { AdjustmentReceiptModal } from '../components/ReceiptModal';
 import {
     amountToCents,
     getDefaultSettlementStatus,
@@ -21,19 +23,13 @@ import FeatureTour from '../components/FeatureTour';
 import { COST_QUOTE_RECEIPT_TOUR, getCostQuoteReceiptChapter } from '../common/featureTourConfig';
 import {
     clearFeatureTourFlow,
+    decodeJwtPayload,
     getCurrentTourUser,
     readFeatureTourFlow,
     saveFeatureTourFlow,
 } from '../common/featureTourState';
 
 const { Title, Text } = Typography;
-const PAYMENT_METHODS = [
-    { value: 'cash', label: '现金 / Cash' },
-    { value: 'bank_transfer', label: '银行转账 / Bank Transfer' },
-    { value: 'wechat', label: '微信 / WeChat Pay' },
-    { value: 'alipay', label: '支付宝 / Alipay' },
-    { value: 'other', label: '其他 / Other' },
-];
 const STATUS_LABELS = {
     pending: { label: '待审核', color: 'orange' },
     approved: { label: '已生效', color: 'green' },
@@ -51,43 +47,22 @@ function getSelectionSignature(keys, amounts, cache) {
     return JSON.stringify([...keys].sort().map(uid => [
         uid, amountToCents(amounts[uid]),
         amountToCents(cache[uid]?.receivable_amount), amountToCents(cache[uid]?.approved_received),
+        amountToCents(cache[uid]?.settlement_difference),
     ]));
 }
 
-function base64ToBlob(base64, mimeType) {
-    const binary = window.atob(base64);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
-    return new Blob([bytes], { type: mimeType });
-}
-
-async function printReceipt(receiptId, messageApi) {
-    const preview = window.open('', '_blank');
-    if (!preview) {
-        messageApi.warning('浏览器拦截了新窗口，请允许弹窗后重试');
-        return;
-    }
-    preview.document.write('正在生成收款单 PDF...');
-    try {
-        const response = await fetch(`${endpoint}/receipts/${receiptId}/pdf`, { headers: getSafeHeader() });
-        const result = await response.json();
-        if (!response.ok || result.code !== 200) throw new Error(result.msg || '生成失败');
-        const url = URL.createObjectURL(base64ToBlob(result.data, result.mime_type || 'application/pdf'));
-        preview.location.href = url;
-        window.setTimeout(() => URL.revokeObjectURL(url), 60000);
-    } catch (error) {
-        preview.close();
-        messageApi.error(error.message || '生成收款单失败');
-    }
-}
-
 export default function Receipts() {
+    const { userId: tourUserId, roles } = getCurrentTourUser();
+    const isAdmin = roles.includes('admin');
+    const currentUserName = decodeJwtPayload(window.localStorage.getItem('jwt'))?.name || '我自己';
     const [messageApi, contextHolder] = message.useMessage();
     const [form] = Form.useForm();
-    const [filters, setFilters] = useState({});
+    const [filters, setFilters] = useState(() => (isAdmin && tourUserId ? { owner_id: tourUserId } : {}));
     const [owners, setOwners] = useState([]);
     const [receiptModalOpen, setReceiptModalOpen] = useState(false);
     const ordersRequestId = useRef(0);
+    const adjustmentsRequestId = useRef(0);
+    const receiptsRequestId = useRef(0);
     const submitInProgress = useRef(false);
     const settlementSelection = useRef(null);
     const [activeTab, setActiveTab] = useState('entry');
@@ -98,17 +73,26 @@ export default function Receipts() {
     const [selectedKeys, setSelectedKeys] = useState([]);
     const [amounts, setAmounts] = useState({});
     const [loadingOrders, setLoadingOrders] = useState(false);
+    const [adjustments, setAdjustments] = useState([]);
+    const [loadingAdjustments, setLoadingAdjustments] = useState(false);
+    const [adjustmentPagination, setAdjustmentPagination] = useState({ current: 1, pageSize: 20, total: 0 });
+    const [activeAdjustment, setActiveAdjustment] = useState(null);
     const [submitting, setSubmitting] = useState(false);
     const [receipts, setReceipts] = useState([]);
     const [receiptDetails, setReceiptDetails] = useState({});
     const [loadingReceiptDetails, setLoadingReceiptDetails] = useState({});
     const [loadingReceipts, setLoadingReceipts] = useState(false);
     const [receiptPagination, setReceiptPagination] = useState({ current: 1, pageSize: 20, total: 0 });
-    const { userId: tourUserId, roles } = getCurrentTourUser();
-    const isAdmin = roles.includes('admin');
     const tourFlow = readFeatureTourFlow(tourUserId);
     const continuingReceiptFlow = tourFlow?.campaignId === COST_QUOTE_RECEIPT_TOUR.id
         && ['receipt-navigation', 'receipt-entry'].includes(tourFlow.stage);
+    const ownerOptions = useMemo(() => {
+        const options = owners.map(item => ({ value: String(item.id), label: item.name }));
+        if (tourUserId && !options.some(option => option.value === tourUserId)) {
+            options.unshift({ value: tourUserId, label: currentUserName });
+        }
+        return options;
+    }, [owners, tourUserId, currentUserName]);
 
     useEffect(() => {
         fetch(`${endpoint}/customer_list`, { headers: getSafeHeader() })
@@ -187,7 +171,7 @@ export default function Receipts() {
         }
     };
 
-    // Start without filters; the server enforces the current user's receivable scope.
+    // Apply the administrator's own scope before the first request.
     useEffect(() => {
         fetchOrders();
         return () => { ordersRequestId.current += 1; };
@@ -197,24 +181,78 @@ export default function Receipts() {
     const changeFilters = (changed) => {
         const nextFilters = { ...filters, ...changed };
         setFilters(nextFilters);
-        fetchOrders(nextFilters);
+        const ordersPromise = fetchOrders(nextFilters);
+        if (Object.prototype.hasOwnProperty.call(changed, 'owner_id')) {
+            fetchAdjustments(1, adjustmentPagination.pageSize, nextFilters);
+            receiptsRequestId.current += 1;
+            setReceipts([]);
+            if (activeTab !== 'list') setLoadingReceipts(false);
+            setReceiptPagination(prev => ({ ...prev, current: 1 }));
+            if (activeTab === 'list') fetchReceipts(1, receiptPagination.pageSize, nextFilters);
+        }
+        return ordersPromise;
     };
+
+    const fetchAdjustments = async (
+        page = adjustmentPagination.current,
+        pageSize = adjustmentPagination.pageSize,
+        nextFilters = filters
+    ) => {
+        const requestId = ++adjustmentsRequestId.current;
+        setLoadingAdjustments(true);
+        try {
+            const params = new URLSearchParams({ status: 'pending', p: page, s: pageSize });
+            if (isAdmin && nextFilters.owner_id) params.set('owner_id', nextFilters.owner_id);
+            const response = await fetch(
+                `${endpoint}/receivable-adjustments?${params}`,
+                { headers: getSafeHeader() }
+            );
+            const result = await response.json();
+            if (requestId !== adjustmentsRequestId.current) return null;
+            if (!response.ok || result.code !== 200) throw new Error(result.msg || '获取差价单失败');
+            setAdjustments(result.data || []);
+            setAdjustmentPagination({
+                current: result.page || page,
+                pageSize: result.page_size || pageSize,
+                total: result.total || 0,
+            });
+            return result.data || [];
+        } catch (error) {
+            if (requestId !== adjustmentsRequestId.current) return null;
+            messageApi.error(error.message || '获取差价单失败');
+            return null;
+        } finally {
+            if (requestId === adjustmentsRequestId.current) setLoadingAdjustments(false);
+        }
+    };
+
+    useEffect(() => {
+        fetchAdjustments(1, adjustmentPagination.pageSize);
+        return () => { adjustmentsRequestId.current += 1; };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
 
     const fetchReceipts = async (
         page = receiptPagination.current,
-        pageSize = receiptPagination.pageSize
+        pageSize = receiptPagination.pageSize,
+        nextFilters = filters
     ) => {
+        const requestId = ++receiptsRequestId.current;
         setLoadingReceipts(true);
         try {
-            const response = await fetch(`${endpoint}/receipts?p=${page}&s=${pageSize}`, { headers: getSafeHeader() });
+            const params = new URLSearchParams({ p: page, s: pageSize });
+            if (isAdmin && nextFilters.owner_id) params.set('owner_id', nextFilters.owner_id);
+            const response = await fetch(`${endpoint}/receipts?${params}`, { headers: getSafeHeader() });
             const result = await response.json();
+            if (requestId !== receiptsRequestId.current) return;
             if (!response.ok || result.code !== 200) throw new Error(result.msg || '获取收款单失败');
             setReceipts(result.data || []);
             setReceiptPagination({ current: result.page || page, pageSize: result.page_size || pageSize, total: result.total || 0 });
         } catch (error) {
+            if (requestId !== receiptsRequestId.current) return;
             messageApi.error(error.message || '获取收款单失败');
         } finally {
-            setLoadingReceipts(false);
+            if (requestId === receiptsRequestId.current) setLoadingReceipts(false);
         }
     };
 
@@ -222,6 +260,8 @@ export default function Receipts() {
         if (activeTab === 'list') fetchReceipts(1, receiptPagination.pageSize);
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [activeTab]);
+
+    useEffect(() => () => { receiptsRequestId.current += 1; }, []);
 
     const fetchReceiptDetail = async (receiptId, refresh = false) => {
         if (!refresh && receiptDetails[receiptId]) return receiptDetails[receiptId];
@@ -302,27 +342,22 @@ export default function Receipts() {
                 messageApi.warning(`订单 ${invalidOrder.order_id} 的本次收款必须大于 0 且不超过可收余额`);
                 return;
             }
-            const response = await fetch(`${endpoint}/receipts`, {
-                method: 'POST',
-                headers: { ...getSafeHeader(), 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    customer_id: effectiveCustomerId,
-                    receipt_date: values.receipt_date.format('YYYY-MM-DD'),
-                    payment_method: values.payment_method,
-                    settlement_status: values.settlement_status,
-                    remark: values.remark,
-                    items: selectedKeys.map(orderUid => ({ order_uid: orderUid, amount: Number(amounts[orderUid] || 0) })),
-                }),
+            const receipt = await createReceipt({
+                customer_id: effectiveCustomerId,
+                receipt_date: values.receipt_date.format('YYYY-MM-DD'),
+                payment_method: values.payment_method,
+                settlement_status: values.settlement_status,
+                remark: values.remark,
+                items: selectedKeys.map(orderUid => ({ order_uid: orderUid, amount: Number(amounts[orderUid] || 0) })),
             });
-            const result = await response.json();
-            if (!response.ok || result.code !== 200) throw new Error(result.msg || '提交失败');
-            messageApi.success(`收款单 ${result.data.receipt_no} 已提交审核`);
+            messageApi.success(`收款单 ${receipt.receipt_no} 已提交审核`);
             setReceiptModalOpen(false);
             form.resetFields();
             form.setFieldsValue({ receipt_date: dayjs(), payment_method: 'cash', remark: '' });
             setSelectedKeys([]);
-            await printReceipt(result.data.id, messageApi);
+            await printReceipt(receipt.id, messageApi);
             await fetchOrders(filters);
+            await fetchAdjustments();
             setActiveTab('list');
         } catch (error) {
             if (error?.errorFields) return;
@@ -336,14 +371,41 @@ export default function Receipts() {
     const copyRejectedReceipt = async (receipt) => {
         const receiptDetail = receipt.items ? receipt : await fetchReceiptDetail(receipt.id);
         if (!receiptDetail) return;
+        const adjustmentItem = receiptDetail.items?.find(item => item.adjustment_id != null);
+        if (adjustmentItem) {
+            try {
+                const response = await fetch(`${endpoint}/receivable-adjustments/${adjustmentItem.adjustment_id}`, {
+                    headers: getSafeHeader(),
+                });
+                const result = await response.json();
+                if (!response.ok || result.code !== 200) throw new Error(result.msg || '获取差价单失败');
+                const adjustment = result.data;
+                if (adjustment.status !== 'pending' || Number(adjustment.available_amount || 0) <= 0) {
+                    messageApi.info(adjustment.collection_blocked_reason || '该差价当前没有可补收余额');
+                    return;
+                }
+                setActiveTab('entry');
+                setActiveAdjustment({
+                    ...adjustment,
+                    copyValues: {
+                        amount: Math.min(Number(adjustmentItem.amount), Number(adjustment.available_amount)),
+                        payment_method: receiptDetail.payment_method,
+                        remark: receiptDetail.remark || '',
+                    },
+                });
+            } catch (error) {
+                messageApi.error(error.message || '复制差价收款单失败');
+            }
+            return;
+        }
         form.setFieldsValue({
             receipt_date: dayjs(),
             payment_method: receiptDetail.payment_method,
             remark: receiptDetail.remark || '',
         });
-        const nextFilters = { customer_id: receiptDetail.customer_id };
-        setFilters(nextFilters);
-        const availableOrders = await fetchOrders(nextFilters);
+        const availableOrders = await changeFilters({
+            customer_id: receiptDetail.customer_id, dateRange: null, owner_id: undefined,
+        });
         if (!availableOrders) return;
         const availableMap = Object.fromEntries(availableOrders.map(row => [row.uid, row]));
         const nextKeys = [];
@@ -367,6 +429,39 @@ export default function Receipts() {
         });
         setActiveTab('entry');
         messageApi.info(nextKeys.length ? '已复制可重新登记的明细' : '原订单当前没有可收余额');
+    };
+
+    const submitAdjustmentReceipt = async (adjustmentForm) => {
+        if (submitInProgress.current) return;
+        submitInProgress.current = true;
+        setSubmitting(true);
+        try {
+            const values = await adjustmentForm.validateFields();
+            const receipt = await createReceipt({
+                customer_id: activeAdjustment.customer_id,
+                receipt_date: values.receipt_date.format('YYYY-MM-DD'),
+                payment_method: values.payment_method,
+                settlement_status: 'unsettled',
+                remark: values.remark,
+                items: [{
+                    order_uid: activeAdjustment.order_uid,
+                    amount: Number(values.amount),
+                    adjustment_id: activeAdjustment.id,
+                }],
+            });
+            messageApi.success(`差价收款单 ${receipt.receipt_no} 已提交审核`);
+            setActiveAdjustment(null);
+            await printReceipt(receipt.id, messageApi);
+            await fetchOrders(filters);
+            await fetchAdjustments();
+            setActiveTab('list');
+        } catch (error) {
+            if (error?.errorFields) return;
+            messageApi.error(error.message || '提交差价收款单失败');
+        } finally {
+            submitInProgress.current = false;
+            setSubmitting(false);
+        }
     };
 
     const orderColumns = [
@@ -433,6 +528,57 @@ export default function Receipts() {
         },
     ];
 
+    const adjustmentColumns = [
+        {
+            title: '订单号', dataIndex: 'order_id', key: 'order_id', width: 170,
+            render: (value, record) => <Link to={`/orders/${record.order_uid}`}>{value}</Link>,
+        },
+        { title: '客户', dataIndex: 'customer_name', key: 'customer_name', width: 150, render: value => value || '-' },
+        { title: '原应收', dataIndex: 'old_receivable', key: 'old_receivable', width: 110, render: value => Number(value || 0).toFixed(2) },
+        { title: '新应收', dataIndex: 'new_receivable', key: 'new_receivable', width: 110, render: value => Number(value || 0).toFixed(2) },
+        {
+            title: '差价', dataIndex: 'delta_amount', key: 'delta_amount', width: 130,
+            render: (value, record) => (
+                <Typography.Text type={record.direction === 'refund' ? 'success' : 'danger'} strong>
+                    {Number(value || 0) > 0 ? '+' : ''}{Number(value || 0).toFixed(2)}
+                </Typography.Text>
+            ),
+        },
+        {
+            title: '处理方向', dataIndex: 'direction', key: 'direction', width: 110,
+            render: value => value === 'refund'
+                ? <Tag color="green">待退款</Tag>
+                : <Tag color="orange">待补收</Tag>,
+        },
+        { title: '已补收', dataIndex: 'approved_received', key: 'approved_received', width: 110, render: value => Number(value || 0).toFixed(2) },
+        { title: '待审核占用', dataIndex: 'pending_amount', key: 'pending_amount', width: 120, render: value => Number(value || 0).toFixed(2) },
+        { title: '可补收(CNY)', dataIndex: 'available_amount', key: 'available_amount', width: 130, render: value => Number(value || 0).toFixed(2) },
+        { title: '报价人', dataIndex: 'quoter_name', key: 'quoter_name', width: 110, render: value => value || '-' },
+        { title: '生成时间', dataIndex: 'create_date', key: 'create_date', width: 170 },
+        {
+            title: '操作', key: 'action', fixed: 'right', width: 230,
+            render: (_, record) => record.direction === 'refund'
+                ? <Text type="secondary">退款需财务处理</Text>
+                : (
+                    <Space direction="vertical" size={0}>
+                        <Button
+                            size="small"
+                            type="primary"
+                            disabled={submitting || loadingAdjustments || !record.customer_id || Number(record.available_amount || 0) <= 0}
+                            onClick={() => setActiveAdjustment(record)}
+                        >登记补收</Button>
+                        {(!record.customer_id || Number(record.available_amount || 0) <= 0) && (
+                            <Text type="secondary">
+                                {record.collection_blocked_reason || (!record.customer_id
+                                    ? '请先关联客户'
+                                    : Number(record.pending_amount || 0) > 0 ? '差价收款单待审核' : '当前无可补收余额')}
+                            </Text>
+                        )}
+                    </Space>
+                ),
+        },
+    ];
+
     return (
         <div style={{ padding: '8px 16px' }}>
             {contextHolder}
@@ -461,6 +607,24 @@ export default function Receipts() {
                     triggerAriaLabel="打开收款登记操作引导"
                 />
             </div>
+            {isAdmin && (
+                <Card size="small" style={{ marginBottom: 8 }}>
+                    <Form layout="vertical">
+                        <Form.Item label="业务员" htmlFor="receipt-owner-filter" style={{ marginBottom: 0, maxWidth: 360 }}>
+                            <Select
+                                id="receipt-owner-filter"
+                                allowClear
+                                showSearch
+                                optionFilterProp="label"
+                                placeholder="全部业务员"
+                                value={filters.owner_id}
+                                options={ownerOptions}
+                                onChange={ownerId => changeFilters({ owner_id: ownerId })}
+                            />
+                        </Form.Item>
+                    </Form>
+                </Card>
+            )}
             <Tabs activeKey={activeTab} onChange={setActiveTab} items={[
                 {
                     key: 'entry',
@@ -484,7 +648,7 @@ export default function Receipts() {
                                                 />
                                             </Form.Item>
                                         </Col>
-                                        <Col xs={24} md={isAdmin ? 8 : 16}>
+                                        <Col xs={24} md={16}>
                                             <Form.Item label="订单日期" htmlFor="receipt-order-date-filter" style={{ marginBottom: 8 }}>
                                                 <DatePicker.RangePicker
                                                     id="receipt-order-date-filter"
@@ -497,26 +661,10 @@ export default function Receipts() {
                                                 />
                                             </Form.Item>
                                         </Col>
-                                        {isAdmin && (
-                                            <Col xs={24} md={8}>
-                                                <Form.Item label="业务员" htmlFor="receipt-owner-filter" style={{ marginBottom: 8 }}>
-                                                    <Select
-                                                        id="receipt-owner-filter"
-                                                        allowClear
-                                                        showSearch
-                                                        optionFilterProp="label"
-                                                        placeholder="全部业务员"
-                                                        value={filters.owner_id}
-                                                        options={owners.map(item => ({ value: item.id, label: item.name }))}
-                                                        onChange={ownerId => changeFilters({ owner_id: ownerId })}
-                                                    />
-                                                </Form.Item>
-                                            </Col>
-                                        )}
                                     </Row>
                                 </Form>
                             </Card>
-                            <Card data-tour="receipt-orders" size="small" bodyStyle={{ padding: 0 }} title="未结清订单">
+                            <Card data-tour="receipt-orders" size="small" styles={{ body: { padding: 0 } }} style={{ marginBottom: 16 }} title="未结清订单">
                                 <div data-tour="receipt-submit" style={{ padding: 12 }}>
                                     <Space wrap size="middle">
                                         <Button
@@ -573,6 +721,26 @@ export default function Receipts() {
                                     size="small"
                                 />
                             </Card>
+                            <Card
+                                size="small"
+                                title="待处理差价"
+                                extra={<Button size="small" icon={<ReloadOutlined />} onClick={() => fetchAdjustments()}>刷新</Button>}
+                                styles={{ body: { padding: 0 } }}
+                            >
+                                <div style={{ padding: '8px 12px' }}>
+                                    <Text type="secondary">重报价生效后生成；待补收可登记收款单，财务审核通过后计入实收并更新差价余额。待退款需财务处理，不代表现金已经收取或退还。</Text>
+                                </div>
+                                <Table
+                                    rowKey="id"
+                                    loading={loadingAdjustments}
+                                    dataSource={adjustments}
+                                    columns={adjustmentColumns}
+                                    pagination={{ ...adjustmentPagination, showSizeChanger: false }}
+                                    onChange={next => fetchAdjustments(next.current, next.pageSize)}
+                                    scroll={{ x: 'max-content' }}
+                                    size="small"
+                                />
+                            </Card>
                         </>
                     )
                 },
@@ -580,7 +748,7 @@ export default function Receipts() {
                     key: 'list',
                     label: '收款单记录',
                     children: (
-                        <Card data-tour="receipt-records" size="small" bodyStyle={{ padding: 0 }}>
+                        <Card data-tour="receipt-records" size="small" styles={{ body: { padding: 0 } }}>
                             <div style={{ padding: 12 }}><Button icon={<ReloadOutlined />} onClick={() => fetchReceipts()}>刷新</Button></div>
                             <Table
                                 rowKey="id"
@@ -626,49 +794,25 @@ export default function Receipts() {
                     )
                 }
             ]} />
-            <Modal
-                title="确认收款信息"
+            {activeAdjustment && (
+                <AdjustmentReceiptModal
+                    key={activeAdjustment.id}
+                    adjustment={activeAdjustment}
+                    submitting={submitting}
+                    onSubmit={submitAdjustmentReceipt}
+                    onCancel={() => { if (!submitInProgress.current) setActiveAdjustment(null); }}
+                />
+            )}
+            <ReceiptModal
                 open={receiptModalOpen}
-                forceRender
-                onOk={submitReceipt}
+                form={form}
+                submitting={submitting}
+                onSubmit={submitReceipt}
                 onCancel={() => { if (!submitInProgress.current) setReceiptModalOpen(false); }}
-                okText="确认提交"
-                cancelText="取消"
-                confirmLoading={submitting}
-                cancelButtonProps={{ disabled: submitting }}
-                closable={!submitting}
-                maskClosable={!submitting}
-                keyboard={!submitting}
-            >
-                <Space direction="vertical" style={{ marginBottom: 16 }}>
-                    <Text>客户：{selectedOrders[0]?.customer_name || '-'}</Text>
-                    <Text>已选 {selectedKeys.length} 笔订单</Text>
-                    <Text strong>本次合计：{selectedTotal.toFixed(2)} CNY</Text>
-                    <Text>本次收款后剩余应收合计：{(remainingReceivableCents / 100).toFixed(2)} CNY</Text>
-                </Space>
-                <Form
-                    form={form}
-                    layout="vertical"
-                    disabled={submitting}
-                    initialValues={{ receipt_date: dayjs(), payment_method: 'cash', remark: '' }}
-                >
-                    <Form.Item name="receipt_date" label="收款日期" rules={[{ required: true, message: '请选择收款日期' }]}>
-                        <DatePicker style={{ width: '100%' }} />
-                    </Form.Item>
-                    <Form.Item name="payment_method" label="收款方式" rules={[{ required: true, message: '请选择收款方式' }]}>
-                        <Select options={PAYMENT_METHODS} />
-                    </Form.Item>
-                    <Form.Item
-                        name="settlement_status"
-                        label="结清状态"
-                        rules={[{ required: true, message: '请选择结清状态' }]}
-                        extra="原应收减去已审核实收及本次收款后，合计小于30元默认已结清，否则默认未结清；可手动修改。其他待审核收款不参与默认计算，结清在财务审核通过后生效，余额为0的订单仍自动结清。"
-                    >
-                        <Select options={SETTLEMENT_OPTIONS} />
-                    </Form.Item>
-                    <Form.Item name="remark" label="备注"><Input.TextArea rows={2} /></Form.Item>
-                </Form>
-            </Modal>
+                orders={selectedOrders}
+                selectedTotal={selectedTotal}
+                remainingReceivableCents={remainingReceivableCents}
+            />
         </div>
     );
 }

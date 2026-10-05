@@ -25,6 +25,17 @@ test('remaining receivables sum all selected orders without subtracting other pe
     expect(getDefaultSettlementStatus(remaining)).toBe('unsettled');
 });
 
+test.each([
+    [4, 2900, 'settled'],
+    [3, 3000, 'unsettled'],
+])('prior approved settlement differences count toward the remaining balance for payment %s', (amount, remaining, status) => {
+    const balance = getRemainingReceivableCents([
+        { uid: 'one', receivable_amount: 165, approved_received: 127, settlement_difference: 5, pending_amount: 10 },
+    ], { one: amount });
+    expect(balance).toBe(remaining);
+    expect(getDefaultSettlementStatus(balance)).toBe(status);
+});
+
 test('decimal arithmetic and approved actual income determine zero balance', () => {
     expect(getRemainingReceivableCents([
         { uid: 'one', receivable_amount: 0.3, approved_received: 0.1 },

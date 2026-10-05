@@ -23,6 +23,7 @@ const STATUS = {
     unpaid: { label: '未收', color: 'red' },
     partial: { label: '部分收款', color: 'orange' },
     paid: { label: '已结清', color: 'green' },
+    refund_due: { label: '待退款', color: 'blue' },
 };
 const RECEIPT_STATUS = {
     pending: { label: '待审核', color: 'orange' },
@@ -159,6 +160,7 @@ export function ReceivableLedger() {
         { title: '已收', dataIndex: 'received_amount', key: 'received_amount', width: 105, render: v => Number(v || 0).toFixed(2) },
         { title: '结清差额', dataIndex: 'settlement_difference', key: 'settlement_difference', width: 110, render: v => Number(v || 0).toFixed(2) },
         { title: '未收', dataIndex: 'outstanding_amount', key: 'outstanding_amount', width: 105, render: v => <Text type={Number(v) > 0 ? 'danger' : 'success'}>{Number(v || 0).toFixed(2)}</Text> },
+        { title: '应退', dataIndex: 'refund_due', key: 'refund_due', width: 105, render: v => <Text type={Number(v) > 0 ? 'warning' : 'secondary'}>{Number(v || 0).toFixed(2)}</Text> },
         { title: '待审核', dataIndex: 'pending_amount', key: 'pending_amount', width: 105, render: v => Number(v || 0).toFixed(2) },
         {
             title: '状态', dataIndex: 'settlement_status', key: 'settlement_status', width: 105,
@@ -205,6 +207,7 @@ export function ReceivableLedger() {
                     <Col role="group" aria-label="已收账款" xs={12} md={8} xl={{ flex: '1 1 20%' }}><Statistic title="已收账款" value={Number(data.totals?.received_amount || 0).toFixed(2)} suffix="CNY" valueStyle={{ color: '#15803d' }} /></Col>
                     <Col role="group" aria-label="结清差额合计" xs={12} md={8} xl={{ flex: '1 1 20%' }}><Statistic title="结清差额合计" value={Number(data.totals?.settlement_difference || 0).toFixed(2)} suffix="CNY" /></Col>
                     <Col role="group" aria-label="未收账款" xs={12} md={8} xl={{ flex: '1 1 20%' }}><Statistic title="未收账款" value={Number(data.totals?.outstanding_amount || 0).toFixed(2)} suffix="CNY" valueStyle={{ color: '#b91c1c' }} /></Col>
+                    <Col role="group" aria-label="待退款" xs={12} md={8} xl={{ flex: '1 1 20%' }}><Statistic title="待退款" value={Number(data.totals?.refund_due || 0).toFixed(2)} suffix="CNY" valueStyle={{ color: '#2563eb' }} /></Col>
                     <Col role="group" aria-label="待审核占用" xs={12} md={8} xl={{ flex: '1 1 20%' }}><Statistic title="待审核占用" value={Number(data.totals?.pending_amount || 0).toFixed(2)} suffix="CNY" /></Col>
                 </Row>
             </Card>

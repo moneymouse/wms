@@ -1,7 +1,7 @@
 const EXPORT_FIELDS = [
   { value: 'order_id', label: '订单号' },
   { value: 'transfer_id', label: '原单号' },
-  { value: 'waybill_id', label: '转单号' },
+  { value: 'waybill_id', label: '转单号（运单号）' },
   { value: 'receiver', label: '收货人' },
   { value: 'receiver_phone', label: '收货人电话' },
   { value: 'country', label: '国家' },

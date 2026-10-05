@@ -67,7 +67,7 @@ test('receipt revision audit events and actions use Chinese labels', async () =>
         </MemoryRouter>
     );
 
-    expect(await screen.findAllByText('订单收据修订')).toHaveLength(2);
+    expect(await screen.findAllByText('订单业务修订')).toHaveLength(2);
     expect(screen.getByText('解锁订单')).toBeInTheDocument();
     expect(screen.getByText('重新锁定订单')).toBeInTheDocument();
     expect(screen.queryByText('order_unlock')).not.toBeInTheDocument();

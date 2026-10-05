@@ -85,7 +85,7 @@ test('an ineligible quote workflow returns to order selection so the user can co
     }));
 });
 
-test('a receipt-locked order keeps quote history viewable but blocks new quotes and other receivable-basis changes', async () => {
+test('an order with receipt history permits ordinary editing and re-quoting', async () => {
     window.sessionStorage.clear();
     global.fetch = jest.fn(url => Promise.resolve({
         ok: true,
@@ -138,7 +138,7 @@ test('a receipt-locked order keeps quote history viewable but blocks new quotes 
                     transportation: '',
                     salesman: { id: 7, name: '业务员' },
                     customer_ids: [],
-                    receipt_locked: true,
+                    financial_lock: { active: true, has_history: true },
                 },
             });
         },
@@ -152,20 +152,21 @@ test('a receipt-locked order keeps quote history viewable but blocks new quotes 
         </MemoryRouter>
     );
 
-    expect(await screen.findByText('收据生成，订单锁定')).toBeInTheDocument();
-    const quoteButton = screen.getByRole('button', { name: /报价/ });
+    expect(await screen.findByText('订单详情/Order Detail')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '解锁订单' })).not.toBeInTheDocument();
+    const quoteButton = await screen.findByRole('button', { name: /dollar\s*报价/ });
     expect(quoteButton).not.toBeDisabled();
     fireEvent.click(quoteButton);
-    expect(await screen.findByText('订单已锁定，当前仅可查看历史报价')).toBeInTheDocument();
+    expect(await screen.findByRole('dialog', { name: /订单报价/ })).toBeInTheDocument();
     expect(await screen.findByText('历史渠道')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '提交报价' })).toBeDisabled();
-    fireEvent.click(screen.getByRole('button', { name: /关\s*闭/ }));
-    expect(screen.getByRole('button', { name: /添\s*加/ })).toBeDisabled();
-    expect(screen.getByRole('button', { name: /从装箱单分配/ })).toBeDisabled();
-    expect(await screen.findByRole('button', { name: '移除' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '提交报价' })).not.toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: /取\s*消/ }));
+    expect(screen.getByRole('button', { name: /添\s*加/ })).not.toBeDisabled();
+    expect(screen.getByRole('button', { name: /从装箱单分配/ })).not.toBeDisabled();
+    expect(await screen.findByRole('button', { name: '移除' })).not.toBeDisabled();
 
     const editButtons = screen.getAllByRole('button', { name: /编\s*辑/ });
     fireEvent.click(editButtons[editButtons.length - 1]);
-    expect(await screen.findByDisplayValue('ORIG-1')).toBeInTheDocument();
-    expect(screen.queryByDisplayValue('10.5')).not.toBeInTheDocument();
+    expect(screen.getByDisplayValue('ORIG-1')).toBeInTheDocument();
+    expect(screen.getByDisplayValue('10.5')).toBeInTheDocument();
 });

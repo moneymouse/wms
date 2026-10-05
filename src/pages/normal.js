@@ -179,7 +179,7 @@ export default function Normal() {
     const Columns = [
         {
             key: 0,
-            title: '原单号',
+            title: '包裹识别码',
             dataIndex: 'origin_id',
         }, {
             key: 1,

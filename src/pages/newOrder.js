@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { useSearchParams } from "react-router-dom";
 import { AutoComplete, Button, Col, Form, Input, InputNumber, List, message, Modal, Row, Select, Space, Typography } from 'antd';
 import { endpoint } from "../config"
@@ -9,6 +9,7 @@ import genWayBill from "../common/genWayBill";
 import styles from './newOrder.module.css';
 import Transportation from "../components/transportation";
 import GoodInput from "../components/GoodName";
+import { PARSED_ADDRESS_FIELDS, buildParsedAddressValues } from '../common/addressParsing';
 
 const { Item } = Form;
 
@@ -71,10 +72,14 @@ export default function NewOrder() {
     // message
     const [messageX, messageComponent] = message.useMessage();
     const [loading, setLoading] = useState(false)
+    const [addressParsing, setAddressParsing] = useState(false);
+    const addressParseRequest = useRef(null);
     const [jwtPayload, setJwtPayload] = useState({});
     const [salesmanOptions, setSalesmanOptions] = useState([]);
     const [salesmanLoading, setSalesmanLoading] = useState(false);
     const [quoteDraft, setQuoteDraft] = useState(null);
+    const quoteDraftRef = useRef(quoteDraft);
+    quoteDraftRef.current = quoteDraft;
     const [quoteModalOpen, setQuoteModalOpen] = useState(false);
 
     const [customerNameOptions, setCustomerNameOptions] = useState([]);
@@ -82,6 +87,12 @@ export default function NewOrder() {
 
     const [form] = Form.useForm();
     const [quoteForm] = Form.useForm();
+    const fullAddress = Form.useWatch('address', form);
+
+    useEffect(() => () => {
+        addressParseRequest.current?.controller.abort();
+        addressParseRequest.current = null;
+    }, []);
 
     // modal
     const [modalVisible, setModalVisible] = useState(false);
@@ -185,8 +196,96 @@ export default function NewOrder() {
         const currentValues = form.getFieldsValue();
         localStorage.setItem(FORM_STORAGE_KEY, JSON.stringify({
             ...currentValues,
-            quote: quoteDraft
+            quote: quoteDraftRef.current
         }));
+    };
+
+    const cancelAddressParsing = () => {
+        addressParseRequest.current?.controller.abort();
+        addressParseRequest.current = null;
+        setAddressParsing(false);
+    };
+
+    const handleParseAddress = async () => {
+        if (addressParseRequest.current || loading) return;
+        const snapshot = form.getFieldsValue(['address', ...PARSED_ADDRESS_FIELDS]);
+        const address = String(snapshot.address || '').trim();
+        if (!address) {
+            messageX.warning('请先输入详细地址');
+            return;
+        }
+        if (address.length > 4000) {
+            messageX.warning('详细地址不能超过 4000 个字符，请精简后重试');
+            return;
+        }
+
+        const request = { controller: new AbortController() };
+        addressParseRequest.current = request;
+        setAddressParsing(true);
+        try {
+            const response = await fetch(`${endpoint}/orders/parse-address`, {
+                method: 'POST',
+                headers: { ...getSafeHeader(), 'Content-Type': 'application/json' },
+                body: JSON.stringify({ address }),
+                signal: request.controller.signal,
+            });
+            const result = await response.json();
+            if (addressParseRequest.current !== request) return;
+            if (form.getFieldValue('address') !== snapshot.address) {
+                messageX.info('详细地址已修改，请重新解析');
+                return;
+            }
+            if (!response.ok || result.code !== 200) {
+                messageX.error(result.msg || '地址解析失败，请稍后重试');
+                return;
+            }
+
+            const parsedValues = buildParsedAddressValues(result.data);
+            const fields = Object.keys(parsedValues);
+            const warnings = Array.isArray(result.data?.warnings)
+                ? result.data.warnings.filter((warning) => typeof warning === 'string' && warning.trim())
+                : [];
+            if (typeof result.data?.country === 'string' && result.data.country.trim() && !parsedValues.country) {
+                warnings.push('国家无法匹配，请手动选择');
+            }
+            if (!fields.length) {
+                messageX.warning(warnings.length
+                    ? warnings.join('；')
+                    : '未识别到地址信息，请补充后重试', 8);
+                return;
+            }
+            const values = {};
+            fields.forEach((field) => {
+                if (form.getFieldValue(field) === snapshot[field]) {
+                    values[field] = parsedValues[field];
+                }
+            });
+            if (!Object.keys(values).length) {
+                messageX.info('已保留当前内容');
+                return;
+            }
+            form.setFieldsValue(values);
+            if (values.zip_code !== undefined) setZipCode(values.zip_code);
+            saveFormToLocalStorage();
+
+            if (fields.length !== Object.keys(values).length) {
+                warnings.push('已保留手动修改');
+            }
+            if (warnings.length) {
+                messageX.warning(`已回填。${warnings.join('；')}`, 8);
+            } else {
+                messageX.success('地址已解析并回填');
+            }
+        } catch (error) {
+            if (addressParseRequest.current === request && error.name !== 'AbortError') {
+                messageX.error('地址解析失败，请检查网络或稍后重试');
+            }
+        } finally {
+            if (addressParseRequest.current === request) {
+                addressParseRequest.current = null;
+                setAddressParsing(false);
+            }
+        }
     };
 
     const openQuoteModal = () => {
@@ -284,6 +383,7 @@ export default function NewOrder() {
     }, [currentUserId, form]);
     // 清空表单并从localStorage中移除保存的数据
     const handleClearForm = () => {
+        cancelAddressParsing();
         form.resetFields();
         setSelectedCustomerName('');
         setQuoteDraft(null);
@@ -315,6 +415,10 @@ export default function NewOrder() {
     };
 
     const handleFinish = async (values) => {
+        if (addressParseRequest.current) {
+            messageX.info('地址正在解析，请稍后创建订单');
+            return;
+        }
         setLoading(true)
         try {
             const submitValues = buildCreateOrderPayload(values, quoteDraft, currentUserId);
@@ -325,6 +429,7 @@ export default function NewOrder() {
                 body: JSON.stringify(submitValues)
             })).json();
             if (res['code'] === 200) {
+                cancelAddressParsing();
                 // Reset form to initial state.
                 form.resetFields();
                 setSelectedCustomerName('');
@@ -595,15 +700,26 @@ export default function NewOrder() {
                 </Row>
                 <Row gutter={16}>
                     <Col span={15}>
-                        <Item label={'详细地址/Full Address'} name={'address'} rules={[{ required: true }]}>
+                        <Item label={'详细地址/Full Address'} name={'address'} rules={[{ required: true }]}
+                            extra={
+                                <Button type="link" size="small" style={{ paddingInline: 0 }}
+                                    loading={addressParsing}
+                                    disabled={!String(fullAddress || '').trim() || addressParsing || loading}
+                                    onClick={handleParseAddress}>
+                                    {addressParsing ? '解析中…' : '解析地址'}
+                                </Button>
+                            }>
                             <AutoComplete
                                 options={options.formKey.map(v => ({ label: v.address, value: v.address }))}
                                 placeholder={'CALLE CONCORD......ANTE SPAIN'}
                                 filterOption={(inputValue, option) =>
                                     option.label.toLowerCase().includes(inputValue.toLowerCase())
                                 }
+                                onChange={(value) => {
+                                    form.setFieldsValue({ address: value.toUpperCase() });
+                                }}
                                 onSelect={(value) => {
-                                    form.setFieldsValue({ address: value });
+                                    form.setFieldsValue({ address: value.toUpperCase() });
                                 }}
                             />
                         </Item>
@@ -634,45 +750,13 @@ export default function NewOrder() {
                         </div>
                     </Col>
                 </Row>
-                <Typography.Title level={5} style={{ marginBottom: '1rem' }}>货物信息/Cargo Information</Typography.Title>
-                <Row gutter={16}>
-                    <Col span={8}>
-                        <Item label={'报关品名/Customs Product Description'} name={'en_name'}>
-                            {/*<Input placeholder={'CLOTHES'}/>*/}
-                            <GoodInput onChange={(value) => {
-                                form.setFieldValue('en_name', value);
-                            }} />
-                        </Item>
-                    </Col>
-                    <Col span={4}>
-                        <Item label={'中文品名'} name={'cn_name'}>
-                            <Input onChange={(e) => {
-                                form.setFieldValue('cn_name', e.target.value);
-                                set_hs_keyword(e.target.value);
-                            }}
-                                placeholder={'衣服'} style={{ marginBottom: '0.2rem' }} />
-                            <Typography style={{ color: 'lightgray' }}>查询{hs_keyword && <><Typography.Link
-                                onClick={() => window.open(`https://www.hsbianma.com/search?keywords=${hs_keyword}`)}> {hs_keyword} </Typography.Link></>}海关编码</Typography>
-                        </Item>
-                    </Col>
-                    <Col span={6}>
-                        <Item label={'海关编码/Post Code'} name={'post_code'}>
-                            <Input />
-                        </Item>
-                    </Col>
-                    <Col span={5}>
-                        <Item label={'唛头'} name={'tag_all'}>
-                            <Input />
-                        </Item>
-                    </Col>
-                </Row>
                 <Row style={{ marginTop: 16 }} gutter={16}>
                     <Col>
                         <Button type={'primary'} onClick={handleExportPreview}>导出预览</Button>
                     </Col>
                     <Col>
                         <Item>
-                            <Button type={'primary'} loading={loading} htmlType={'submit'}>创建/Submit</Button>
+                            <Button type={'primary'} loading={loading} disabled={addressParsing} htmlType={'submit'}>创建/Submit</Button>
                         </Item>
                     </Col>
                     <Col>

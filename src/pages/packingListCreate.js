@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
     AutoComplete,
     Form,
@@ -24,14 +25,26 @@ import {
     SaveOutlined,
     CheckOutlined,
     CloseOutlined,
-    ReloadOutlined
+    ReloadOutlined,
+    CameraOutlined,
+    EditOutlined
 } from '@ant-design/icons';
 import { endpoint } from '../config';
 import getSafeHeader from '../common/safeHeader';
+import { PaperIntakeUpload } from './intakes';
+import { getIntakeRoles } from '../common/intakeApi';
+import entryStyles from './packingListEntry.module.css';
 
 const { Title, Text } = Typography;
 const { Option, OptGroup } = Select;
 const { useBreakpoint } = Grid;
+
+const packingStorageKey = key => {
+    try {
+        const payload = JSON.parse(atob(localStorage.getItem('jwt').split('.')[1]));
+        return `packingList_${payload.user_id || payload.id}_${key}`;
+    } catch { return `packingList_guest_${key}`; }
+};
 
 const normalizeLoadedPhotos = (value, prefix) => {
     if (!Array.isArray(value)) return [];
@@ -187,7 +200,7 @@ function PackingListTab({
 
         const restoreDraftOrSavedState = async () => {
             // 恢复持久化状态
-            const savedState = localStorage.getItem(`packingList_tab_${tabKey}`);
+            const savedState = localStorage.getItem(packingStorageKey(`tab_${tabKey}`));
             if (savedState) {
                 try {
                     const parsed = JSON.parse(savedState);
@@ -247,7 +260,7 @@ function PackingListTab({
         const stateToSave = {
             selectedCustomerId, photos, boxes, packingListUid, listNumber, inputMark
         };
-        localStorage.setItem(`packingList_tab_${tabKey}`, JSON.stringify(stateToSave));
+        localStorage.setItem(packingStorageKey(`tab_${tabKey}`), JSON.stringify(stateToSave));
     }, [selectedCustomerId, photos, boxes, packingListUid, listNumber, inputMark, tabKey]);
 
     const fetchCustomers = async () => {
@@ -567,7 +580,7 @@ function PackingListTab({
         setBoxes([]);
         form.resetFields();
         boxForm.resetFields();
-        localStorage.removeItem(`packingList_tab_${tabKey}`);
+        localStorage.removeItem(packingStorageKey(`tab_${tabKey}`));
         updateTabTitle(tabKey, '新装箱单');
     };
 
@@ -673,7 +686,6 @@ function PackingListTab({
             {/* 基本信息 */}
             {!packingListUid ? (
                 <>
-                    <Title level={4}>创建新装箱单</Title>
                     <Card title="基本信息" style={{ marginBottom: 16 }} size="small">
                         <Form form={form} layout="vertical">
                             <Form.Item
@@ -965,7 +977,12 @@ function PackingListTab({
 }
 
 export default function PackingListCreate() {
-    const [activeKey, setActiveKey] = useState(() => localStorage.getItem('packingList_activeKey') || '1');
+    const navigate = useNavigate();
+    const roles = getIntakeRoles();
+    const workerOnly = roles.some(role => ['worker', 'employee'].includes(role)) &&
+        !roles.some(role => ['admin', 'store_manager', 'salesperson', 'clerk', 'finance'].includes(role));
+    const [entryMode, setEntryMode] = useState('manual');
+    const [activeKey, setActiveKey] = useState(() => localStorage.getItem(packingStorageKey('activeKey')) || '1');
     const [items, setItems] = useState([]);
     const [draftPackingLists, setDraftPackingLists] = useState([]);
     const [draftLoading, setDraftLoading] = useState(false);
@@ -1030,7 +1047,7 @@ export default function PackingListCreate() {
     }, [fetchDraftPackingLists]);
 
     useEffect(() => {
-        const savedTabs = localStorage.getItem('packingList_tabs');
+        const savedTabs = localStorage.getItem(packingStorageKey('tabs'));
         if (savedTabs) {
             try {
                 const parsed = JSON.parse(savedTabs);
@@ -1055,7 +1072,7 @@ export default function PackingListCreate() {
 
     // 监听 activeKey 或 items 变化，同步到 localStorage
     useEffect(() => {
-        localStorage.setItem('packingList_activeKey', activeKey);
+        localStorage.setItem(packingStorageKey('activeKey'), activeKey);
     }, [activeKey]);
 
     useEffect(() => {
@@ -1064,7 +1081,7 @@ export default function PackingListCreate() {
             label: item.label,
             draftUid: item.draftUid || null
         }));
-        localStorage.setItem('packingList_tabs', JSON.stringify(tabsData));
+        localStorage.setItem(packingStorageKey('tabs'), JSON.stringify(tabsData));
     }, [items]);
 
     const onChange = (newActiveKey) => {
@@ -1115,7 +1132,7 @@ export default function PackingListCreate() {
 
     const remove = useCallback((targetKey) => {
         // 清除持久化的数据
-        localStorage.removeItem(`packingList_tab_${targetKey}`);
+        localStorage.removeItem(packingStorageKey(`tab_${targetKey}`));
 
         let newActiveKey = activeKey;
         let lastIndex = -1;
@@ -1170,7 +1187,17 @@ export default function PackingListCreate() {
     }, [tabToClose, remove]);
 
     return (
-        <div style={{ padding: '0', height: '100%', display: 'flex', flexDirection: 'column' }}>
+        <div className={entryStyles.createPage}>
+            <div className={entryStyles.heading}>
+                <div><Title level={3}>创建装箱单</Title><div className={entryStyles.subtitle}>逐箱录入，或拍照提交已填写的纸质装箱单。</div></div>
+                <Button type="link" onClick={() => navigate('/packing-lists')}>{workerOnly ? '我的装箱单' : '装箱单列表'}</Button>
+            </div>
+            <div className={entryStyles.entryModes} role="group" aria-label="装箱单创建方式">
+                <Button icon={<EditOutlined />} type={entryMode === 'manual' ? 'primary' : 'default'} aria-pressed={entryMode === 'manual'} onClick={() => setEntryMode('manual')}>手动录入</Button>
+                <Button icon={<CameraOutlined />} type={entryMode === 'paper' ? 'primary' : 'default'} aria-pressed={entryMode === 'paper'} onClick={() => setEntryMode('paper')}>拍照上传纸质单</Button>
+            </div>
+            <div className={entryStyles.paperPanel} hidden={entryMode !== 'paper'}><PaperIntakeUpload /></div>
+            <div className={entryStyles.manualPanel} hidden={entryMode !== 'manual'}>
             <Card size="small" style={{ marginBottom: 12 }}>
                 <Space wrap style={{ width: '100%' }}>
                     <Text strong>继续编辑草稿</Text>
@@ -1201,7 +1228,7 @@ export default function PackingListCreate() {
                                 `${(record.boxes || []).length}箱`
                             ].join(' · ')
                         }))}
-                        style={{ minWidth: 360, flex: 1 }}
+                        style={{ minWidth: 0, width: '100%', flex: '1 1 280px' }}
                         notFoundContent="暂无草稿装箱单"
                     />
                     <Button icon={<ReloadOutlined />} onClick={fetchDraftPackingLists} loading={draftLoading}>
@@ -1217,6 +1244,7 @@ export default function PackingListCreate() {
                 items={items}
                 style={{ flex: 1 }}
             />
+            </div>
         </div>
     );
 }

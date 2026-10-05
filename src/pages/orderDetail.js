@@ -1,6 +1,5 @@
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
-    Alert,
     Badge,
     Button,
     Descriptions,
@@ -29,8 +28,12 @@ import trackStatus from "../common/trackStatus";
 import GoodInput from "../components/GoodName";
 import BoxAssignmentModal from "../components/BoxAssignmentModal";
 import Transportation from "../components/transportation";
-import { DeleteOutlined, DollarOutlined, InboxOutlined, PrinterOutlined } from "@ant-design/icons";
+import { DeleteOutlined, DollarOutlined, HistoryOutlined, InboxOutlined, PrinterOutlined } from "@ant-design/icons";
 import { hasPermission } from "../common/roleConfig";
+import { normalizeOrderEditPolicy } from "../common/orderEditPolicy";
+import { isBoxIdentityEditable, isCargoOutboundOrLater } from "../common/cargoStatus";
+import OrderHistoryDrawer from "../components/OrderHistoryDrawer";
+import OrderReceiptButton from "../components/OrderReceiptButton";
 import { buildCustomsCodeOptions } from "../common/customsCodeLookup";
 import FeatureTour from "../components/FeatureTour";
 import { COST_QUOTE_RECEIPT_TOUR, getCostQuoteReceiptChapter } from "../common/featureTourConfig";
@@ -46,11 +49,6 @@ import { calculateOrderBillingWeight, calculateReceivable } from "../common/rece
 const passHash = '18667b982b1c774d3c096422e457906afb227cfc7f956d3f4fc1f9bc07b98862';
 const quoteTourChapter = getCostQuoteReceiptChapter('quote');
 const workflowStartTourChapter = getCostQuoteReceiptChapter('workflowStart');
-const RECEIPT_LOCK_BLOCKER_LABELS = {
-    pending_receipt: '存在待审核收款单',
-    approved_receipt: '存在已审核收款单',
-    bonus_assigned: '存在已分配奖金的包裹',
-};
 const quoteTourTargets = {
     entry: '[data-tour="quote-entry"]',
     summary: '[data-tour="quote-summary"]',
@@ -76,6 +74,7 @@ const verify = () => {
 }
 
 let focusFlag = '';
+
 
 function base64ToBlob(base64, mimeType) {
     const binary = window.atob(base64);
@@ -167,7 +166,8 @@ export default function OrderDetail() {
     // const _orderProperty = [...orderProperty];
     const { order_id } = useParams()
     const navigate = useNavigate();
-    const { userId: tourUserId } = getCurrentTourUser();
+    const { userId: tourUserId, roles: sessionRoles } = getCurrentTourUser();
+    const canViewQuotes = hasPermission(sessionRoles, ['admin', 'store_manager', 'salesperson', 'finance']);
     const initialTourFlow = readFeatureTourFlow(tourUserId);
     const forceQuoteTour = initialTourFlow?.campaignId === COST_QUOTE_RECEIPT_TOUR.id
         && initialTourFlow.stage === 'quote';
@@ -178,6 +178,8 @@ export default function OrderDetail() {
     //description data状态管理
     const [descriptionData, setDescriptionData] = useState({});
     const [jwtPayload, setJwtPayload] = useState({});
+    const [historyOpen, setHistoryOpen] = useState(false);
+    const [historyRefreshKey, setHistoryRefreshKey] = useState(0);
     const [salesman, setSalesman] = useState(null);
     const [salesmanOptions, setSalesmanOptions] = useState([]);
     const [salesmanEditorValue, setSalesmanEditorValue] = useState(undefined);
@@ -190,11 +192,8 @@ export default function OrderDetail() {
     const [quoteModalOpen, setQuoteModalOpen] = useState(false);
     const [quoteSubmitting, setQuoteSubmitting] = useState(false);
     const [quoteHistory, setQuoteHistory] = useState([]);
+    const quoteHistoryRequestId = useRef(0);
     const [quotePdfPrinting, setQuotePdfPrinting] = useState(false);
-    const [unlockForm] = Form.useForm();
-    const [unlockModalOpen, setUnlockModalOpen] = useState(false);
-    const [unlockSubmitting, setUnlockSubmitting] = useState(false);
-    const [relockSubmitting, setRelockSubmitting] = useState(false);
     const [form] = Form.useForm();
     const [editingKey, setEditingKey] = useState('');
     const [cargoData, setCargoData] = useState([]);
@@ -210,6 +209,54 @@ export default function OrderDetail() {
 
     // 箱子分配模态框状态
     const [boxAssignmentVisible, setBoxAssignmentVisible] = useState(false);
+    const [specialFieldDraft, setSpecialFieldDraft] = useState('');
+    const specialFieldDraftRef = useRef('');
+    const specialFieldCommitRef = useRef(false);
+    const cargoSaveInFlightRef = useRef(new Set());
+
+    const fetchQuoteHistory = useCallback(async () => {
+        if (!canViewQuotes) return [];
+        const requestId = ++quoteHistoryRequestId.current;
+        try {
+            const res = await fetch(`${endpoint}/orders/${order_id}/quotes`, { headers: getSafeHeader() });
+            const data = await res.json();
+            if (requestId !== quoteHistoryRequestId.current) return [];
+            if (res.ok && data.code === 200 && Array.isArray(data.data)) {
+                setQuoteHistory(data.data);
+                return data.data;
+            }
+        } catch (error) {
+            console.error('获取报价历史失败:', error);
+        }
+        if (requestId === quoteHistoryRequestId.current) setQuoteHistory([]);
+        return [];
+    }, [order_id, canViewQuotes]);
+
+    const fetchOrderDetail = useCallback(async () => {
+        try {
+            const response = await fetch(`${endpoint}/orders/${order_id}`, { headers: getSafeHeader() });
+            const result = await response.json();
+            if (!response.ok || result.code !== 200 || !result.data) {
+                message.error(result.msg || result.message || '获取订单详情失败');
+                return null;
+            }
+            const data = result.data;
+            setDescriptionData(data);
+            setSalesman(data?.salesman || null);
+            setSalesmanEditorValue(data?.salesman?.id ?? data?.salesman_id ?? undefined);
+            await fetchQuoteHistory();
+            return data;
+        } catch (error) {
+            console.error('获取订单详情失败:', error);
+            message.error('获取订单详情失败');
+            return null;
+        }
+    }, [order_id, fetchQuoteHistory]);
+
+    const markVersionChanged = useCallback(async ({ reloadOrder = true } = {}) => {
+        setHistoryRefreshKey(value => value + 1);
+        if (reloadOrder) await fetchOrderDetail();
+    }, [fetchOrderDetail]);
 
     // 检查是否有查看客户联系信息的权限
     const canViewCustomerContact = hasPermission(jwtPayload?.roles, ['admin', 'store_manager', 'salesperson']);
@@ -228,12 +275,7 @@ export default function OrderDetail() {
             }
         }
 
-        (async () => {
-            const { data } = await (await fetch(`${endpoint}/orders/${order_id}`, { headers: getSafeHeader() })).json();
-            setDescriptionData(data);
-            setSalesman(data?.salesman || null);
-            setSalesmanEditorValue(data?.salesman?.id ?? data?.salesman_id ?? undefined);
-        })();
+        fetchOrderDetail();
 
         (async () => {
             setSalesmanLoading(true);
@@ -248,6 +290,7 @@ export default function OrderDetail() {
                 setSalesmanLoading(false);
             }
         })();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     useEffect(() => {
@@ -334,30 +377,57 @@ export default function OrderDetail() {
 
     const currentUserId = jwtPayload?.user_id ?? jwtPayload?.id ?? jwtPayload?.uid;
     const userRoles = jwtPayload?.roles || (jwtPayload?.role ? [jwtPayload.role] : []);
-    const isCurrentSalesman = currentUserId != null && salesman?.id != null
-        && Number(currentUserId) === Number(salesman.id);
+    const assignedSalesmanId = salesman?.id ?? descriptionData?.salesman_id;
+    const isCurrentSalesman = currentUserId != null && assignedSalesmanId != null
+        && String(currentUserId) === String(assignedSalesmanId);
     const canQuote = hasPermission(userRoles, ['salesperson']) && isCurrentSalesman;
-    const isAdmin = hasPermission(userRoles, ['admin']);
-    const canEditSalesman = hasPermission(jwtPayload?.roles, ['admin'])
-        || isCurrentSalesman;
-    const receiptLock = descriptionData.receipt_lock;
-    const receiptRevisionSupported = ['none', 'locked', 'revision_open'].includes(receiptLock?.status);
-    const receiptLockStatus = receiptRevisionSupported
-        ? receiptLock.status
-        : (descriptionData.receipt_locked ? 'locked' : 'none');
-    // receipt_lock was added after receipt_locked. Keep the legacy field as a fallback
-    // so this page continues to work during a staggered frontend/backend rollout.
-    const receiptLocked = receiptLockStatus === 'locked';
-    const receiptRevisionOpen = receiptLockStatus === 'revision_open';
-    const receiptLockBlockers = Array.isArray(receiptLock?.blockers) ? receiptLock.blockers : [];
-    const receiptUnlockEligible = receiptRevisionSupported
-        && receiptLock?.unlock_eligible === true
-        && receiptLockBlockers.length === 0;
-    const receiptRevision = receiptLock?.revision || {};
-    const blockerSummary = receiptLockBlockers
-        .map(blocker => RECEIPT_LOCK_BLOCKER_LABELS[blocker] || blocker)
-        .join('、');
+    const canViewOrderHistory = hasPermission(userRoles, ['admin', 'store_manager']);
+    const canEditSalesmanByRole = hasPermission(userRoles, ['admin']) || isCurrentSalesman;
+    const editPolicy = normalizeOrderEditPolicy(descriptionData.edit_policy, {
+        defaults: {
+            order_fields: userRoles.length > 0,
+            transportation: canEditSalesmanByRole,
+            order_weight: userRoles.length > 0,
+            salesman: canEditSalesmanByRole,
+            customer_assignment: userRoles.length > 0,
+            cargo_content: userRoles.length > 0,
+            cargo_weight: userRoles.length > 0,
+            box_content: hasPermission(userRoles, ['admin', 'store_manager', 'salesperson', 'clerk']),
+            box_weight: hasPermission(userRoles, ['admin', 'store_manager', 'salesperson', 'worker']),
+            tracking_numbers: hasPermission(userRoles, ['admin', 'store_manager', 'salesperson', 'clerk']),
+            box_workers: hasPermission(userRoles, ['admin', 'store_manager', 'salesperson', 'clerk']),
+            box_membership: canAssignBoxes,
+            archive_or_delete: userRoles.length > 0,
+            fully_outbound: descriptionData.edit_policy?.fully_outbound === true,
+        },
+    });
+    const canEditSalesman = canEditSalesmanByRole && editPolicy.salesman;
+    const canEditOrderField = (field) => {
+        if (field === 'customer_name' || field === 'customer_ids' || field === 'customers') return false;
+        if (field === 'total_weight') return editPolicy.order_weight;
+        if (field === 'transportation') return editPolicy.transportation;
+        if (field === 'update_date' || field === 'order_date') return false;
+        return editPolicy.order_fields;
+    };
+    const canEditCargoField = (record, field) => {
+        const isBox = !!record?.packing_list_uid;
+        if (isBox && field === 'tag') return false;
+        if (field === 'weight') {
+            if (isCargoOutboundOrLater(record)) return false;
+            return isBox ? editPolicy.box_weight : editPolicy.cargo_weight;
+        }
+        if (field === 'transfer_id') {
+            return editPolicy.tracking_numbers && (!isBox || isBoxIdentityEditable(record));
+        }
+        if (field === 'waybill_id') return editPolicy.tracking_numbers;
+        return isBox ? editPolicy.box_content : editPolicy.cargo_content;
+    };
     const finalQuote = quoteHistory.find(item => item.is_final);
+    const canCollect = Boolean(finalQuote?.is_effective) && (
+        hasPermission(userRoles, ['admin'])
+        || (hasPermission(userRoles, ['salesperson']) && currentUserId != null
+            && String(finalQuote.quoter_id) === String(currentUserId))
+    );
     const currentTransportation = (descriptionData.transportation || '').trim();
     const currentQuoteMode = transportationModes.find(item => item.name === currentTransportation);
     const currentMinPrice = currentQuoteMode ? Number(currentQuoteMode.min_price || 0) : 0;
@@ -381,96 +451,6 @@ export default function OrderDetail() {
         return [];
     };
 
-    const fetchQuoteHistory = async () => {
-        try {
-            const res = await fetch(`${endpoint}/orders/${order_id}/quotes`, { headers: getSafeHeader() });
-            const data = await res.json();
-            if (data.code === 200) {
-                setQuoteHistory(data.data || []);
-                return data.data || [];
-            }
-        } catch (error) {
-            console.error('获取报价历史失败:', error);
-        }
-        return [];
-    };
-
-    const applyReceiptLock = (nextReceiptLock, fallbackStatus, fallbackRevision = null) => {
-        const normalizedReceiptLock = nextReceiptLock?.status
-            ? nextReceiptLock
-            : {
-                ...(receiptLock || {}),
-                status: fallbackStatus,
-                revision: fallbackRevision,
-            };
-        setDescriptionData(prev => ({
-            ...prev,
-            receipt_locked: normalizedReceiptLock.status === 'locked',
-            receipt_lock: normalizedReceiptLock,
-        }));
-    };
-
-    const handleReceiptUnlock = async () => {
-        try {
-            const values = await unlockForm.validateFields();
-            const reason = values.reason.trim();
-            setUnlockSubmitting(true);
-            const response = await fetch(`${endpoint}/orders/${order_id}/receipt-unlock`, {
-                method: 'POST',
-                headers: { ...getSafeHeader(), 'Content-Type': 'application/json' },
-                body: JSON.stringify({ reason }),
-            });
-            const result = await response.json();
-            if (result.code !== 200) {
-                messageX.error(result.msg || '订单解锁失败');
-                return;
-            }
-
-            applyReceiptLock(result.data, 'revision_open', {
-                reason,
-                opened_by_id: currentUserId,
-                opened_by_name: jwtPayload?.name,
-                opened_at: new Date().toISOString(),
-            });
-            setUnlockModalOpen(false);
-            unlockForm.resetFields();
-            messageX.success(result.msg || '订单已进入修订状态');
-        } catch (error) {
-            if (error?.errorFields) return;
-            console.error('订单解锁失败:', error);
-            messageX.error(error?.message || '订单解锁失败');
-        } finally {
-            setUnlockSubmitting(false);
-        }
-    };
-
-    const handleReceiptRelock = async () => {
-        setRelockSubmitting(true);
-        try {
-            const response = await fetch(`${endpoint}/orders/${order_id}/receipt-relock`, {
-                method: 'POST',
-                headers: { ...getSafeHeader(), 'Content-Type': 'application/json' },
-                body: JSON.stringify({}),
-            });
-            const result = await response.json();
-            if (result.code !== 200) {
-                messageX.error(result.msg || '重新锁定订单失败');
-                return;
-            }
-
-            applyReceiptLock(result.data, 'locked');
-            setEditingKey('');
-            setQuoteModalOpen(false);
-            setBoxAssignmentVisible(false);
-            messageX.success(result.msg || '订单已重新锁定');
-        } catch (error) {
-            console.error('重新锁定订单失败:', error);
-            messageX.error(error?.message || '重新锁定订单失败');
-        } finally {
-            setRelockSubmitting(false);
-        }
-    };
-
     const openQuoteModal = async () => {
         if (transportationModes.length === 0) {
             await fetchTransportationModes();
@@ -480,7 +460,6 @@ export default function OrderDetail() {
             surcharge: 0,
             quote_remark: '',
         });
-        setQuoteHistory([]);
         setQuoteModalOpen(true);
         fetchQuoteHistory();
     };
@@ -533,10 +512,6 @@ export default function OrderDetail() {
     }, [canQuote, currentUserId, descriptionData.order_id, forceQuoteTour, salesmanLoading]);
 
     const submitQuote = async () => {
-        if (receiptLocked) {
-            messageX.warning('订单已锁定，只能查看历史报价');
-            return;
-        }
         try {
             const values = await quoteForm.validateFields();
             setQuoteSubmitting(true);
@@ -560,7 +535,7 @@ export default function OrderDetail() {
                 if (data.data?.is_final && data.data?.transportation_name) {
                     setDescriptionData(prev => ({ ...prev, transportation: data.data.transportation_name }));
                 }
-                await fetchQuoteHistory();
+                await markVersionChanged();
             } else {
                 messageX.error(data.msg || '报价失败');
             }
@@ -632,6 +607,7 @@ export default function OrderDetail() {
                 setDescriptionData(prev => ({ ...prev, salesman: res.data || null, salesman_id: res.data?.id ?? null }));
                 setSalesmanEditing(false);
                 messageX.success('业务员更新成功');
+                await markVersionChanged();
                 return;
             }
             messageX.error(res.msg || '业务员更新失败');
@@ -661,6 +637,7 @@ export default function OrderDetail() {
                 setDescriptionData(prev => ({ ...prev, salesman: null, salesman_id: null }));
                 setSalesmanEditing(false);
                 messageX.success('业务员已移除');
+                await markVersionChanged();
                 return;
             }
             messageX.error(res.msg || '移除业务员失败');
@@ -677,9 +654,7 @@ export default function OrderDetail() {
         quoteUnitPrice,
         quoteSurcharge
     );
-    const displayedQuoteReceivable = receiptLocked && finalQuote
-        ? Number(finalQuote.receivable_amount || 0)
-        : quoteReceivablePreview;
+    const displayedQuoteReceivable = quoteReceivablePreview;
     const fetchCargoData = async () => {
         const {
             code,
@@ -700,6 +675,7 @@ export default function OrderDetail() {
     }
 
     const edit = (record) => {
+        if (!canEditCargoRecord(record)) return;
         form.setFieldsValue({
             ...record,
         });
@@ -708,24 +684,37 @@ export default function OrderDetail() {
     const cancel = () => {
         setEditingKey('');
     };
+    const canEditCargoRecord = (record) => [
+        'transfer_id', 'waybill_id', 'tag', 'count', 'real_en_name', 'weight', 'price'
+    ].some(field => canEditCargoField(record, field));
     const save = async (key) => {
         if (!verify()) {
             message.error("密码错误！");
             return;
         }
+        if (cargoSaveInFlightRef.current.has(key)) return;
         try {
             const row = await form.validateFields();
 
             const newData = [...cargoData];
             const index = newData.findIndex((item) => key === item.uid);
             if (key) {
-
                 const item = newData[index];
-
-                const timestamp = (new Date()).getTime().toString(16);
+                if (!item) return;
+                const changedRow = Object.fromEntries(
+                    Object.entries(row).filter(([field, value]) => (
+                        canEditCargoField(item, field)
+                        && JSON.stringify(item[field] ?? null) !== JSON.stringify(value ?? null)
+                    ))
+                );
+                if (Object.keys(changedRow).length === 0) {
+                    setEditingKey('');
+                    return;
+                }
+                cargoSaveInFlightRef.current.add(key);
                 const updateRes = await (await fetch(`${endpoint}/cargo/${key}`, {
-                    headers: getSafeHeader(),
-                    body: JSON.stringify({ ...row }),
+                    headers: { ...getSafeHeader(), 'Content-Type': 'application/json' },
+                    body: JSON.stringify(changedRow),
                     method: 'PUT'
                 })).json();
                 if (updateRes.code !== 200) {
@@ -733,10 +722,18 @@ export default function OrderDetail() {
                     return;
                 }
 
-                newData.splice(index, 1, {
+                const updatedItem = {
                     ...item,
-                    ...row,
-                });
+                    ...changedRow,
+                };
+                if (
+                    Object.prototype.hasOwnProperty.call(changedRow, 'waybill_id')
+                    && String(changedRow.waybill_id ?? '').trim().length > 0
+                    && !isCargoOutboundOrLater(item)
+                ) {
+                    updatedItem.status = 1;
+                }
+                newData.splice(index, 1, updatedItem);
                 setCargoData(newData);
             } else {
                 newData.push(row);
@@ -744,8 +741,14 @@ export default function OrderDetail() {
             }
             setEditingKey('');
             message.success('修改成功！');
+            await markVersionChanged();
         } catch (errInfo) {
+            if (!errInfo?.errorFields) {
+                message.error(errInfo?.message || '修改失败！');
+            }
             console.log('Validate Failed:', errInfo);
+        } finally {
+            cargoSaveInFlightRef.current.delete(key);
         }
     };
     const columns = [
@@ -759,7 +762,7 @@ export default function OrderDetail() {
             width: 200,
             render: (text, record, i) => text && <Typography.Text copyable key={i}>{text}</Typography.Text>
         }, {
-            title: '转单号',
+            title: '转单号（运单号）',
             key: 'waybill_id',
             dataIndex: 'waybill_id',
             ellipsis: true,
@@ -775,8 +778,33 @@ export default function OrderDetail() {
             ellipsis: false,
             editable: true,
             width: 150,
-            render(text, _, i) {
-                return text && <Typography.Text copyable key={i}>{text}</Typography.Text>
+            render(text, record) {
+                if (!text) return null;
+                if (!record?.packing_list_uid) {
+                    return <Typography.Text copyable>{text}</Typography.Text>;
+                }
+                return (
+                    <Button
+                        type="link"
+                        style={{
+                            padding: 0,
+                            height: 'auto',
+                            width: '100%',
+                            maxWidth: '100%',
+                            whiteSpace: 'normal',
+                            overflowWrap: 'anywhere',
+                            wordBreak: 'break-all',
+                            textAlign: 'left',
+                            lineHeight: 1.5,
+                        }}
+                        onClick={(event) => {
+                            event.stopPropagation();
+                            navigate(`/packing-lists/${encodeURIComponent(record.packing_list_uid)}`);
+                        }}
+                    >
+                        {text}
+                    </Button>
+                );
             }
         },
         // {
@@ -817,8 +845,12 @@ export default function OrderDetail() {
             ellipsis: false,
             editable: true,
             width: 150,
-            render(text, _, i) {
-                return text && <Typography.Text copyable key={i}>{text ? text + 'KG' : ''}</Typography.Text>
+            render(text, record, i) {
+                return text && <Typography.Text
+                    copyable
+                    key={i}
+                    title={isCargoOutboundOrLater(record) ? '货物已出库，重量不可修改' : undefined}
+                >{text ? text + 'KG' : ''}</Typography.Text>
             }
         },
         {
@@ -936,9 +968,9 @@ export default function OrderDetail() {
                             okText="确认移除"
                             cancelText="取消"
                         >
-                            <Button type={'text'} danger disabled={receiptLocked}>移除</Button>
+                            <Button type={'text'} danger disabled={!editPolicy.box_membership}>移除</Button>
                         </Popconfirm>
-                        <Button type={'text'} style={{ color: "#1677FF" }} disabled={editingKey !== ''}
+                        <Button type={'text'} style={{ color: "#1677FF" }} disabled={editingKey !== '' || !canEditCargoRecord(record)}
                             onClick={() => edit(record)}>
                             编辑
                         </Button>
@@ -953,16 +985,13 @@ export default function OrderDetail() {
         return {
             ...col,
             onCell: (record) => {
-                const outboundLockedWaybill = ['transfer_id', 'waybill_id'].includes(col.dataIndex)
-                    && record.packing_list_uid
-                    && (Number(record.status) === 1 || String(record.status).toLowerCase() === 'outbound');
-                const receiptLockedWeight = receiptLocked && col.dataIndex === 'weight';
+                const fieldEditable = canEditCargoField(record, col.dataIndex);
                 return {
                     record,
                     // inputType: col.dataIndex === 'age' ? 'number' : 'text',
                     dataIndex: col.dataIndex,
                     title: col.title,
-                    editing: isEditing(record) && !outboundLockedWaybill && !receiptLockedWeight,
+                    editing: isEditing(record) && fieldEditable,
                     onEnter: async (flag) => {
                         await save(record.uid);
                         focusFlag = flag;
@@ -981,7 +1010,7 @@ export default function OrderDetail() {
                         await save(record.uid);
                     },
                     onClick: () => {
-                        if (outboundLockedWaybill || receiptLockedWeight) return;
+                        if (!fieldEditable) return;
                         edit(record);
                     }
                 }
@@ -990,6 +1019,10 @@ export default function OrderDetail() {
     });
     // 从订单移除包裹（仅解绑，不删除包裹）
     const handleDeleteCargo = async (records) => {
+        if (!editPolicy.box_membership) {
+            messageX.warning('当前订单不允许新增、移除、分配或解绑箱子');
+            return;
+        }
         if (!verify()) {
             message.error('密码错误！');
             return;
@@ -1020,10 +1053,15 @@ export default function OrderDetail() {
         setSelectedKeys(prevState => prevState.filter(key => !successIds.includes(key)));
 
         messageX.success(`已从订单移除 ${successIds.length} 个包裹`);
+        await markVersionChanged();
     }
 
     const [count, setCount] = useState(1);//包装箱添加计数
     const handleAdd = async () => {
+        if (!editPolicy.box_membership) {
+            messageX.warning('当前订单不允许新增箱子');
+            return;
+        }
         // console.log(descriptionData)
         if (!descriptionData.order_id) {
             message.error("请先补充订单号");
@@ -1046,6 +1084,7 @@ export default function OrderDetail() {
         // download
         // window.open(`${endpoint}/cargo/pdf/${cargo_id_list.join('_')}`);
         message.success('添加成功！');
+        await markVersionChanged();
         // window.location.reload();
     }
 
@@ -1077,85 +1116,19 @@ export default function OrderDetail() {
     return (
         <>
             {messageComponent}
-            <Typography.Title level={4} style={{ marginBottom: '2rem' }}>订单详情/Order Detail</Typography.Title>
-            {receiptLocked && (
-                <Space style={{ marginBottom: '1rem' }} align="center" wrap size="small">
-                    <Tag color="green">收据生成，订单锁定</Tag>
-                    {isAdmin && receiptRevisionSupported && (
-                        <Button
-                            danger
-                            disabled={!receiptUnlockEligible}
-                            onClick={() => setUnlockModalOpen(true)}
-                        >
-                            解锁订单
+            <Space style={{ marginBottom: '2rem', width: '100%', justifyContent: 'space-between' }} align="center" wrap>
+                <Space align="center" wrap>
+                    <Typography.Title level={4}>订单详情/Order Detail</Typography.Title>
+                    {/* {descriptionData.current_version > 0 && <Tag color="blue">V{descriptionData.current_version}</Tag>} */}
+                </Space>
+                <Space align="center" wrap>
+                    {canViewOrderHistory && (
+                        <Button type={"text"} icon={<HistoryOutlined />} onClick={() => setHistoryOpen(true)}>
+                            修改历史
                         </Button>
                     )}
-                    {isAdmin && receiptRevisionSupported && !receiptUnlockEligible && (
-                        <Typography.Text type="danger">
-                            暂不能解锁：{blockerSummary || '当前订单不满足解锁条件'}
-                        </Typography.Text>
-                    )}
                 </Space>
-            )}
-            {receiptRevisionOpen && (
-                <Space style={{ marginBottom: '1rem' }} align="center" wrap size="small">
-                    <Tag color="orange">订单修订中</Tag>
-                    <Typography.Text>原因：{receiptRevision.reason || '-'}</Typography.Text>
-                    <Typography.Text type="secondary">
-                        开启人：{receiptRevision.opened_by_name || '-'}
-                        {receiptRevision.opened_at ? ` / ${receiptRevision.opened_at}` : ''}
-                    </Typography.Text>
-                    {isAdmin && (
-                        <Popconfirm
-                            title="完成订单修订"
-                            description="重新锁定后，重量、包裹增删/归属和报价将再次不可修改。"
-                            okText="完成并锁定"
-                            cancelText="继续修订"
-                            onConfirm={handleReceiptRelock}
-                        >
-                            <Button type="primary" loading={relockSubmitting}>完成修订并锁定</Button>
-                        </Popconfirm>
-                    )}
-                </Space>
-            )}
-            <Modal
-                title="解锁订单并开始修订"
-                open={unlockModalOpen}
-                onCancel={() => {
-                    setUnlockModalOpen(false);
-                    unlockForm.resetFields();
-                }}
-                onOk={handleReceiptUnlock}
-                confirmLoading={unlockSubmitting}
-                okText="确认解锁"
-                cancelText="取消"
-                destroyOnHidden
-            >
-                <Alert
-                    type="warning"
-                    showIcon
-                    message="解锁后可修改计费基础"
-                    description="原收款单不会被修改或删除。完成修订后请重新锁定订单，或通过复制已驳回收款单创建新收款单。"
-                    style={{ marginBottom: 16 }}
-                />
-                <Form form={unlockForm} layout="vertical" preserve={false}>
-                    <Form.Item
-                        name="reason"
-                        label="解锁原因"
-                        rules={[
-                            { required: true, whitespace: true, message: '请填写解锁原因' },
-                            { max: 512, message: '解锁原因不能超过 512 个字符' },
-                        ]}
-                    >
-                        <Input.TextArea
-                            rows={4}
-                            maxLength={512}
-                            showCount
-                            placeholder="请说明填写错误或业务变更内容"
-                        />
-                    </Form.Item>
-                </Form>
-            </Modal>
+            </Space>
             <div>
                 <Space style={{ marginBottom: '1rem' }} align="center" wrap size="small">
                     <Typography.Text strong>业务员：</Typography.Text>
@@ -1216,13 +1189,21 @@ export default function OrderDetail() {
                             报价
                         </Button>
                     )}
+                    {canCollect && !salesmanEditing && (
+                        <OrderReceiptButton
+                            key={order_id}
+                            orderUid={order_id}
+                            messageApi={messageX}
+                            onSuccess={markVersionChanged}
+                        />
+                    )}
                     {canQuote && !salesmanEditing && (
                         <FeatureTour
                             chapter={quoteTourChapter}
                             steps={quoteTourSteps}
                             autoSteps={quoteTourSteps}
                             manualSteps={quoteManualTourSteps}
-                            eligible={canQuote && !receiptLocked}
+                            eligible={canQuote}
                             autoEnabled={false}
                             forceAutoStart={forceQuoteTour}
                             onStart={(mode) => {
@@ -1261,18 +1242,10 @@ export default function OrderDetail() {
                 onOk={submitQuote}
                 confirmLoading={quoteSubmitting}
                 okText="提交报价"
-                cancelText={receiptLocked ? '关闭' : '取消'}
+                cancelText="取消"
                 width={760}
-                okButtonProps={{ 'data-tour': 'quote-submit', disabled: receiptLocked }}
+                okButtonProps={{ 'data-tour': 'quote-submit' }}
             >
-                {receiptLocked && (
-                    <Alert
-                        type="info"
-                        showIcon
-                        message="订单已锁定，当前仅可查看历史报价"
-                        style={{ marginBottom: 16 }}
-                    />
-                )}
                 <Form form={quoteForm} layout="vertical">
                     <Descriptions data-tour="quote-summary" size="small" bordered style={{ marginBottom: 16 }}>
                         <Descriptions.Item label="当前运输方式">
@@ -1291,19 +1264,17 @@ export default function OrderDetail() {
                             <Typography.Text strong>{displayedQuoteReceivable.toFixed(2)} CNY</Typography.Text>
                         </Descriptions.Item>
                     </Descriptions>
-                    {!receiptLocked && (
-                        <div data-tour="quote-pricing">
-                            <Form.Item name="unit_price" label="每公斤单价 (CNY/kg)" rules={[{ required: true, message: '请输入每公斤单价' }]}>
-                                <InputNumber min={0} precision={4} style={{ width: '100%' }} />
-                            </Form.Item>
-                            <Form.Item name="surcharge" label="附加费 (CNY)" rules={[{ required: true, message: '请输入附加费' }]}>
-                                <InputNumber min={0} precision={2} style={{ width: '100%' }} />
-                            </Form.Item>
-                            <Form.Item name="quote_remark" label="报价说明">
-                                <Input.TextArea rows={3} />
-                            </Form.Item>
-                        </div>
-                    )}
+                    <div data-tour="quote-pricing">
+                        <Form.Item name="unit_price" label="每公斤单价 (CNY/kg)" rules={[{ required: true, message: '请输入每公斤单价' }]}>
+                            <InputNumber min={0} precision={4} style={{ width: '100%' }} />
+                        </Form.Item>
+                        <Form.Item name="surcharge" label="附加费 (CNY)" rules={[{ required: true, message: '请输入附加费' }]}>
+                            <InputNumber min={0} precision={2} style={{ width: '100%' }} />
+                        </Form.Item>
+                        <Form.Item name="quote_remark" label="报价说明">
+                            <Input.TextArea rows={3} />
+                        </Form.Item>
+                    </div>
                 </Form>
                 <Space style={{ marginBottom: 12 }}>
                     <Typography.Text type={finalQuote ? 'success' : 'secondary'}>
@@ -1359,32 +1330,58 @@ export default function OrderDetail() {
                             return;
                         }
 
-                        const timestamp = (new Date()).getTime().toString(16);
-                        await (await fetch(`${endpoint}/orders/${order_id}`, {
-                            headers: getSafeHeader(),
+                        const response = await fetch(`${endpoint}/orders/${order_id}`, {
+                            headers: { ...getSafeHeader(), 'Content-Type': 'application/json' },
                             body: JSON.stringify({ [v.name]: val }),
                             method: 'PUT'
-                        })).json()
+                        });
+                        const result = await response.json();
+                        if (!response.ok || result.code !== 200) {
+                            messageX.error(result.msg || result.message || `修改${v.label}失败`);
+                            return false;
+                        }
                         messageX.success(`修改${v.label}成功`);
-                        setDescriptionData(prevState => ({ ...prevState, [v.name]: val }))
+                        setDescriptionData(prevState => ({ ...prevState, [v.name]: val }));
+                        await markVersionChanged();
+                        return true;
                     }
+
+                    const beginSpecialFieldEdit = () => {
+                        if (!canEditOrderField(v.name)) return;
+                        const value = descriptionData[v.name] || '';
+                        specialFieldDraftRef.current = value;
+                        setSpecialFieldDraft(value);
+                        setTransportationEditing(v.name);
+                    };
+                    const updateSpecialFieldDraft = (value) => {
+                        specialFieldDraftRef.current = value;
+                        setSpecialFieldDraft(value);
+                    };
+                    const commitSpecialFieldEdit = async () => {
+                        if (specialFieldCommitRef.current) return;
+                        specialFieldCommitRef.current = true;
+                        setTransportationEditing('');
+                        try {
+                            await handleDescriptionDataChange(specialFieldDraftRef.current);
+                        } finally {
+                            specialFieldCommitRef.current = false;
+                        }
+                    };
 
                     if (v.name === 'transportation') {
                         return (
                             <Descriptions.Item key={k} span={v.span || 1} label={v.label.split('/')[0]}>
-                                {TransportationEditing === 'transportation' ? (
+                                {TransportationEditing === 'transportation' && canEditOrderField(v.name) ? (
                                     <Transportation
-                                        onEnter={() => setTransportationEditing("")}
-                                        onBlur={() => setTransportationEditing("")}
-                                        onChange={handleDescriptionDataChange}
-                                        defaultValue={descriptionData[v.name]}
+                                        onEnter={commitSpecialFieldEdit}
+                                        onBlur={commitSpecialFieldEdit}
+                                        onChange={updateSpecialFieldDraft}
+                                        defaultValue={specialFieldDraft}
                                     />
                                 ) : (
                                     <Typography.Text
                                         copyable={!!descriptionData[v.name]}
-                                        editable={{
-                                            onStart: () => setTransportationEditing(v.name),
-                                        }}
+                                        editable={canEditOrderField(v.name) ? { onStart: beginSpecialFieldEdit } : false}
                                     >
                                         {descriptionData[v.name]}
                                     </Typography.Text>
@@ -1396,7 +1393,7 @@ export default function OrderDetail() {
                     if (v.name === 'post_code') {
                         return (
                             <Descriptions.Item key={k} span={v.span || 1} label={v.label.split('/')[0]}>
-                                {TransportationEditing === 'post_code' ? (
+                                {TransportationEditing === 'post_code' && canEditOrderField(v.name) ? (
                                     <Select
                                         autoFocus
                                         showSearch
@@ -1418,9 +1415,9 @@ export default function OrderDetail() {
                                 ) : (
                                     <Typography.Text
                                         copyable={!!descriptionData[v.name]}
-                                        editable={{
+                                        editable={canEditOrderField(v.name) ? {
                                             onStart: () => setTransportationEditing(v.name),
-                                        }}
+                                        } : false}
                                     >
                                         {descriptionData[v.name]}
                                     </Typography.Text>
@@ -1432,18 +1429,18 @@ export default function OrderDetail() {
                     return v.name === 'en_name' ? (
                         <Descriptions.Item style={TransportationEditing === 'en_name' ? { width: 300 } : {}} key={k} span={v.span || 1}
                             label={v.label.split('/')[0]}>
-                            {TransportationEditing === 'en_name' && v.name === 'en_name' ? (
-                                <GoodInput onEnter={() => setTransportationEditing("")}
-                                    onBlur={() => setTransportationEditing("")}
-                                    onChange={handleDescriptionDataChange}
-                                    defaultValue={descriptionData[v.name]} />
+                            {TransportationEditing === 'en_name' && v.name === 'en_name' && canEditOrderField(v.name) ? (
+                                <GoodInput onEnter={commitSpecialFieldEdit}
+                                    onBlur={commitSpecialFieldEdit}
+                                    onChange={updateSpecialFieldDraft}
+                                    defaultValue={specialFieldDraft} />
                             ) : (
                                 <>
                                     <Typography.Text
                                         copyable={!!descriptionData[v.name]}
-                                        editable={{
-                                            onStart: () => setTransportationEditing(v.name),
-                                        }}>{descriptionData[v.name]}</Typography.Text>{descriptionData[v.name] &&
+                                        editable={canEditOrderField(v.name) ? {
+                                            onStart: beginSpecialFieldEdit,
+                                        } : false}>{descriptionData[v.name]}</Typography.Text>{descriptionData[v.name] &&
                                             <span>{v.name === 'total_weight' ? 'kg' : ''}</span>}
                                 </>
                             )}
@@ -1452,7 +1449,7 @@ export default function OrderDetail() {
                         <Descriptions.Item key={k} span={v.span || 1} label={v.label.split('/')[0]}>
                             <Typography.Text
                                 copyable={!!descriptionData[v.name]}
-                                editable={v.name === 'customer_name' || (receiptLocked && v.name === 'total_weight') ? false : {
+                                editable={!canEditOrderField(v.name) ? false : {
                                     onChange: handleDescriptionDataChange,
                                 }}>{descriptionData[v.name]}</Typography.Text>{descriptionData[v.name] &&
                                     <span>{v.name === 'total_weight' ? 'kg' : ''}</span>}
@@ -1481,13 +1478,13 @@ export default function OrderDetail() {
             <Typography.Title level={4} style={{ marginBottom: '2rem' }}>包裹详情/Cargo Detail</Typography.Title>
             <Typography.Title level={5}>添加包装箱</Typography.Title>
             <Space size='small' style={{ marginBottom: '2rem' }} align={'center'}>
-                <InputNumber value={count} onChange={setCount} disabled={receiptLocked} />
-                <Button type={'primary'} onClick={handleAdd} disabled={receiptLocked}>添加</Button>
+                <InputNumber value={count} onChange={setCount} disabled={!editPolicy.box_membership} />
+                <Button type={'primary'} onClick={handleAdd} disabled={!editPolicy.box_membership}>添加</Button>
                 {canAssignBoxes && (
                     <Button
                         type={'default'}
                         icon={<InboxOutlined />}
-                        disabled={receiptLocked}
+                        disabled={!editPolicy.box_membership}
                         onClick={() => setBoxAssignmentVisible(true)}
                     >
                         从装箱单分配
@@ -1504,7 +1501,7 @@ export default function OrderDetail() {
                         okText="确认移除"
                         cancelText="取消"
                     >
-                        <Button danger icon={<DeleteOutlined />} disabled={receiptLocked}>
+                        <Button danger icon={<DeleteOutlined />} disabled={!editPolicy.box_membership}>
                             批量移除（{selectedKeys.length}）
                         </Button>
                     </Popconfirm>
@@ -1521,6 +1518,7 @@ export default function OrderDetail() {
                 onSuccess={(result) => {
                     message.success(`成功分配 ${result.success?.length || 0} 个箱子`);
                     fetchCargoData();
+                    markVersionChanged();
                 }}
             />
 
@@ -1537,6 +1535,14 @@ export default function OrderDetail() {
 
                     scroll={{ y: 250 }} />
             </Form>
+            <OrderHistoryDrawer
+                open={historyOpen}
+                onClose={() => setHistoryOpen(false)}
+                orderUid={descriptionData.uid || order_id}
+                orderId={descriptionData.order_id}
+                customerName={descriptionData.customer_name}
+                refreshKey={historyRefreshKey}
+            />
         </>
     )
 

@@ -35,6 +35,9 @@ function mockApi(overrides = {}) {
             if (overrides.orders) return overrides.orders(parsed.searchParams);
             return response([order, secondOrder, thirdOrder], { page: 1, page_size: 20, total: 3 });
         }
+        if (parsed.pathname.endsWith('/receivable-adjustments')) {
+            return response(overrides.adjustments || [], { page: 1, page_size: 20, total: (overrides.adjustments || []).length });
+        }
         if (options?.method === 'POST') {
             return overrides.submit ? overrides.submit(options) : response({ id: 10, receipt_no: 'RC-NEW' });
         }
@@ -46,6 +49,29 @@ function mockApi(overrides = {}) {
         throw new Error(`Unexpected request: ${url}`);
     });
 }
+
+test('shows pending re-quote adjustments as non-cash tasks', async () => {
+    mockApi({
+        adjustments: [{
+            id: 3,
+            order_uid: 'order-1',
+            order_id: 'ORDER-1',
+            customer_name: '客户A',
+            old_receivable: 100,
+            new_receivable: 85,
+            delta_amount: -15,
+            direction: 'refund',
+            status: 'pending',
+            quoter_name: '业务员A',
+            create_date: '2026-09-17 10:00:00',
+        }],
+    });
+    renderPage();
+
+    expect(await screen.findByText('待退款')).toBeInTheDocument();
+    expect(screen.getByText('-15.00')).toBeInTheDocument();
+    expect(screen.getByText(/不代表现金已经收取或退还/)).toBeInTheDocument();
+});
 
 function renderPage(admin = false) {
     const payload = window.btoa(JSON.stringify({ user_id: 7, roles: [admin ? 'admin' : 'salesperson'] }));
@@ -113,7 +139,8 @@ test('filters default to all dates, only admins load owners, and the action is a
     expect(within(rowFor('ORDER-2')).getByText('-')).toBeInTheDocument();
     const action = screen.getByRole('button', { name: '生成并提交收款单' });
     expect(action).toBeDisabled();
-    expect(action.compareDocumentPosition(container.querySelector('.ant-table')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const orderTable = container.querySelector('[data-tour="receipt-orders"] .ant-table');
+    expect(action.compareDocumentPosition(orderTable) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(container.querySelector('[data-tour="receipt-basics"]')).not.toHaveTextContent('收款日期');
 });

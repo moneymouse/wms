@@ -1,0 +1,26 @@
+.page { max-width: 1200px; margin: 0 auto; padding: 20px 16px; }
+.header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
+.title { margin-top: 0; margin-bottom: 6px !important; }
+.toolbar { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
+.search { width: 340px; max-width: 100%; }
+.mark { font-weight: 600; overflow-wrap: anywhere; }
+.status { margin-inline-end: 0; flex-shrink: 0; }
+.error { margin-bottom: 16px; }
+.pagination { display: flex; justify-content: flex-end; margin-top: 20px; }
+.mobileList { display: grid; gap: 12px; }
+.mobileCard { padding: 14px; border: 1px solid #e5e7eb; border-radius: 8px; }
+.mobileHeader { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.mobileMark { min-width: 0; font-size: 16px; }
+.mobileInfo { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 10px; color: #6b7280; font-size: 13px; }
+.mobileTime { display: block; margin-top: 6px; color: #6b7280; font-size: 12px; }
+.mobileAction { margin-top: 10px; }
+.mobileAction a { display: inline-flex; align-items: center; min-height: 36px; }
+
+@media (max-width: 600px) {
+    .page { padding: 16px 8px; }
+    .header { align-items: flex-start; flex-direction: column; }
+    .header > button { width: 100%; }
+    .toolbar { align-items: flex-start; }
+    .search { flex: 1; min-width: 0; }
+    .pagination { justify-content: center; flex-wrap: wrap; }
+}

@@ -21,7 +21,8 @@ export function amountToCents(value) {
 export function getRemainingReceivableCents(orders, amounts) {
     return orders.reduce((total, order) => (
         total + amountToCents(order.receivable_amount)
-        - amountToCents(order.approved_received) - amountToCents(amounts[order.uid])
+        - amountToCents(order.approved_received) - amountToCents(order.settlement_difference)
+        - amountToCents(amounts[order.uid])
     ), 0);
 }
 

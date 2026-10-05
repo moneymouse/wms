@@ -237,11 +237,10 @@ export default function WorkDetails() {
             render: value => value || '-'
         },
         {
-            title: '报价人',
-            dataIndex: 'quoter_name',
-            key: 'quoter_name',
+            title: '业务员',
+            key: 'salesman_name',
             width: 120,
-            render: value => value || '-'
+            render: () => detailData?.worker?.name || '-'
         },
         {
             title: '渠道',
@@ -336,7 +335,7 @@ export default function WorkDetails() {
                 <Card
                     size="small"
                     bodyStyle={{ padding: 0 }}
-                    title="跟单订单（按最终有效报价归属）"
+                    title="跟单订单（按订单当前业务员归属）"
                     style={{ marginTop: 16 }}
                 >
                     <Table

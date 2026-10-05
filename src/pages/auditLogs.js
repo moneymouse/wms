@@ -11,7 +11,7 @@ const { Title, Text } = Typography;
 const EVENT_LABELS = {
     transportation_cost: '渠道成本',
     order_quote: '订单报价',
-    order_receipt_revision: '订单收据修订',
+    order_receipt_revision: '订单业务修订',
     payment_receipt: '收款单',
     sales_bonus_rate: '跟单奖金费率',
     supplier_export: '供应商导出',

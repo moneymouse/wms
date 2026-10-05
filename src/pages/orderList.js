@@ -1,12 +1,14 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Button, Input, message, Modal, Row, Space, Table, Typography } from "antd";
-import { DeleteOutlined, SearchOutlined } from "@ant-design/icons";
+import { DeleteOutlined, HistoryOutlined, SearchOutlined } from "@ant-design/icons";
 import orderProperty from "../common/orderProperty";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { endpoint } from "../config.js";
 import getSafeHeader from '../common/safeHeader';
 import ExportButton from '../components/ExportButton';
 import FeatureTour from '../components/FeatureTour';
+import OrderHistoryDrawer from '../components/OrderHistoryDrawer';
+import { hasPermission } from '../common/roleConfig';
 import { COST_QUOTE_RECEIPT_TOUR, getCostQuoteReceiptChapter } from '../common/featureTourConfig';
 import {
     clearFeatureTourFlow,
@@ -20,9 +22,21 @@ const selectQuoteOrderTourChapter = getCostQuoteReceiptChapter('selectQuoteOrder
 export default function OrderList() {
     const [orderData, setOrderData] = useState([]);
     const [cargo, setCargo] = useState({});
+    const [deletedHistoryOpen, setDeletedHistoryOpen] = useState(false);
+    const [deletedHistoryRefreshKey, setDeletedHistoryRefreshKey] = useState(0);
     const navigate = useNavigate();
     const { userId: tourUserId } = getCurrentTourUser();
     const tourFlow = readFeatureTourFlow(tourUserId);
+    const userRoles = useMemo(() => {
+        try {
+            const token = localStorage.getItem('jwt');
+            const payload = token ? JSON.parse(atob(token.split('.')[1])) : {};
+            return payload.roles || (payload.role ? [payload.role] : []);
+        } catch (_) {
+            return [];
+        }
+    }, []);
+    const canViewOrderHistory = hasPermission(userRoles, ['admin', 'store_manager']);
     const selectingQuoteOrder = tourFlow?.campaignId === COST_QUOTE_RECEIPT_TOUR.id
         && tourFlow.stage === 'select-quote-order';
     const selectQuoteOrderTourSteps = selectQuoteOrderTourChapter.steps.map(step => ({
@@ -194,7 +208,7 @@ export default function OrderList() {
 
         Modal.confirm({
             title: '确认归档订单',
-            content: `确定要归档选中的 ${selectedKeys.length} 个订单吗？归档后订单将不再显示在列表中。`,
+            content: `确定要归档选中的 ${selectedKeys.length} 个订单吗？关联货物/箱子及财务信息会一并归档，历史审计记录仍会保留。`,
             okText: '确认归档',
             okType: 'danger',
             cancelText: '取消',
@@ -230,8 +244,11 @@ export default function OrderList() {
 
                         // 清空选中状态
                         setSelectedKeys([]);
+                        if (deletedHistoryOpen) {
+                            setDeletedHistoryRefreshKey(value => value + 1);
+                        }
                     } else {
-                        message.error(response.message || '归档失败');
+                        message.error(response.msg || response.message || '归档失败');
                     }
                 } catch (error) {
                     console.error('归档订单时出错:', error);
@@ -288,8 +305,11 @@ export default function OrderList() {
 
                         // 清空选中状态
                         setSelectedKeys([]);
+                        if (deletedHistoryOpen) {
+                            setDeletedHistoryRefreshKey(value => value + 1);
+                        }
                     } else {
-                        message.error(response.message || '删除失败');
+                        message.error(response.msg || response.message || '删除失败');
                     }
                 } catch (error) {
                     console.error('删除订单时出错:', error);
@@ -346,6 +366,12 @@ export default function OrderList() {
                         onSuccess={() => setSelectedKeys([])}
                     />
 
+                    {canViewOrderHistory && (
+                        <Button icon={<HistoryOutlined />} onClick={() => setDeletedHistoryOpen(true)}>
+                            已删除订单历史
+                        </Button>
+                    )}
+
                     {selectedKeys.length > 0 && <Button
                         danger
                         loading={archiveLoading}
@@ -379,7 +405,7 @@ export default function OrderList() {
                                 console.log('a')
                                 const columns = {
                                     key: 'uid',
-                                    title: '转单号',
+                                    title: '原单号',
                                     dataIndex: 'transfer_id',
                                     render: (text, record, i) => text &&
                                         <Typography.Text copyable key={i}>{text}</Typography.Text>
@@ -404,6 +430,12 @@ export default function OrderList() {
                 onTourEnd={(status) => {
                     if (status === 'dismissed') clearFeatureTourFlow(tourUserId);
                 }}
+            />
+            <OrderHistoryDrawer
+                open={deletedHistoryOpen}
+                onClose={() => setDeletedHistoryOpen(false)}
+                deletedMode
+                refreshKey={deletedHistoryRefreshKey}
             />
         </>
     )

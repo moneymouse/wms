@@ -20,6 +20,23 @@ const ROLE_OPTIONS = [
 
 const ROLE_LABEL_MAP = Object.fromEntries(ROLE_OPTIONS.map(r => [r.value, r.label]));
 
+const AdminSection = ({ id, title, description, children }) => (
+    <section
+        aria-labelledby={`${id}-title`}
+        style={{ width: '100%', paddingTop: 16, borderTop: '1px solid rgba(5, 5, 5, 0.08)' }}
+    >
+        <Space direction="vertical" size={4} style={{ width: '100%', marginBottom: 12 }}>
+            <Typography.Title id={`${id}-title`} level={4} style={{ margin: 0 }}>
+                {title}
+            </Typography.Title>
+            <Typography.Text type="secondary">{description}</Typography.Text>
+        </Space>
+        <Space direction="vertical" size={16} style={{ width: '100%' }}>
+            {children}
+        </Space>
+    </section>
+);
+
 const AdminPage = () => {
     const [loading, setLoading] = useState(false);
     const [data, setData] = useState([]);
@@ -1114,54 +1131,30 @@ const AdminPage = () => {
 
     return (
         <Space direction="vertical" size={16} style={{ margin: 20, width: 'calc(100% - 40px)' }}>
-            <Card title="用户申请管理">
-                <Table
-                    columns={columns}
-                    dataSource={data}
-                    rowKey="id"
-                    loading={loading}
-                    pagination={false}
-                    scroll={{ y: 400 }}
-                />
-            </Card>
+            <div>
+                <Typography.Title level={3} style={{ marginBottom: 4 }}>管理中心</Typography.Title>
+                <Typography.Text type="secondary">
+                    管理功能已按业务类型分组；后续可根据实际使用频率调整分区顺序。
+                </Typography.Text>
+            </div>
 
-            <Card title="用户角色管理">
-                <Table
-                    columns={userColumns}
-                    dataSource={users}
-                    rowKey="id"
-                    loading={usersLoading}
-                    pagination={false}
-                    scroll={{ y: 400 }}
-                />
-            </Card>
-
-            <Card title="密码重置申请">
-                <Table
-                    columns={passwordRequestColumns}
-                    dataSource={passwordRequests}
-                    rowKey="id"
-                    loading={passwordRequestsLoading}
-                    pagination={{ pageSize: 10 }}
-                    locale={{ emptyText: '暂无密码重置申请' }}
-                />
-            </Card>
-
-            <Card title="低价报价审批">
-                <Table
-                    columns={quoteApprovalColumns}
-                    dataSource={quoteApprovals}
-                    rowKey="id"
-                    loading={quoteApprovalsLoading}
-                    pagination={{ pageSize: 10 }}
-                    scroll={{ x: 1300 }}
-                    locale={{ emptyText: '暂无待审批报价' }}
-                />
-            </Card>
-
-            <GoodsNameManagement />
-
-            <CustomsCodeManagement />
+            <AdminSection
+                id="approval-management"
+                title="审批处理"
+                description="处理需要管理员及时确认的业务审批。"
+            >
+                <Card title="低价报价审批">
+                    <Table
+                        columns={quoteApprovalColumns}
+                        dataSource={quoteApprovals}
+                        rowKey="id"
+                        loading={quoteApprovalsLoading}
+                        pagination={{ pageSize: 10 }}
+                        scroll={{ x: 1300 }}
+                        locale={{ emptyText: '暂无待审批报价' }}
+                    />
+                </Card>
+            </AdminSection>
 
             {/* <Card title="品名管理">
                 <Tabs
@@ -1294,8 +1287,13 @@ const AdminPage = () => {
                 />
             </Card> */}
 
-            <Card title="运输方式管理">
-                <Space direction="vertical" style={{ width: '100%' }}>
+            <AdminSection
+                id="channel-export-management"
+                title="渠道与导出配置"
+                description="维护运输渠道、成本规则和订单导出模板。"
+            >
+                <Card title="运输方式管理">
+                    <Space direction="vertical" style={{ width: '100%' }}>
                     <Button type="primary" onClick={() => openTransportationModal(null)} icon={<PlusOutlined />}>
                         新增运输方式
                     </Button>
@@ -1332,11 +1330,11 @@ const AdminPage = () => {
                             }
                         ]}
                     />
-                </Space>
-            </Card>
+                    </Space>
+                </Card>
 
-            <Card title="Excel模板管理">
-                <Space direction="vertical" style={{ width: '100%' }}>
+                <Card title="Excel模板管理">
+                    <Space direction="vertical" style={{ width: '100%' }}>
                     <Button type="primary" onClick={() => openTemplateModal(null)} icon={<PlusOutlined />}>
                         新增模板
                     </Button>
@@ -1380,8 +1378,57 @@ const AdminPage = () => {
                             }
                         ]}
                     />
-                </Space>
-            </Card>
+                    </Space>
+                </Card>
+            </AdminSection>
+
+            <AdminSection
+                id="reference-data-management"
+                title="商品与报关资料"
+                description="维护品名词库和海关编码等基础资料。"
+            >
+                <GoodsNameManagement />
+                <CustomsCodeManagement />
+            </AdminSection>
+
+            <AdminSection
+                id="user-access-management"
+                title="用户与权限"
+                description="处理用户准入、角色权限和密码重置申请。"
+            >
+                <Card title="用户申请管理">
+                    <Table
+                        columns={columns}
+                        dataSource={data}
+                        rowKey="id"
+                        loading={loading}
+                        pagination={false}
+                        scroll={{ y: 400 }}
+                    />
+                </Card>
+
+                <Card title="用户角色管理">
+                    <Table
+                        columns={userColumns}
+                        dataSource={users}
+                        rowKey="id"
+                        loading={usersLoading}
+                        pagination={false}
+                        scroll={{ y: 400 }}
+                    />
+                </Card>
+
+                <Card title="密码重置申请">
+                    <Table
+                        columns={passwordRequestColumns}
+                        dataSource={passwordRequests}
+                        rowKey="id"
+                        loading={passwordRequestsLoading}
+                        pagination={{ pageSize: 10 }}
+                        locale={{ emptyText: '暂无密码重置申请' }}
+                    />
+                </Card>
+            </AdminSection>
 
             {/* Excel 模板编辑对话框 */}
             <Modal

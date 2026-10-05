@@ -19,6 +19,7 @@ import {
     Grid,
     Checkbox,
     Spin,
+    Popconfirm,
     Dropdown
 } from 'antd';
 import {
@@ -33,7 +34,10 @@ import {
 import { endpoint } from '../config';
 import getSafeHeader from '../common/safeHeader';
 import { hasPermission } from '../common/roleConfig';
+import { getBoxEditPolicy, normalizeOrderEditPolicy } from '../common/orderEditPolicy';
+import { isBoxIdentityEditable, isCargoOutboundOrLater } from '../common/cargoStatus';
 import { buildCustomsCodeOptions, findCustomsCodeForName } from '../common/customsCodeLookup';
+import styles from './packingListDetail.module.css';
 
 const { Title, Text } = Typography;
 const { Option } = Select;
@@ -92,8 +96,7 @@ const getBoxItemDetails = (box) => {
 };
 
 const normalizeBoxStatus = (box) => {
-    const raw = String(box?.status ?? '').trim().toLowerCase();
-    if (raw === '1' || raw === BOX_STATUS.OUTBOUND) {
+    if (isCargoOutboundOrLater(box)) {
         return BOX_STATUS.OUTBOUND;
     }
 
@@ -171,7 +174,7 @@ export default function PackingListDetail() {
     const [boxEditVisible, setBoxEditVisible] = useState(false);
     const [editingBox, setEditingBox] = useState(null);
     const [savingBox, setSavingBox] = useState(false);
-    const [undoShipping, setUndoShipping] = useState(false);
+    const [undoShippingBoxUid, setUndoShippingBoxUid] = useState(null);
     const [deletingBoxUid, setDeletingBoxUid] = useState(null);
     const [boxEditForm] = Form.useForm();
     const addBoxItemDetails = Form.useWatch('item_details', boxForm) || [];
@@ -179,16 +182,41 @@ export default function PackingListDetail() {
 
     const canDeletePackingList = hasPermission(payload?.roles, ['admin', 'store_manager']);
     const canEditPackingListDetail = hasPermission(payload?.roles, ['admin', 'store_manager', 'salesperson']);
-    const canEditBoxes = hasPermission(payload?.roles, ['admin', 'store_manager', 'salesperson']);
+    const canEditBoxes = hasPermission(payload?.roles, ['admin', 'store_manager', 'salesperson', 'clerk']);
     const canUndoShip = hasPermission(payload?.roles, ['admin', 'store_manager']);
+    const boxPolicyDefaults = {
+        box_content: canEditBoxes,
+        box_weight: hasPermission(payload?.roles, ['admin', 'store_manager', 'salesperson', 'worker']),
+        tracking_numbers: canEditBoxes,
+        box_workers: canEditBoxes,
+        archive_or_delete: canEditBoxes,
+    };
+    const resolveBoxPolicy = (box) => {
+        const policy = getBoxEditPolicy(box, currentDetail, boxPolicyDefaults);
+        return {
+            ...policy,
+            box_weight: policy.box_weight && normalizeBoxStatus(box) !== BOX_STATUS.OUTBOUND,
+        };
+    };
+    const packingListPolicy = normalizeOrderEditPolicy(currentDetail?.edit_policy, {
+        defaults: {
+            order_fields: canEditPackingListDetail,
+            archive_or_delete: canDeletePackingList,
+        },
+    });
+    const canOpenBoxEditor = (box) => {
+        const policy = resolveBoxPolicy(box);
+        return policy.box_content || policy.box_weight || policy.tracking_numbers || policy.box_workers;
+    };
+    const assignedBoxes = (currentDetail?.boxes || []).filter(box => box.target_order_uid);
+    const canEditPackingListByPolicy = packingListPolicy.order_fields
+        && assignedBoxes.every(box => resolveBoxPolicy(box).box_content);
+    const canArchivePackingListByPolicy = packingListPolicy.archive_or_delete
+        && assignedBoxes.every(box => resolveBoxPolicy(box).archive_or_delete);
 
     useEffect(() => {
         setPayload(getJwtPayload());
     }, []);
-
-    useEffect(() => {
-        console.log(payload);
-    }, [payload]);
 
     useEffect(() => {
         if (uid) {
@@ -435,6 +463,10 @@ export default function PackingListDetail() {
 
     const handleArchiveCurrent = () => {
         if (!currentDetail) return;
+        if (!canArchivePackingListByPolicy) {
+            messageApi.warning('当前没有归档该装箱单的权限');
+            return;
+        }
 
         Modal.confirm({
             title: '确认归档该装箱单吗？',
@@ -469,6 +501,10 @@ export default function PackingListDetail() {
 
     const handleDeleteCurrent = () => {
         if (!currentDetail) return;
+        if (!canArchivePackingListByPolicy) {
+            messageApi.warning('当前没有删除该装箱单的权限');
+            return;
+        }
 
         Modal.confirm({
             title: '确认彻底删除该装箱单吗？',
@@ -503,6 +539,10 @@ export default function PackingListDetail() {
 
     const openCustomerEditModal = () => {
         if (!currentDetail) return;
+        if (!canEditPackingListByPolicy) {
+            messageApi.warning('当前没有修改该装箱单的权限');
+            return;
+        }
         setEditingMark(getMarkText(currentDetail));
         setEditingCustomerId(currentDetail.customer_id ?? null);
         setEditingPackingStatus(currentDetail.status || 'draft');
@@ -573,6 +613,10 @@ export default function PackingListDetail() {
 
     const openBoxEditModal = async (box) => {
         if (!box) return;
+        if (!canOpenBoxEditor(box)) {
+            messageApi.warning('当前没有修改该箱子的权限');
+            return;
+        }
         const itemDetails = getBoxItemDetails(box);
         setEditingBox(box);
         boxEditForm.setFieldsValue({
@@ -582,7 +626,9 @@ export default function PackingListDetail() {
             remark: box.remark || '',
             transfer_id: box.transfer_id || '',
             waybill_id: box.waybill_id || '',
-            worker_ids: []
+            worker_ids: (Array.isArray(box.workers) ? box.workers : [])
+                .map(worker => worker.worker_id ?? worker.id)
+                .filter(id => id !== undefined && id !== null)
         });
         setBoxEditVisible(true);
 
@@ -607,6 +653,7 @@ export default function PackingListDetail() {
 
         try {
             const values = await boxEditForm.validateFields();
+            const policy = resolveBoxPolicy(editingBox);
             const details = (values.item_details || [])
                 .map((row) => ({
                     item_name: String(row?.item_name || '').trim(),
@@ -615,13 +662,36 @@ export default function PackingListDetail() {
                 }))
                 .filter((row) => row.item_name && row.piece_count > 0);
 
-            if (details.length === 0) {
+            if (policy.box_content && details.length === 0) {
                 messageApi.warning('请至少填写一条有效品名明细');
                 return;
             }
 
             const mergedName = details.map((row) => row.item_name).join('、');
             const totalPiece = details.reduce((sum, row) => sum + row.piece_count, 0);
+
+            const payload = {};
+            if (policy.box_content) {
+                Object.assign(payload, {
+                    item_name: mergedName,
+                    piece_count: totalPiece,
+                    item_details: details,
+                    remark: values.remark ?? '',
+                });
+            }
+            if (policy.box_content && isBoxIdentityEditable(editingBox)) {
+                payload.box_number = values.box_number;
+            }
+            if (policy.box_weight) payload.weight = values.weight ?? null;
+            if (policy.tracking_numbers) {
+                if (isBoxIdentityEditable(editingBox)) payload.transfer_id = values.transfer_id ?? '';
+                payload.waybill_id = values.waybill_id ?? '';
+            }
+            if (policy.box_workers) payload.worker_ids = values.worker_ids || [];
+            if (Object.keys(payload).length === 0) {
+                messageApi.warning('该箱子当前没有可修改字段');
+                return;
+            }
 
             setSavingBox(true);
             const updateRes = await fetch(`${endpoint}/box/${editingBox.uid}`, {
@@ -630,34 +700,11 @@ export default function PackingListDetail() {
                     ...getSafeHeader(),
                     'Content-Type': 'application/json'
                 },
-                body: JSON.stringify({
-                    box_number: values.box_number,
-                    item_name: mergedName,
-                    piece_count: totalPiece,
-                    item_details: details,
-                    weight: values.weight ?? null,
-                    remark: values.remark ?? '',
-                    transfer_id: values.transfer_id ?? '',
-                    waybill_id: values.waybill_id ?? ''
-                })
+                body: JSON.stringify(payload)
             });
             const updateData = await updateRes.json();
             if (updateData.code !== 200) {
                 messageApi.error(updateData.msg || '更新箱子失败');
-                return;
-            }
-
-            const workerRes = await fetch(`${endpoint}/box/${editingBox.uid}/workers`, {
-                method: 'PUT',
-                headers: {
-                    ...getSafeHeader(),
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({ worker_ids: values.worker_ids || [] })
-            });
-            const workerData = await workerRes.json();
-            if (workerData.code !== 200) {
-                messageApi.error(workerData.msg || '更新箱子操作员失败');
                 return;
             }
 
@@ -676,6 +723,10 @@ export default function PackingListDetail() {
 
     const handleArchiveBox = (box) => {
         if (!box?.uid || !currentDetail?.uid) return;
+        if (!resolveBoxPolicy(box).archive_or_delete) {
+            messageApi.warning('该箱子当前不能归档');
+            return;
+        }
 
         Modal.confirm({
             title: '确认归档该箱子吗？',
@@ -709,6 +760,10 @@ export default function PackingListDetail() {
 
     const handleDeleteBox = (box) => {
         if (!box?.uid || !currentDetail?.uid) return;
+        if (!resolveBoxPolicy(box).archive_or_delete) {
+            messageApi.warning('该箱子当前不能删除');
+            return;
+        }
 
         Modal.confirm({
             title: '确认彻底删除该箱子吗？',
@@ -758,29 +813,17 @@ export default function PackingListDetail() {
             onOk: async () => {
                 setBatchDeleting(true);
                 try {
-                    const results = await Promise.all(
-                        boxUids.map(async (uid) => {
-                            try {
-                                const res = await fetch(`${endpoint}/box/${uid}/archive`, {
-                                    method: 'POST',
-                                    headers: getSafeHeader()
-                                });
-                                const data = await res.json();
-                                return { uid, success: data.code === 200, msg: data.msg };
-                            } catch (_) {
-                                return { uid, success: false, msg: '归档请求失败' };
-                            }
-                        })
-                    );
-
-                    const successCount = results.filter((item) => item.success).length;
-                    const failedCount = results.length - successCount;
-
-                    if (failedCount > 0) {
-                        messageApi.warning(`已归档 ${successCount} 箱，失败 ${failedCount} 箱`);
-                    } else {
-                        messageApi.success(`已归档 ${successCount} 箱`);
+                    const res = await fetch(`${endpoint}/cargo/archive`, {
+                        method: 'POST',
+                        headers: { ...getSafeHeader(), 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ cargo_id_list: boxUids })
+                    });
+                    const data = await res.json();
+                    if (!res.ok || data.code !== 200) {
+                        messageApi.error(data.msg || '批量归档箱子失败');
+                        return;
                     }
+                    messageApi.success(`已归档 ${boxUids.length} 箱`);
 
                     setSelectedShipBoxUids([]);
                     await handleViewDetail(currentDetail.uid);
@@ -809,29 +852,17 @@ export default function PackingListDetail() {
             onOk: async () => {
                 setBatchDeleting(true);
                 try {
-                    const results = await Promise.all(
-                        boxUids.map(async (uid) => {
-                            try {
-                                const res = await fetch(`${endpoint}/box/${uid}`, {
-                                    method: 'DELETE',
-                                    headers: getSafeHeader()
-                                });
-                                const data = await res.json();
-                                return { uid, success: data.code === 200, msg: data.msg };
-                            } catch (_) {
-                                return { uid, success: false, msg: '删除请求失败' };
-                            }
-                        })
-                    );
-
-                    const successCount = results.filter((item) => item.success).length;
-                    const failedCount = results.length - successCount;
-
-                    if (failedCount > 0) {
-                        messageApi.warning(`已删除 ${successCount} 箱，失败 ${failedCount} 箱`);
-                    } else {
-                        messageApi.success(`已删除 ${successCount} 箱`);
+                    const res = await fetch(`${endpoint}/cargo`, {
+                        method: 'DELETE',
+                        headers: { ...getSafeHeader(), 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ cargo_id_list: boxUids })
+                    });
+                    const data = await res.json();
+                    if (!res.ok || data.code !== 200) {
+                        messageApi.error(data.msg || '批量删除箱子失败');
+                        return;
                     }
+                    messageApi.success(`已删除 ${boxUids.length} 箱`);
 
                     setSelectedShipBoxUids([]);
                     await handleViewDetail(currentDetail.uid);
@@ -842,36 +873,41 @@ export default function PackingListDetail() {
         });
     };
 
-    const handleUndoShipBox = async () => {
-        if (!editingBox?.uid || !currentDetail?.uid) return;
+    const handleUndoShipBox = async (box) => {
+        if (!canUndoShip || !box?.uid || !currentDetail?.uid
+            || normalizeBoxStatus(box) !== BOX_STATUS.OUTBOUND) return;
 
-        setUndoShipping(true);
+        setUndoShippingBoxUid(box.uid);
         try {
-            const res = await fetch(`${endpoint}/box/${editingBox.uid}/undo-ship`, {
+            const res = await fetch(`${endpoint}/box/${box.uid}/undo-ship`, {
                 method: 'POST',
                 headers: getSafeHeader()
             });
             const data = await res.json();
 
-            if (data.code === 200) {
-                messageApi.success('已撤销出货');
-                setBoxEditVisible(false);
-                setEditingBox(null);
+            if (res.ok && data.code === 200) {
+                messageApi.success('已撤销出库，箱子重新入库');
+                if (editingBox?.uid === box.uid) {
+                    setBoxEditVisible(false);
+                    setEditingBox(null);
+                }
                 await handleViewDetail(currentDetail.uid);
             } else {
-                messageApi.error(data.msg || '撤销出货失败');
+                messageApi.error(data.msg || '撤销出库失败');
             }
         } catch (error) {
-            messageApi.error('撤销出货失败');
+            messageApi.error('撤销出库失败');
             console.error(error);
         } finally {
-            setUndoShipping(false);
+            setUndoShippingBoxUid(null);
         }
     };
 
     const allSelectableBoxUids = (currentDetail?.boxes || []).map((box) => box.uid);
     const allBatchCandidateUids = canEditBoxes
-        ? (currentDetail?.boxes || []).map((box) => box.uid)
+        ? (currentDetail?.boxes || [])
+            .filter((box) => resolveBoxPolicy(box).archive_or_delete)
+            .map((box) => box.uid)
         : [];
     const selectedSelectableCount = selectedShipBoxUids.filter((uid) => allSelectableBoxUids.includes(uid)).length;
     const selectedPrintableBoxUids = selectedShipBoxUids.filter((uid) => allSelectableBoxUids.includes(uid));
@@ -964,7 +1000,7 @@ export default function PackingListDetail() {
                             提交装箱单
                         </Button>
                     )}
-                    {canEditPackingListDetail && (
+                    {canEditPackingListDetail && canEditPackingListByPolicy && (
                         <Button
                             type="default"
                             icon={<EditOutlined />}
@@ -982,7 +1018,7 @@ export default function PackingListDetail() {
                             添加箱子
                         </Button>
                     )}
-                    {canDeletePackingList && (
+                    {canDeletePackingList && canArchivePackingListByPolicy && (
                         <Button
                             danger
                             onClick={handleArchiveCurrent}
@@ -991,7 +1027,7 @@ export default function PackingListDetail() {
                             归档装箱单
                         </Button>
                     )}
-                    {canDeletePackingList && (
+                    {canDeletePackingList && canArchivePackingListByPolicy && (
                         <Button
                             danger
                             icon={<DeleteOutlined />}
@@ -1110,6 +1146,9 @@ export default function PackingListDetail() {
                     dataSource={currentDetail.boxes || []}
                     renderItem={(box, idx) => {
                         const itemDetails = getBoxItemDetails(box);
+                        const canEditBox = canEditBoxes && canOpenBoxEditor(box);
+                        const canRestoreBox = canUndoShip && normalizeBoxStatus(box) === BOX_STATUS.OUTBOUND;
+                        const canRemoveBox = canEditBoxes && resolveBoxPolicy(box).archive_or_delete;
                         const workerNames = Array.from(
                             new Set(
                                 (Array.isArray(box?.workers) ? box.workers : [])
@@ -1119,38 +1158,70 @@ export default function PackingListDetail() {
                         );
                         return (
                             <List.Item
-                                actions={[
-                                    canEditBoxes ? (
-                                        <Button
-                                            type="link"
-                                            icon={<EditOutlined />}
-                                            onClick={() => openBoxEditModal(box)}
-                                        >
-                                            编辑
-                                        </Button>
-                                    ) : null,
-                                    canEditBoxes ? (
-                                        <Button
-                                            type="link"
-                                            danger
-                                            loading={deletingBoxUid === box.uid}
-                                            onClick={() => handleArchiveBox(box)}
-                                        >
-                                            归档
-                                        </Button>
-                                    ) : null,
-                                    canEditBoxes ? (
-                                        <Button
-                                            type="link"
-                                            danger
-                                            icon={<DeleteOutlined />}
-                                            loading={deletingBoxUid === box.uid}
-                                            onClick={() => handleDeleteBox(box)}
-                                        >
-                                            删除
-                                        </Button>
-                                    ) : null
-                                ].filter(Boolean)}
+                                actions={canEditBox || canRestoreBox || canRemoveBox ? [
+                                    <div key="box-actions" className={styles.boxActions}>
+                                        <div className={styles.boxActionRow} role="group" aria-label="编辑与出库操作">
+                                            <div className={styles.boxActionSlot}>
+                                                {canEditBox && (
+                                                    <Button
+                                                        type="link"
+                                                        icon={<EditOutlined />}
+                                                        onClick={() => openBoxEditModal(box)}
+                                                    >
+                                                        编辑
+                                                    </Button>
+                                                )}
+                                            </div>
+                                            <div className={styles.boxActionSlot}>
+                                                {canRestoreBox && (
+                                                    <Popconfirm
+                                                        title="撤销该箱子的出库？"
+                                                        description="箱子将重新入库，并清除转单号和出库时间。"
+                                                        okText="重新入库"
+                                                        cancelText="取消"
+                                                        onConfirm={() => handleUndoShipBox(box)}
+                                                    >
+                                                        <Button
+                                                            type="link"
+                                                            danger
+                                                            loading={undoShippingBoxUid === box.uid}
+                                                            disabled={undoShippingBoxUid !== null && undoShippingBoxUid !== box.uid}
+                                                        >
+                                                            撤销出库
+                                                        </Button>
+                                                    </Popconfirm>
+                                                )}
+                                            </div>
+                                        </div>
+                                        <div className={styles.boxActionRow} role="group" aria-label="归档与删除操作">
+                                            <div className={styles.boxActionSlot}>
+                                                {canRemoveBox && (
+                                                    <Button
+                                                        type="link"
+                                                        danger
+                                                        icon={<DeleteOutlined />}
+                                                        loading={deletingBoxUid === box.uid}
+                                                        onClick={() => handleArchiveBox(box)}
+                                                    >
+                                                        归档
+                                                    </Button>
+                                                )}
+                                            </div>
+                                            <div className={styles.boxActionSlot}>
+                                                {canRemoveBox && (
+                                                    <Button
+                                                        type="link"
+                                                        danger
+                                                        loading={deletingBoxUid === box.uid}
+                                                        onClick={() => handleDeleteBox(box)}
+                                                    >
+                                                        删除
+                                                    </Button>
+                                                )}
+                                            </div>
+                                        </div>
+                                    </div>
+                                ] : undefined}
                             >
                                 {screens.md ? (
                                     <div style={{ display: 'flex', flexDirection: 'column', width: '100%', gap: '10px' }}>
@@ -1213,11 +1284,11 @@ export default function PackingListDetail() {
                                                     <Text>{(box.remark || '').trim() || '-'}</Text>
                                                 </div>
                                                 <div style={{ marginTop: 6 }}>
-                                                    <Text type="secondary">转单号: </Text>
+                                                    <Text type="secondary">原单号: </Text>
                                                     <Text>{String(box.transfer_id || '').trim() || '-'}</Text>
                                                 </div>
                                                 <div>
-                                                    <Text type="secondary">原单号: </Text>
+                                                    <Text type="secondary">转单号（运单号）: </Text>
                                                     <Text>
                                                         {<Link to={box.target_order_uid ? `/orders/${box.target_order_uid}` : ``}>{String(box.waybill_id || '-').trim()}</Link>}
                                                     </Text>
@@ -1269,12 +1340,12 @@ export default function PackingListDetail() {
                                         )}
 
                                         <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                                            <Text type="secondary" style={{ flexShrink: 0 }}>转单号：</Text>
+                                            <Text type="secondary" style={{ flexShrink: 0 }}>原单号：</Text>
                                             <Text>{String(box.transfer_id || '').trim() || '-'}</Text>
                                         </div>
 
                                         <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                                            <Text type="secondary" style={{ flexShrink: 0 }}>运单号：</Text>
+                                            <Text type="secondary" style={{ flexShrink: 0 }}>转单号（运单号）：</Text>
                                             <Text>{String(box.waybill_id || '').trim() || '-'}</Text>
                                         </div>
                                     </div>
@@ -1498,6 +1569,7 @@ export default function PackingListDetail() {
                 okText="保存"
                 cancelText="取消"
                 confirmLoading={savingBox}
+                okButtonProps={{ disabled: !editingBox || !canOpenBoxEditor(editingBox) }}
                 width={screens.md ? 760 : '100%'}
             >
                 {editingBox && (
@@ -1506,15 +1578,6 @@ export default function PackingListDetail() {
                             <Text type="secondary">当前状态</Text>
                             {renderBoxStatusTag(editingBox)}
                         </Space>
-                        {canUndoShip && normalizeBoxStatus(editingBox) === BOX_STATUS.OUTBOUND && (
-                            <Button
-                                danger
-                                loading={undoShipping}
-                                onClick={handleUndoShipBox}
-                            >
-                                撤销出货
-                            </Button>
-                        )}
                     </div>
                 )}
                 <Form form={boxEditForm} layout="vertical">
@@ -1523,7 +1586,13 @@ export default function PackingListDetail() {
                         label="箱号"
                         rules={[{ required: true, message: '请输入箱号' }]}
                     >
-                        <InputNumber min={1} precision={0} step={1} style={{ width: 200 }} />
+                        <InputNumber
+                            min={1}
+                            precision={0}
+                            step={1}
+                            disabled={!resolveBoxPolicy(editingBox).box_content || !isBoxIdentityEditable(editingBox)}
+                            style={{ width: 200 }}
+                        />
                     </Form.Item>
 
                     <Form.List name="item_details">
@@ -1537,7 +1606,7 @@ export default function PackingListDetail() {
                                             danger
                                             icon={<CloseOutlined />}
                                             onClick={() => remove(field.name)}
-                                            disabled={fields.length <= 1}
+                                            disabled={fields.length <= 1 || !resolveBoxPolicy(editingBox).box_content}
                                             style={{ marginTop: 4, padding: '4px 8px' }}
                                         />
                                         <Form.Item
@@ -1548,6 +1617,7 @@ export default function PackingListDetail() {
                                         >
                                             <Input
                                                 placeholder="品名"
+                                                disabled={!resolveBoxPolicy(editingBox).box_content}
                                                 onChange={event => handleItemNameChange(boxEditForm, field.name, event.target.value)}
                                             />
                                         </Form.Item>
@@ -1560,6 +1630,7 @@ export default function PackingListDetail() {
                                                 options={getCustomsCodeOptions(editBoxItemDetails[field.name]?.item_name)}
                                                 placeholder="海关编码"
                                                 allowClear
+                                                disabled={!resolveBoxPolicy(editingBox).box_content}
                                             />
                                         </Form.Item>
                                         <Form.Item
@@ -1568,11 +1639,23 @@ export default function PackingListDetail() {
                                             rules={[{ required: true, message: '请输入件数' }]}
                                             style={{ width: screens.md ? 140 : 90, minWidth: 60, marginBottom: 8 }}
                                         >
-                                            <InputNumber min={1} precision={0} step={1} style={{ width: '100%' }} placeholder="件数" />
+                                            <InputNumber
+                                                min={1}
+                                                precision={0}
+                                                step={1}
+                                                disabled={!resolveBoxPolicy(editingBox).box_content}
+                                                style={{ width: '100%' }}
+                                                placeholder="件数"
+                                            />
                                         </Form.Item>
                                     </Space>
                                 ))}
-                                <Button type="dashed" onClick={() => add({ item_name: '', customs_code: '', piece_count: 1 })} icon={<PlusOutlined />}>
+                                <Button
+                                    type="dashed"
+                                    disabled={!resolveBoxPolicy(editingBox).box_content}
+                                    onClick={() => add({ item_name: '', customs_code: '', piece_count: 1 })}
+                                    icon={<PlusOutlined />}
+                                >
                                     添加品名明细
                                 </Button>
                             </>
@@ -1581,30 +1664,41 @@ export default function PackingListDetail() {
 
                     <Space wrap style={{ marginTop: 12, width: '100%' }}>
                         <Form.Item name="weight" label="总重量(kg)" style={{ marginBottom: 0 }}>
-                            <InputNumber min={0.01} step={0.1} style={{ width: 180 }} placeholder="未称重可留空" />
+                            <InputNumber
+                                min={0.01}
+                                step={0.1}
+                                disabled={!resolveBoxPolicy(editingBox).box_weight}
+                                style={{ width: 180 }}
+                                placeholder={normalizeBoxStatus(editingBox) === BOX_STATUS.OUTBOUND ? '箱子已出库，重量不可修改' : '未称重可留空'}
+                            />
                         </Form.Item>
-                        <Form.Item name="transfer_id" label="转单号" style={{ marginBottom: 0 }}>
+                        <Form.Item name="transfer_id" label="原单号" style={{ marginBottom: 0 }}>
                             <Input
-                                placeholder={normalizeBoxStatus(editingBox) === BOX_STATUS.OUTBOUND ? '撤销出货后可修改' : '可选'}
-                                disabled={normalizeBoxStatus(editingBox) === BOX_STATUS.OUTBOUND}
+                                placeholder={isBoxIdentityEditable(editingBox) ? '可选' : '箱子出库后，原单号不可修改'}
+                                disabled={!resolveBoxPolicy(editingBox).tracking_numbers || !isBoxIdentityEditable(editingBox)}
                                 style={{ width: 220 }}
                             />
                         </Form.Item>
-                        <Form.Item name="waybill_id" label="运单号" style={{ marginBottom: 0 }}>
+                        <Form.Item name="waybill_id" label="转单号（运单号）" style={{ marginBottom: 0 }}>
                             <Input
-                                placeholder={normalizeBoxStatus(editingBox) === BOX_STATUS.OUTBOUND ? '撤销出货后可修改' : '可选'}
-                                disabled={normalizeBoxStatus(editingBox) === BOX_STATUS.OUTBOUND}
+                                placeholder="可选"
+                                disabled={!resolveBoxPolicy(editingBox).tracking_numbers}
                                 style={{ width: 220 }}
                             />
                         </Form.Item>
                     </Space>
 
                     <Form.Item name="remark" label="备注" style={{ marginTop: 12 }}>
-                        <Input.TextArea rows={3} placeholder="可选" />
+                        <Input.TextArea rows={3} placeholder="可选" disabled={!resolveBoxPolicy(editingBox).box_content} />
                     </Form.Item>
 
                     <Form.Item name="worker_ids" label="操作员">
-                        <Select mode="multiple" placeholder="请选择操作员" maxTagCount={3}>
+                        <Select
+                            mode="multiple"
+                            placeholder="请选择操作员"
+                            maxTagCount={3}
+                            disabled={!resolveBoxPolicy(editingBox).box_workers}
+                        >
                             {workers.map((worker) => (
                                 <Option key={worker.id} value={worker.id}>{worker.name}</Option>
                             ))}

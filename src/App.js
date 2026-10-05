@@ -80,6 +80,8 @@ function App() {
         if (currentPath === '') return '';
         if (currentPath.startsWith('orders/')) return 'orders';
         if (currentPath.startsWith('packing-list/')) return 'packing-list/new';
+        if (currentPath.startsWith('packing-lists/')) return 'packing-lists';
+        if (currentPath === 'intakes' || currentPath.startsWith('intakes/')) return 'packing-lists';
         if (currentPath.startsWith('bonus-estimate')) return 'bonus';
         if (currentPath.startsWith('bonus')) return 'bonus';
         return currentPath;
@@ -213,7 +215,7 @@ function App() {
         {
             key: 'packing-lists',
             icon: <ContainerOutlined />,
-            label: '装箱单列表',
+            label: userRoles.some(role => ['worker', 'employee'].includes(role)) && !userRoles.some(role => ['admin', 'store_manager', 'salesperson', 'clerk', 'finance'].includes(role)) ? '我的装箱单' : '装箱单列表',
         },
         {
             key: 'work-details',
