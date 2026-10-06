@@ -1,8 +1,11 @@
 import React, { useEffect, useState } from 'react';
-import { Button, Card, Form, Input, InputNumber, Table, Tabs, Typography, message } from 'antd';
+import { Button, Card, Form, Input, InputNumber, Table, message } from 'antd';
 
 import FinanceCenter from './financeCenter';
-import { ReceiptAudit, ReceivableLedger } from './financeReceivables';
+import FinanceWorkspace from './financeWorkspace';
+import styles from './financeWorkspace.module.css';
+import { ReceiptAudit } from './financeReceivables';
+import FinanceOrderSettlements from './financeOrderSettlements';
 import { endpoint } from '../config';
 import getSafeHeader from '../common/safeHeader';
 import { COST_QUOTE_RECEIPT_TOUR } from '../common/featureTourConfig';
@@ -72,14 +75,16 @@ function SalesBonusRates() {
     </Card>;
 }
 
-export default function FinanceHub() {
+export default function FinanceHub({ extraTabs = [] }) {
     const { userId: tourUserId } = getCurrentTourUser();
     const initialTourFlow = readFeatureTourFlow(tourUserId);
     const [activeTab, setActiveTab] = useState(
         initialTourFlow?.campaignId === COST_QUOTE_RECEIPT_TOUR.id
             && initialTourFlow.stage === 'receipt-audit'
             ? 'audit'
-            : 'receivable'
+            : initialTourFlow?.campaignId === COST_QUOTE_RECEIPT_TOUR.id && initialTourFlow.stage === 'receivable-ledger'
+                ? 'receivable'
+                : 'overview'
     );
 
     useEffect(() => {
@@ -91,12 +96,12 @@ export default function FinanceHub() {
         return () => window.removeEventListener(FEATURE_TOUR_FLOW_EVENT, handleTourFlowChange);
     }, []);
 
-    return <div style={{ padding: 24 }}>
-        <Typography.Title level={3}>财务中心</Typography.Title>
-        <Tabs activeKey={activeTab} onChange={setActiveTab} items={[
-            { key: 'receivable', label: '应收账款台账', children: <ReceivableLedger /> },
-            { key: 'audit', label: '收款审核', children: <ReceiptAudit /> },
-            { key: 'bonus', label: '奖金管理', children: <><SalesBonusRates /><FinanceCenter /></> },
+    return <div className={styles.hub}>
+        <FinanceWorkspace activeTab={activeTab} onTabChange={setActiveTab} extraTabs={[
+            { key: 'receivable', label: '订单应收', children: <FinanceOrderSettlements /> },
+            { key: 'audit', label: '历史收款清理', children: <ReceiptAudit /> },
+            { key: 'bonus', label: '奖金', children: <><SalesBonusRates /><FinanceCenter /></> },
+            ...extraTabs,
         ]} />
     </div>;
 }

@@ -29,6 +29,7 @@ function setJwt(userId = 1, roles = ['salesperson']) {
 }
 
 beforeEach(() => {
+    COST_QUOTE_RECEIPT_TOUR.enabled = true;
     jest.useFakeTimers();
     jest.setSystemTime(new Date('2026-09-01T00:00:00+08:00'));
     window.localStorage.clear();
@@ -36,6 +37,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+    COST_QUOTE_RECEIPT_TOUR.enabled = false;
     jest.runOnlyPendingTimers();
     jest.useRealTimers();
 });
@@ -111,4 +113,13 @@ test('automatic onboarding and the question trigger can use different step sets'
     );
     fireEvent.click(screen.getByRole('button', { name: '打开操作引导' }));
     expect(screen.getByText('当前页面操作')).toBeInTheDocument();
+});
+
+
+test('retired campaign stays closed automatically while quote manual help remains usable', () => {
+    COST_QUOTE_RECEIPT_TOUR.enabled = false;
+    render(<FeatureTour chapter={quoteChapter} steps={steps} />);
+    expect(screen.queryByTestId('tour-panel')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '打开操作引导' }));
+    expect(screen.getByTestId('tour-panel')).toBeInTheDocument();
 });

@@ -1,0 +1,8 @@
+.partnerFilter { min-width: 240px; max-width: 100%; }
+.toolbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.filters { max-width: 100%; }
+.statement, .empty, .error { margin-top: 16px; }
+.notice, .summary, .table { margin-top: 16px; }
+.statementNote { display: flex; flex-direction: column; gap: 4px; padding-top: 16px; }
+.empty { padding: 24px 0; }
+@media (max-width: 700px) { .partnerFilter { min-width: 200px; width: 100%; } }

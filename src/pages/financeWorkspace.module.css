@@ -1,0 +1,45 @@
+/* Layout only. Component visuals come from Ant Design. */
+.hub { padding: 20px 0 24px; min-width: 0; }
+.workspace { min-width: 0; }
+.pageHeader { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 12px; }
+.title { margin: 0 !important; }
+.subtitle { margin-bottom: 16px; }
+.tabs { min-width: 0; }
+.panel { margin-bottom: 16px; min-width: 0; }
+.panelHead { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; padding: 12px 0; }
+.panelTitle { margin: 0 !important; }
+.panelBody { padding: 12px; }
+.toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-bottom: 16px; }
+.toolbarFilters { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.search { width: 250px; max-width: 100%; }
+.table { min-width: 0; }
+.number, .amount { font-variant-numeric: tabular-nums; }
+.amount { white-space: nowrap; }
+.recordLink { padding: 0; height: auto; }
+.muted { margin-top: 2px; }
+.todo { gap: 12px; }
+.detailTop { margin-bottom: 24px; }
+.detailHeading { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; }
+.detailActions { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0 20px; }
+.sectionTitle { margin: 24px 0 12px !important; }
+.formGrid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0 16px; }
+.formGrid :global(.ant-picker), .formGrid :global(.ant-input-number) { width: 100%; }
+.lineForm { margin-bottom: 8px; }
+.lineGrid { display: grid; grid-template-columns: 2fr 1fr 1.2fr 1fr 32px; gap: 12px; align-items: start; }
+.lineGrid :global(.ant-input-number) { width: 100%; }
+.formSummary { display: flex; justify-content: flex-end; gap: 24px; margin: 16px 0; }
+.paymentRemarks { min-width: 0; margin-top: 8px; }
+.paymentRemarks :global(.ant-tabs-content-holder) { min-width: 0; }
+.paymentRemarks :global(.ant-form-item) { margin-bottom: 8px; }
+.error { margin-bottom: 16px; }
+.footnote { margin: 12px 0 0; }
+@media (max-width: 700px) {
+    .hub { padding-top: 12px; }
+    .pageHeader { gap: 12px; }
+    .formGrid { grid-template-columns: 1fr; }
+    .lineGrid { grid-template-columns: 1fr 1fr; }
+    .lineGrid > :first-child { grid-column: 1 / -1; }
+    .toolbarFilters { width: 100%; }
+    .search { width: 100%; }
+    .detailHeading { flex-direction: column; gap: 16px; }
+}

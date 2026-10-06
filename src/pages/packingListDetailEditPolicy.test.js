@@ -13,7 +13,7 @@ const detail = {
         item_details: [{ item_name: '鞋子', customs_code: '1001', piece_count: 2 }],
         weight: 3.2, transfer_id: 'OLD-1', waybill_id: 'WB-1',
         workers: [{ worker_id: 7, worker_name: '操作员甲' }], status: 'outbound',
-        edit_policy: editablePolicy, identity_editable: false,
+        edit_policy: editablePolicy, identity_editable: false, original_number_editable: false,
     }],
 };
 let activeDetail;
@@ -50,7 +50,7 @@ beforeEach(() => {
             if (undoResponse.code === 200) {
                 activeDetail = { ...activeDetail, boxes: activeDetail.boxes.map(box => ({
                     ...box, status: 'pending_outbound', waybill_id: '', date: null,
-                    identity_editable: false,
+                    identity_editable: false, original_number_editable: true,
                 })) };
             }
             return Promise.resolve({ ok: undoResponse.code === 200, json: () => Promise.resolve(undoResponse) });
@@ -104,19 +104,19 @@ test.each(['admin', 'store_manager'])('%s can return an outbound box to stock di
     expect(call[1]).toMatchObject({ method: 'POST' });
     const dialog = await openBoxEditor();
     expect(within(dialog).getByDisplayValue('1')).toBeDisabled();
-    expect(within(dialog).getByDisplayValue('OLD-1')).toBeDisabled();
+    expect(within(dialog).getByDisplayValue('OLD-1')).not.toBeDisabled();
     expect(within(dialog).getByRole('textbox', { name: '转单号（运单号）' })).not.toBeDisabled();
     expect(within(dialog).getByDisplayValue('3.2')).not.toBeDisabled();
     fireEvent.change(within(dialog).getByDisplayValue('3.2'), { target: { value: '4.2' } });
+    fireEvent.change(within(dialog).getByDisplayValue('OLD-1'), { target: { value: 'RETURNED-NEW' } });
     fireEvent.change(within(dialog).getByRole('textbox', { name: '转单号（运单号）' }), { target: { value: 'WB-NEW' } });
     fireEvent.click(within(dialog).getByRole('button', { name: /保\s*存/ }));
     await waitFor(() => {
         const updateCall = global.fetch.mock.calls.find(([url, options]) => String(url).endsWith('/box/box-1') && options?.method === 'PUT');
         expect(updateCall).toBeDefined();
         const body = JSON.parse(updateCall[1].body);
-        expect(body).toMatchObject({ weight: 4.2, waybill_id: 'WB-NEW' });
+        expect(body).toMatchObject({ weight: 4.2, waybill_id: 'WB-NEW', transfer_id: 'RETURNED-NEW' });
         expect(body).not.toHaveProperty('box_number');
-        expect(body).not.toHaveProperty('transfer_id');
     });
 });
 
@@ -160,7 +160,7 @@ test.each([
 });
 
 test('pending boxes have no undo shipment action and remain weighable', async () => {
-    activeDetail = { ...detail, boxes: detail.boxes.map(box => ({ ...box, status: 'pending_outbound', identity_editable: true })) };
+    activeDetail = { ...detail, boxes: detail.boxes.map(box => ({ ...box, status: 'pending_outbound', identity_editable: true, original_number_editable: true })) };
     renderDetail();
     const dialog = await openBoxEditor();
     expect(screen.queryByRole('button', { name: '撤销出库' })).not.toBeInTheDocument();

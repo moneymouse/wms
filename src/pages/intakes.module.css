@@ -5,6 +5,10 @@
 .reviewCard, .photoPanel, .uploadCard { min-width: 0; border-radius: 12px; border-color: #e5e9ef; }
 .photoPanel { position: sticky; top: 16px; }
 .photoPanel :global(.ant-card-body) { padding: 16px; }
+.photoPanelCollapsible :global(.ant-card-head-title) { padding: 0; }
+.photoPanelCollapsed :global(.ant-card-body) { display: none; }
+.photoToggle { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; min-height: 56px; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.photoToggleHint { color: #667085; font-size: 13px; font-weight: 400; }
 .photos { display: grid; gap: 24px; max-height: calc(100vh - 230px); overflow: auto; }
 .photoSheet { min-width: 0; }
 .photoHeading { display: flex; gap: 12px; justify-content: space-between; align-items: center; margin-bottom: 10px; }
@@ -28,10 +32,6 @@
 .warningScroll li { margin-bottom: 5px; }
 .progressNote { display: flex; gap: 8px; align-items: center; margin: 16px 0; }
 .inlineAlert { margin-bottom: 16px; }
-.filters { display: flex; gap: 16px; justify-content: space-between; align-items: center; margin-bottom: 20px; }
-.filters :global(.ant-input-search) { max-width: 360px; }
-.paperIdentity { display: flex; flex-direction: column; gap: 5px; }
-.paperName { font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
 .pagination { margin-top: 20px; text-align: right; }
 .uploadCard { max-width: 850px; margin: 0 auto; }
 .uploadIntro { margin: 0 0 20px; color: #475467; }
@@ -47,4 +47,14 @@
 .previewButton img { width: 100%; height: 120px; object-fit: cover; display: block; border-radius: 4px; }
 .filename { overflow-wrap: anywhere; font-size: 12px; }
 @media (max-width: 1200px) { .layout { grid-template-columns: minmax(0, 1fr); } .photoPanel { position: static; } .photos { max-height: 50vh; } }
-@media (max-width: 600px) { .page { padding: 12px 8px; } .pageHeader { gap: 12px; } .reviewCard :global(.ant-card-body), .uploadCard :global(.ant-card-body) { padding: 16px 12px; } .reviewFields { grid-template-columns: 1fr; gap: 12px; } .filters { align-items: stretch; flex-direction: column; } .actions { justify-content: flex-start; } .actions :global(.ant-btn-primary) { width: 100%; } .summary { gap: 18px; } .photo { max-height: 45vh; } }
+@media (max-width: 600px) { .page { padding: 12px 8px; } .pageHeader { gap: 12px; } .reviewCard :global(.ant-card-body), .uploadCard :global(.ant-card-body) { padding: 16px 12px; } .reviewFields { grid-template-columns: 1fr; gap: 12px; } .actions { justify-content: flex-start; } .actions :global(.ant-btn-primary) { width: 100%; } .summary { gap: 18px; } .photo { max-height: 45vh; } }
+
+.reviewAcknowledgement { display: flex; margin-bottom: 16px; line-height: 1.7; }
+
+.continueUploads { margin-top: 24px; padding-top: 16px; border-top: 1px solid #edf0f4; }
+.continueHeader { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.continueList { list-style: none; padding: 0; margin: 12px 0 0; }
+.continueList li { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 12px 0; border-bottom: 1px solid #edf0f4; }
+.continueList li > div { display: flex; flex-direction: column; gap: 4px; }
+.continueList a { flex-shrink: 0; }
+@media (max-width: 600px) { .continueList li { align-items: flex-start; flex-direction: column; gap: 8px; } }

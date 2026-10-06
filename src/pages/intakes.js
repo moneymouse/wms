@@ -1,10 +1,10 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Link, Navigate, useBlocker, useParams } from 'react-router-dom';
-import { Alert, Button, Card, DatePicker, Empty, Input, InputNumber, Modal, Pagination, Select, Space, Spin, Table, Tag, Typography, message } from 'antd';
-import { CameraOutlined, CheckOutlined, DeleteOutlined, PlusOutlined, ReloadOutlined, UploadOutlined } from '@ant-design/icons';
+import { Link, useBlocker, useParams } from 'react-router-dom';
+import { Alert, Button, Card, Checkbox, DatePicker, Empty, Input, InputNumber, Modal, Pagination, Select, Space, Spin, Table, Tag, Typography, message } from 'antd';
+import { CameraOutlined, CheckOutlined, DownOutlined, DeleteOutlined, PlusOutlined, ReloadOutlined, UploadOutlined, UpOutlined } from '@ant-design/icons';
 import { endpoint } from '../config';
 import getSafeHeader from '../common/safeHeader';
-import { canReviewIntake, downloadPaperIntakeTemplate, emptyBox, intakeRequest, MAX_INTAKE_WORKERS, normalizeIntakeDraft, validateIntakeDraft } from '../common/intakeApi';
+import { downloadPaperIntakeTemplate, emptyBox, intakeRequest, MAX_INTAKE_WORKERS, normalizeIntakeDraft, validateIntakeDraft } from '../common/intakeApi';
 import styles from './intakes.module.css';
 
 const { Title, Text } = Typography;
@@ -12,6 +12,7 @@ const MAX_PHOTOS = 8;
 const MAX_PHOTO_BYTES = 24 * 1024 * 1024;
 const MAX_SINGLE_PHOTO_BYTES = 10 * 1024 * 1024;
 const RECOGNITION_POLL_MS = 3000;
+const MOBILE_QUERY = '(max-width: 600px)';
 const recognitionLabels = { idle: '等待识别', running: '正在识别', succeeded: '可以核对', failed: '识别失败', needs_review: '请核对疑点' };
 const displayTime = value => String(value || '—').replace('T', ' ');
 const paperName = record => record.display_name || record.draft?.mark || record.recognition_result?.mark || record.mark_hint || `纸单 ${record.uid.slice(0, 8)}`;
@@ -55,13 +56,47 @@ function useLeaveWarning(dirty) {
 }
 
 export function PaperIntakeUpload({ onSubmitted } = {}) {
+    const [uploaded, setUploaded] = useState(null);
+    return uploaded
+        ? <PaperIntakeCheck uid={uploaded.uid} initialRecord={uploaded} onCompleted={onSubmitted} onNext={() => setUploaded(null)} />
+        : <PaperIntakePhotos onUploaded={setUploaded} />;
+}
+
+function ContinuePaperUploads() {
+    const [records, setRecords] = useState([]);
+    const [total, setTotal] = useState(0);
+    const [page, setPage] = useState(1);
+    const [reloadKey, setReloadKey] = useState(0);
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState('');
+    useEffect(() => {
+        const controller = new AbortController();
+        let active = true;
+        setLoading(true); setError(''); setRecords([]);
+        intakeRequest(`/my-packing-lists?status=uploading&page=${page}&page_size=20`, { signal: controller.signal }).then(data => {
+            if (!active) return;
+            if (!Array.isArray(data?.items) || !Number.isFinite(data.total) || data.total < 0) throw new Error('未完成上传加载失败，请重试');
+            setRecords(data.items); setTotal(data.total);
+        }).catch(e => { if (active) setError(e.message); }).finally(() => { if (active) setLoading(false); });
+        return () => { active = false; controller.abort(); };
+    }, [page, reloadKey]);
+    if (!loading && !error && !total) return null;
+    return <section className={styles.continueUploads} aria-label="我的未完成上传">
+        <div className={styles.continueHeader}><Text strong>我的未完成上传</Text><Button type="text" icon={<ReloadOutlined />} aria-label="刷新未完成上传" onClick={() => setReloadKey(current => current + 1)}>刷新</Button></div>
+        <Text type="secondary">之前上传的照片和已保存的检查进度可以继续使用。</Text>
+        {error && <Alert type="error" message={error} className={styles.inlineAlert} action={<Button onClick={() => setReloadKey(current => current + 1)}>重试</Button>} />}
+        <Spin spinning={loading}><ul className={styles.continueList}>{records.map(item => <li key={item.uid}><div><Text strong>{item.mark || '唛头待填写'}</Text><Text type="secondary">{item.box_count || 0} 箱 · {displayTime(item.created_at)}</Text></div><Link to={`/packing-list/upload/${encodeURIComponent(item.intake_uid || item.uid)}`}>继续检查并上传</Link></li>)}</ul></Spin>
+        <Pagination current={page} total={total} pageSize={20} showSizeChanger={false} hideOnSinglePage onChange={setPage} className={styles.pagination} />
+    </section>;
+}
+
+function PaperIntakePhotos({ onUploaded }) {
     const [files, setFiles] = useState([]);
     const [markHint, setMarkHint] = useState('');
     const [note, setNote] = useState('');
     const [operationAt, setOperationAt] = useState(null);
     const [submitting, setSubmitting] = useState(false);
     const [uploadError, setUploadError] = useState('');
-    const [submitted, setSubmitted] = useState(false);
     const [templateDownloading, setTemplateDownloading] = useState(false);
     const [templateError, setTemplateError] = useState('');
     const inputRef = useRef(null);
@@ -77,11 +112,11 @@ export function PaperIntakeUpload({ onSubmitted } = {}) {
         const nextFiles = [...files, ...selected];
         if (nextFiles.length > MAX_PHOTOS) { setUploadError('每份纸单最多选择 8 张照片，请移除部分照片后再添加'); return; }
         if (nextFiles.reduce((sum, file) => sum + file.size, 0) > MAX_PHOTO_BYTES) { setUploadError('照片合计不能超过 24MB，请移除部分照片或选择较小的图片'); return; }
-        setFiles(nextFiles); setUploadError(''); setSubmitted(false);
+        setFiles(nextFiles); setUploadError('');
     };
     const submit = async () => {
         if (!files.length) { setUploadError('请至少选择一张纸单照片'); return; }
-        setSubmitting(true); setUploadError(''); setSubmitted(false);
+        setSubmitting(true); setUploadError('');
         const body = new FormData();
         files.forEach(file => body.append('photos', file));
         if (markHint.trim()) body.append('mark_hint', markHint.trim());
@@ -89,8 +124,7 @@ export function PaperIntakeUpload({ onSubmitted } = {}) {
         if (operationAt) body.append('operation_at', operationAt.format('YYYY-MM-DD HH:mm:ss'));
         try {
             const result = await intakeRequest('', { method: 'POST', body });
-            setFiles([]); setMarkHint(''); setNote(''); setOperationAt(null); setSubmitted(true);
-            onSubmitted?.(result);
+            onUploaded(result);
         } catch (e) { setUploadError(e.message); }
         finally { setSubmitting(false); }
     };
@@ -102,7 +136,7 @@ export function PaperIntakeUpload({ onSubmitted } = {}) {
     };
     return <Card className={styles.uploadCard} title="上传手写装箱单">
         {leaveWarning}
-        <p className={styles.uploadIntro}>拍清纸单并提交，文员会完成后续核对。</p>
+        <p className={styles.uploadIntro}>拍清纸单后识别内容，由你对照原图检查并修改。核对完成后才会生成装箱单。</p>
         <input ref={cameraRef} aria-label="拍照照片" type="file" accept="image/*" capture="environment" hidden disabled={submitting} onChange={addPhotos} />
         <input ref={inputRef} aria-label="纸单照片" type="file" accept="image/*" multiple hidden disabled={submitting} onChange={addPhotos} />
         <Space wrap>
@@ -125,66 +159,9 @@ export function PaperIntakeUpload({ onSubmitted } = {}) {
             </div>
         </details>
         {uploadError && <Alert type="error" showIcon message={uploadError} className={styles.inlineAlert} />}
-        {submitted && <Alert type="success" showIcon message="照片已提交" description="等待文员核对，可继续上传下一份。" className={styles.inlineAlert} />}
-        <Button type="primary" size="large" loading={submitting} onClick={submit}>提交照片</Button>
+        <Button type="primary" size="large" loading={submitting} onClick={submit}>识别照片并检查</Button>
+        <ContinuePaperUploads />
     </Card>;
-}
-
-export default function Intakes() {
-    return canReviewIntake() ? <IntakeReviewList /> : <Navigate to="/packing-lists" replace />;
-}
-
-function IntakeReviewList() {
-    const [records, setRecords] = useState([]);
-    const [total, setTotal] = useState(0);
-    const [pageSize, setPageSize] = useState(20);
-    const [page, setPage] = useState(1);
-    const [markSearch, setMarkSearch] = useState('');
-    const [markQuery, setMarkQuery] = useState('');
-    const [loading, setLoading] = useState(false);
-    const [error, setError] = useState('');
-    const requestRef = useRef(0);
-    const queryRef = useRef('');
-    const query = `?status=pending&page=${page}${markQuery ? `&mark=${encodeURIComponent(markQuery)}` : ''}`;
-    queryRef.current = query;
-    const load = useCallback(async ({ background = false } = {}) => {
-        const requestId = ++requestRef.current;
-        if (!background) setLoading(true);
-        const currentRequest = () => requestId === requestRef.current && query === queryRef.current;
-        try {
-            const data = await intakeRequest(query);
-            if (!currentRequest()) return;
-            setRecords(data.items); setTotal(data.total); setPageSize(data.page_size || 20); setError('');
-        } catch (e) { if (currentRequest()) setError(e.message); }
-        finally { if (currentRequest()) setLoading(false); }
-    }, [query]);
-    useEffect(() => { load(); return () => { requestRef.current += 1; }; }, [load]);
-    useEffect(() => {
-        let active = true;
-        let timer;
-        const poll = async () => {
-            await load({ background: true });
-            if (active) timer = window.setTimeout(poll, RECOGNITION_POLL_MS);
-        };
-        timer = window.setTimeout(poll, RECOGNITION_POLL_MS);
-        return () => { active = false; window.clearTimeout(timer); };
-    }, [load]);
-    const columns = [
-        { title: '纸单 / 唛头', key: 'mark', render: (_, row) => <div className={styles.paperIdentity}><Link to={`/intakes/${row.uid}`} className={styles.paperName}>{paperName(row)}</Link><Text type="secondary">{row.photos?.length || 0} 张照片 · {row.draft?.boxes?.length || row.recognition_result?.boxes?.length || 0} 箱</Text></div> },
-        { title: '回传人', dataIndex: 'submitted_by_name' },
-        { title: '回传时间', dataIndex: 'created_at', render: displayTime },
-        { title: '核对进度', key: 'recognition', render: (_, row) => <Tag color={row.recognition_status === 'failed' ? 'red' : row.recognition_status === 'running' ? 'blue' : 'default'}>{recognitionLabels[row.recognition_status] || '等待识别'}</Tag> },
-        { title: '', key: 'action', render: (_, row) => <Link to={`/intakes/${row.uid}`}>核对纸单</Link> },
-    ];
-    return <div className={styles.page}>
-        <header className={styles.pageHeader}><div><Link to="/packing-lists">返回装箱单列表</Link><Title level={3}>待核对纸质单</Title><Text type="secondary">对照原图，核对唛头、装箱内容和实际操作人员。</Text></div><Button icon={<ReloadOutlined />} onClick={load}>刷新</Button></header>
-        <Card className={styles.reviewCard}>
-            <div className={styles.filters}><Input.Search aria-label="按唛头查找纸单" placeholder="输入唛头查找纸单" value={markSearch} allowClear enterButton="查找" onChange={e => setMarkSearch(e.target.value)} onSearch={value => { setMarkQuery(value.trim()); setPage(1); }} /><Text type="secondary">共 {total} 份待核对</Text></div>
-            {error && <Alert type="error" showIcon message={error} action={<Button onClick={load}>重试</Button>} className={styles.inlineAlert} />}
-            <Table columns={columns} dataSource={records} rowKey="uid" loading={loading} pagination={false} scroll={{ x: 680 }} locale={{ emptyText: '暂无待核对纸质单' }} />
-            <Pagination current={page} total={total} pageSize={pageSize} onChange={setPage} showSizeChanger={false} className={styles.pagination} />
-        </Card>
-    </div>;
 }
 
 function IntakePhoto({ intakeUid, photo, index }) {
@@ -217,12 +194,14 @@ function IntakePhoto({ intakeUid, photo, index }) {
     </section>;
 }
 
-export function IntakeDetail() {
-    return canReviewIntake() ? <IntakeReviewDetail /> : <Navigate to="/packing-lists" replace />;
+export function PaperIntakeUploadDetail() {
+    const { uid } = useParams();
+    return <PaperIntakeCheck key={uid} uid={uid} />;
 }
 
-function IntakeReviewDetail() {
-    const { uid } = useParams();
+function PaperIntakeCheck({ uid, initialRecord, onCompleted, onNext }) {
+    const [isMobile, setIsMobile] = useState(() => window.matchMedia(MOBILE_QUERY).matches);
+    const [photosExpanded, setPhotosExpanded] = useState(false);
     const [record, setRecord] = useState(null);
     const [draft, setDraft] = useState(normalizeIntakeDraft(null));
     const [savedDraft, setSavedDraft] = useState(normalizeIntakeDraft(null));
@@ -233,26 +212,39 @@ function IntakeReviewDetail() {
     const [error, setError] = useState('');
     const [busy, setBusy] = useState('');
     const [conflict, setConflict] = useState(false);
-    const [confirmOpen, setConfirmOpen] = useState(false);
+    const [reviewed, setReviewed] = useState(false);
     const [reloadOpen, setReloadOpen] = useState(false);
     const [messageApi, contextHolder] = message.useMessage();
+    const busyRef = useRef('');
     const detailEpochRef = useRef(0);
     const activeUidRef = useRef(uid);
     const currentDetailRef = useRef(null);
     activeUidRef.current = uid;
     currentDetailRef.current = { record, savedDraft, touched, draft };
     const dirty = JSON.stringify(draft) !== JSON.stringify(savedDraft);
+    const showPhotos = !isMobile || photosExpanded;
     const leaveWarning = useLeaveWarning(touched && dirty);
+    useEffect(() => {
+        const media = window.matchMedia(MOBILE_QUERY);
+        const update = event => setIsMobile(event.matches);
+        setIsMobile(media.matches);
+        media.addEventListener('change', update);
+        return () => media.removeEventListener('change', update);
+    }, []);
+    useEffect(() => { setPhotosExpanded(false); }, [uid]);
     const acceptRecord = useCallback(data => {
-        setRecord(data); setDraft(editableDraft(data)); setSavedDraft(normalizeIntakeDraft(data.draft)); setTouched(false); setConflict(false);
+        setRecord(data); setDraft(editableDraft(data)); setSavedDraft(normalizeIntakeDraft(data.draft)); setTouched(false); setConflict(false); setReviewed(false);
     }, []);
     const load = useCallback(async () => {
+        if (busyRef.current) return;
         const epoch = ++detailEpochRef.current;
-        setError('');
+        const isCurrent = () => epoch === detailEpochRef.current && activeUidRef.current === uid;
+        busyRef.current = 'load'; setBusy('load'); setReviewed(false); setError('');
         try {
             const next = await intakeRequest(`/${encodeURIComponent(uid)}`);
-            if (epoch === detailEpochRef.current && activeUidRef.current === uid) acceptRecord(next);
-        } catch (e) { if (epoch === detailEpochRef.current && activeUidRef.current === uid) setError(e.message); }
+            if (isCurrent()) acceptRecord(next);
+        } catch (e) { if (isCurrent()) setError(e.message); }
+        finally { if (isCurrent()) { busyRef.current = ''; setBusy(''); } }
     }, [uid, acceptRecord]);
     const loadWorkers = useCallback(async () => {
         setWorkersError(''); setWorkersLoaded(false);
@@ -261,9 +253,10 @@ function IntakeReviewDetail() {
     }, []);
     useEffect(() => { loadWorkers(); }, [loadWorkers]);
     useEffect(() => {
-        setRecord(null); setBusy(''); load();
+        setRecord(null); busyRef.current = ''; setBusy('');
+        if (initialRecord) acceptRecord(initialRecord); else load();
         return () => { detailEpochRef.current += 1; };
-    }, [load]);
+    }, [load, initialRecord, acceptRecord]);
     useEffect(() => {
         if (record?.recognition_status !== 'running' || conflict || busy) return undefined;
         let active = true;
@@ -276,9 +269,9 @@ function IntakeReviewDetail() {
                 const current = currentDetailRef.current;
                 if (next.version < current.record.version) return;
                 if (next.status !== current.record.status || hasManualDraft(next) !== hasManualDraft(current.record) || JSON.stringify(normalizeIntakeDraft(next.draft)) !== JSON.stringify(current.savedDraft)) {
-                    setConflict(true); setError('纸单已被其他人更新，请重新加载后继续。当前核对内容已保留。'); return;
+                    setConflict(true); setReviewed(false); setError('纸单已在其他页面更新，请重新加载后继续。当前检查内容已保留。'); return;
                 }
-                setRecord(next);
+                setRecord(next); setReviewed(false);
                 if (!current.touched && !hasManualDraft(next)) setDraft(editableDraft(next));
                 setError('');
             } catch (e) { if (active && epoch === detailEpochRef.current) setError(`识别进度获取失败：${e.message}`); }
@@ -289,8 +282,10 @@ function IntakeReviewDetail() {
     }, [record?.recognition_status, conflict, busy, uid]);
 
     const perform = async action => {
+        if (busyRef.current || conflict || record?.status !== 'pending') return;
+        if (action === 'confirm' && (!reviewed || record?.recognition_status === 'running')) return;
         const epoch = ++detailEpochRef.current;
-        setBusy(action); setError('');
+        busyRef.current = action; setBusy(action); setError('');
         const isCurrent = () => epoch === detailEpochRef.current && activeUidRef.current === uid;
         try {
             let latest = record;
@@ -300,18 +295,21 @@ function IntakeReviewDetail() {
                 acceptRecord(latest);
             }
             if (action === 'confirm') {
-                latest = await intakeRequest(`/${encodeURIComponent(uid)}/confirm`, { method: 'POST', body: { version: latest.version } });
+                latest = await intakeRequest(`/${encodeURIComponent(uid)}/confirm`, { method: 'POST', body: { version: latest.version, reviewed: true } });
                 if (!isCurrent()) return;
-                acceptRecord(latest); setConfirmOpen(false); messageApi.success('已确认并生成装箱单');
+                acceptRecord(latest); messageApi.success('核对完成，装箱单已上传'); onCompleted?.(latest);
             } else if (action === 'recognize') {
                 latest = await intakeRequest(`/${encodeURIComponent(uid)}/recognize`, { method: 'POST', body: { version: latest.version } });
                 if (!isCurrent()) return;
-                setRecord(latest);
-            } else messageApi.success('草稿已保存');
+                setRecord(latest); setReviewed(false);
+            } else messageApi.success('检查进度已保存');
         } catch (e) { if (isCurrent()) setError(e.message); }
-        finally { if (isCurrent()) setBusy(''); }
+        finally { if (isCurrent()) { busyRef.current = ''; setBusy(''); } }
     };
-    const editDraft = updater => { setTouched(true); setDraft(updater); };
+    const editDraft = updater => {
+        if (busyRef.current) return;
+        setTouched(true); setReviewed(false); setDraft(updater);
+    };
     const updateBox = (index, field, value) => editDraft(current => ({ ...current, boxes: current.boxes.map((box, i) => i === index ? { ...box, [field]: value } : box) }));
     const editable = record?.status === 'pending';
     const totals = { count: draft.boxes.reduce((sum, box) => sum + (Number(box.count) || 0), 0), weight: draft.boxes.reduce((sum, box) => sum + (Number(box.weight) || 0), 0) };
@@ -330,34 +328,35 @@ function IntakeReviewDetail() {
     ];
     return <div className={styles.page}>
         {contextHolder}{leaveWarning}
-        <header className={styles.pageHeader}><div><Link to="/intakes">返回待核对纸质单</Link><Title level={3}>{record ? paperName(record) : '纸单核对'}</Title>{record && <Space wrap><Tag color={record.status === 'confirmed' ? 'green' : record.recognition_status === 'failed' ? 'red' : 'blue'}>{record.status === 'confirmed' ? '已确认' : recognitionLabels[record.recognition_status] || '等待识别'}</Tag><Text type="secondary">回传人：{record.submitted_by_name || '—'} · {displayTime(record.created_at)}</Text></Space>}</div>{record?.packing_list_uid && <Link to={`/packing-lists/${record.packing_list_uid}`}>查看生成的装箱单</Link>}</header>
+        <header className={styles.pageHeader}><div><Link to="/packing-lists">返回装箱单列表</Link><Title level={3}>{record ? `检查纸质装箱单 · ${paperName(record)}` : '检查纸质装箱单'}</Title>{record && <Space wrap><Tag color={record.status === 'confirmed' ? 'green' : record.recognition_status === 'failed' ? 'red' : 'blue'}>{record.status === 'confirmed' ? '已核对' : recognitionLabels[record.recognition_status] || '等待识别'}</Tag><Text type="secondary">上传人：{record.submitted_by_name || '—'} · {displayTime(record.created_at)}</Text></Space>}</div>{record?.packing_list_uid && <Link to={`/packing-lists/${record.packing_list_uid}`}>查看装箱单</Link>}</header>
+        {record?.status === 'confirmed' && <Alert type="success" showIcon message="核对完成，装箱单已上传" description="已核对的装箱内容已生成正式装箱单。" action={onNext ? <Button onClick={onNext}>上传下一份</Button> : <Link to="/packing-list/new">上传下一份</Link>} className={styles.inlineAlert} />}
+        {!isMobile && record?.status === 'pending' && <Alert type="info" showIcon message="请对照纸单原图检查唛头、每箱内容和实际操作人员" description="检查并修改后，勾选核对确认，再完成上传。未完成的纸单可在拍照上传页的“我的未完成上传”中继续检查。" className={styles.inlineAlert} />}
+
         {error && <Alert type="error" showIcon message={error} className={styles.inlineAlert} action={<Button disabled={!!busy} onClick={() => touched && dirty ? setReloadOpen(true) : load()}>重新加载</Button>} />}
         {!record ? (error ? null : <Space><Spin /><Text>加载纸单</Text></Space>) : <div className={styles.layout}>
-            <Card className={styles.photoPanel} title="纸单原图" extra={<Text type="secondary">{record.photos?.length || 0} 页</Text>}>
-                <div className={styles.photos}>{record.photos?.length ? record.photos.map((photo, index) => <IntakePhoto key={photo.uid} intakeUid={uid} photo={photo} index={index} />) : <Empty description="暂无照片" />}</div>
+            <Card className={`${styles.photoPanel} ${isMobile ? styles.photoPanelCollapsible : ''} ${showPhotos ? '' : styles.photoPanelCollapsed}`}
+                title={isMobile ? <button type="button" className={styles.photoToggle} aria-label={`${photosExpanded ? '收起' : '展开'}纸单原图`} aria-expanded={photosExpanded} aria-controls={`intake-photos-${uid}`} onClick={() => setPhotosExpanded(current => !current)}><span>纸单原图</span><span className={styles.photoToggleHint}>{record.photos?.length || 0} 页 · {photosExpanded ? '收起' : '展开'} {photosExpanded ? <UpOutlined /> : <DownOutlined />}</span></button> : '纸单原图'}
+                extra={!isMobile && <Text type="secondary">{record.photos?.length || 0} 页</Text>}>
+                <div id={`intake-photos-${uid}`} className={styles.photos} hidden={!showPhotos}>{showPhotos && (record.photos?.length ? record.photos.map((photo, index) => <IntakePhoto key={photo.uid} intakeUid={uid} photo={photo} index={index} />) : <Empty description="暂无照片" />)}</div>
             </Card>
-            <Card className={styles.reviewCard} title={editable ? '核对装箱内容' : '已确认的装箱内容'} extra={<Text type="secondary">{dirty ? '待保存' : '已保存'}</Text>}>
+            <Card className={styles.reviewCard} title={editable ? '检查识别结果' : '已核对的装箱内容'} extra={<Text type="secondary">{dirty ? '检查进度待保存' : '检查进度已保存'}</Text>}>
                 <div className={styles.reviewFields}>
                     <label className={styles.field}>唛头<Input aria-label="唛头" value={draft.mark} disabled={!editable || !!busy} onChange={e => editDraft(current => ({ ...current, mark: e.target.value }))} /></label>
                     <label className={styles.field}>实际操作人员<Select aria-label="实际操作人员" mode="multiple" showSearch optionFilterProp="label" placeholder="选择实际参与装箱的工人" value={draft.worker_ids} options={workerOptions} loading={!workersLoaded && !workersError} disabled={!editable || !!busy || !workersLoaded} onChange={workerIds => { if (workerIds.length > MAX_INTAKE_WORKERS) { messageApi.warning(`最多选择 ${MAX_INTAKE_WORKERS} 名操作人员`); return; } editDraft(current => ({ ...current, worker_ids: workerIds })); }} /></label>
                 </div>
                 <div className={styles.sourceNote}><Text type="secondary">纸面署名：{draft.operator_name || '未填写'}。请选择系统中的实际操作人员，最多 {MAX_INTAKE_WORKERS} 人。</Text></div>
                 {workersError && <Alert type="error" message={`人员列表加载失败：${workersError}`} action={<Button onClick={loadWorkers}>重试</Button>} className={styles.inlineAlert} />}
-                {!!warnings.length && <section className={styles.warnings} aria-label="待核对疑点"><div className={styles.warningHeading}><Text strong>待核对疑点</Text><Text>{warnings.length} 项</Text></div><div className={styles.warningScroll} role="region" aria-label="识别疑点列表"><ul>{warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul></div></section>}
+                {!isMobile && !!warnings.length && <section className={styles.warnings} aria-label="识别疑点"><div className={styles.warningHeading}><Text strong>识别疑点</Text><Text>{warnings.length} 项</Text></div><div className={styles.warningScroll} role="region" aria-label="识别疑点列表"><ul>{warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul></div></section>}
                 {record.recognition_status === 'running' && <div className={styles.progressNote}><Spin size="small" /><Text type="secondary">识别中，完成后会自动填入核对表。</Text></div>}
                 {record.recognition_status === 'failed' && <Alert type="error" showIcon message="识别失败，可对照原图手动核对或重试" description={record.recognition_error || undefined} className={styles.inlineAlert} />}
                 <Table className={styles.boxTable} size="small" rowKey="key" dataSource={draft.boxes.map((box, index) => ({ ...box, key: index }))} columns={boxColumns} pagination={false} scroll={{ x: 510 }} locale={{ emptyText: record.recognition_status === 'running' ? '正在读取装箱内容' : '暂无装箱内容，可添加一箱' }} />
                 {editable && <Button className={styles.addBox} type="dashed" icon={<PlusOutlined />} disabled={!!busy} onClick={() => editDraft(current => ({ ...current, boxes: [...current.boxes, emptyBox()] }))}>添加一箱</Button>}
                 <footer className={styles.reviewFooter}>
                     <div className={styles.summary}><span><strong>{draft.boxes.length}</strong> 箱</span><span><strong>{totals.count}</strong> 件</span><span><strong>{totals.weight.toFixed(3)}</strong> kg</span></div>
-                    {editable && <><div className={styles.actions}><Button disabled={conflict || !!busy} loading={busy === 'draft'} onClick={() => perform('draft')}>保存草稿</Button>{['idle', 'failed'].includes(record.recognition_status) && <Button disabled={conflict || (touched && dirty) || !!busy} loading={busy === 'recognize'} onClick={() => perform('recognize')}>{record.recognition_status === 'failed' ? '重试识别' : '识别照片'}</Button>}<Button type="primary" icon={<CheckOutlined />} disabled={conflict || !!busy || !!validationError || !workersLoaded || record.recognition_status === 'running'} onClick={() => setConfirmOpen(true)}>确认生成装箱单</Button></div>{validationError && <Text type="secondary" className={styles.validation}>确认前需要补全：{validationError}</Text>}</>}
+                    {editable && <><Checkbox className={styles.reviewAcknowledgement} checked={reviewed} disabled={conflict || !!busy || record.recognition_status === 'running'} onChange={event => { if (!busyRef.current) setReviewed(event.target.checked); }}>我已对照纸质单核对以上内容，确认无误</Checkbox><div className={styles.actions}><Button disabled={conflict || !!busy} loading={busy === 'draft'} onClick={() => perform('draft')}>保存检查进度</Button>{['idle', 'failed'].includes(record.recognition_status) && <Button disabled={conflict || (touched && dirty) || !!busy} loading={busy === 'recognize'} onClick={() => perform('recognize')}>{record.recognition_status === 'failed' ? '重试识别' : '识别照片'}</Button>}<Button type="primary" icon={<CheckOutlined />} loading={busy === 'confirm'} disabled={conflict || !!busy || !!validationError || !workersLoaded || record.recognition_status === 'running' || !reviewed} onClick={() => perform('confirm')}>核对完成并上传</Button></div>{validationError && <Text type="secondary" className={styles.validation}>上传前需要补全：{validationError}</Text>}</>}
                 </footer>
             </Card>
         </div>}
-        <Modal title="确认生成装箱单" open={confirmOpen} okText="确认生成" cancelText="继续核对" confirmLoading={busy === 'confirm'} onCancel={() => { if (!busy) setConfirmOpen(false); }} onOk={() => perform('confirm')}>
-            <p>唛头：{draft.mark}</p><p>操作人员：{draft.worker_ids.map(id => workerOptions.find(option => option.value === id)?.label || `人员 ${id}`).join('、')}</p><p>箱数：{draft.boxes.length}；总件数：{totals.count}；总重量：{totals.weight.toFixed(3)} kg</p>
-            <p>请确认原图与核对表一致。{dirty ? '确认时会先保存当前核对内容，再生成装箱单。' : '确认后将生成装箱单。'}</p>{error && <Alert type="error" message={error} />}
-        </Modal>
         <Modal title="重新加载纸单" open={reloadOpen} okText="放弃修改并重新加载" cancelText="继续编辑" onCancel={() => setReloadOpen(false)} onOk={() => { setReloadOpen(false); load(); }}>重新加载会丢弃当前未保存的修改。</Modal>
     </div>;
 }

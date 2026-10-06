@@ -22,3 +22,8 @@ export const isCargoOutboundOrLater = (record) => {
 export const isBoxIdentityEditable = (box) => !!box
     && box.identity_editable !== false
     && !isCargoOutboundOrLater(box);
+
+export const isBoxOriginalNumberEditable = (box) => !!box
+    && (box.original_number_editable ?? box.identity_editable) !== false
+    && !isCargoOutboundOrLater(box)
+    && !String(box.date ?? '').trim();

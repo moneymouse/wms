@@ -22,7 +22,8 @@ import FinanceHub from "./pages/financeHub";
 import CostManagement from "./pages/costManagement";
 import AuditLogs from "./pages/auditLogs";
 import Receipts from "./pages/receipts";
-import Intakes, { IntakeDetail } from "./pages/intakes";
+import { PaperIntakeUploadDetail } from "./pages/intakes";
+import ShippingConfirmationDrafts from "./pages/shippingConfirmationDrafts";
 
 // 移除 LogsRoute 组件，因为权限检查逻辑已经移到 Logs 组件内部
 
@@ -48,9 +49,11 @@ const router = createBrowserRouter([{
     }, {
         path: 'packing-lists/:uid', element: <PackingListDetail />
     }, {
-        path: 'intakes', element: <Intakes />
+        path: 'packing-list/upload/:uid', element: <PaperIntakeUploadDetail />
     }, {
-        path: 'intakes/:uid', element: <IntakeDetail />
+        path: 'shipping-confirmation-drafts', element: <ShippingConfirmationDrafts />
+    }, {
+        path: 'shipping-confirmation-drafts/:uid', element: <ShippingConfirmationDrafts />
     }, {
         path: 'work-details', element: <WorkDetails />
     }, {

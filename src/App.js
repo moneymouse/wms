@@ -24,7 +24,7 @@ import {
 import { Avatar, Button, Layout, Menu, theme, Tooltip, Drawer, Grid, Modal, Popover, Space, Tour } from 'antd';
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import { LogIcon } from "./pages/logs";
-import { menuPermissions, routePermissions, hasPermission, getLandingPage, ROLE_LABEL_MAP } from "./common/roleConfig";
+import { menuPermissions, routePermissions, hasPermission, getUserRoles, getLandingPage, ROLE_LABEL_MAP } from "./common/roleConfig";
 import {
     COST_QUOTE_RECEIPT_TOUR,
     getCostQuoteReceiptChapter,
@@ -32,6 +32,7 @@ import {
 } from "./common/featureTourConfig";
 import {
     FEATURE_TOUR_FLOW_EVENT,
+    clearFeatureTourFlow,
     getCurrentTourUser,
     readFeatureTourFlow,
     readFeatureTourState,
@@ -61,9 +62,10 @@ function App() {
     } = theme.useToken();
 
     const { pathname } = useLocation();
+    const isFinancePage = pathname === '/finance' || pathname === '/receipts';
     const navigate = useNavigate();
     const { userId: tourUserId } = getCurrentTourUser();
-    const onboardingFlow = getCostQuoteReceiptOnboardingFlow(userRoles);
+    const onboardingFlow = COST_QUOTE_RECEIPT_TOUR.enabled ? getCostQuoteReceiptOnboardingFlow(userRoles) : null;
 
     useEffect(() => {
         const handleTourFlowChange = (event) => {
@@ -81,7 +83,7 @@ function App() {
         if (currentPath.startsWith('orders/')) return 'orders';
         if (currentPath.startsWith('packing-list/')) return 'packing-list/new';
         if (currentPath.startsWith('packing-lists/')) return 'packing-lists';
-        if (currentPath === 'intakes' || currentPath.startsWith('intakes/')) return 'packing-lists';
+        if (currentPath === 'shipping-confirmation-drafts' || currentPath.startsWith('shipping-confirmation-drafts/')) return 'packing-lists';
         if (currentPath.startsWith('bonus-estimate')) return 'bonus';
         if (currentPath.startsWith('bonus')) return 'bonus';
         return currentPath;
@@ -97,7 +99,7 @@ function App() {
             if (parts.length === 3) {
                 // 解码 base64 编码的负载
                 const payload = JSON.parse(atob(parts[1]));
-                const roles = payload.roles || (payload.role ? [payload.role] : []);
+                const roles = getUserRoles(payload);
                 // 设置用户角色
                 setUserRoles(roles);
                 setUsername(payload.name || payload.username || payload.phone || '');
@@ -230,7 +232,7 @@ function App() {
         {
             key: 'receipts',
             icon: <TransactionOutlined />,
-            label: '收款管理',
+            label: '收付款',
             className: 'tour-receipts-menu',
         },
         {
@@ -296,14 +298,7 @@ function App() {
                     if (key === 'receipts') {
                         const { userId } = getCurrentTourUser();
                         const flow = readFeatureTourFlow(userId);
-                        if (flow?.campaignId === COST_QUOTE_RECEIPT_TOUR.id
-                            && flow.stage === 'receipt-navigation') {
-                            saveFeatureTourFlow({
-                                userId,
-                                campaignId: COST_QUOTE_RECEIPT_TOUR.id,
-                                stage: 'receipt-entry',
-                            });
-                        }
+                        if (flow?.campaignId === COST_QUOTE_RECEIPT_TOUR.id) clearFeatureTourFlow(userId);
                     }
                     navigate(key);
                     if (isMobile) setDrawerVisible(false);
@@ -470,7 +465,8 @@ function App() {
             )}
             <Layout style={{
                 overflowY: 'auto',
-                maxHeight: '100vh'
+                maxHeight: '100vh',
+                minWidth: 0,
             }}>
                 {isMobile && (
                     <Header style={{
@@ -495,12 +491,12 @@ function App() {
                 )}
                 <Content
                     style={{
-                        margin: isMobile ? '16px' : '24px 16px',
-                        padding: isMobile ? '16px' : '0 24px',
-                        minHeight: '100vh',
+                        margin: isFinancePage ? 0 : isMobile ? '16px' : '24px 16px',
+                        padding: isFinancePage ? (isMobile ? '0 16px' : '0 24px') : isMobile ? '16px' : '0 24px',
+                        minHeight: isFinancePage ? '100%' : '100vh',
                         background: colorBgContainer,
                         overflowX: 'hidden',
-                        overflowY: 'auto'
+                        overflowY: isFinancePage ? 'visible' : 'auto'
                     }}
                 >
                     <Outlet />

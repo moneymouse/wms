@@ -1,0 +1,5 @@
+/* Layout only; form, table and status visuals use Ant Design defaults. */
+.page { padding: 24px 0; min-width: 0; }
+.header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-bottom: 16px; }
+.title { margin: 0 !important; }
+@media (max-width: 600px) { .page { padding: 16px 0; } }

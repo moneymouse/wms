@@ -23,7 +23,7 @@ import {
 } from '@ant-design/icons';
 import { endpoint } from '../config';
 import getSafeHeader from '../common/safeHeader';
-import { canReviewIntake, getIntakeRoles } from '../common/intakeApi';
+import { getIntakeRoles } from '../common/intakeApi';
 import MyPackingLists from '../components/MyPackingLists';
 import entryStyles from './packingListEntry.module.css';
 
@@ -116,6 +116,7 @@ function PackingListWorkspace() {
     const [checkedPrintKeys, setCheckedPrintKeys] = useState([]);
     const [batchPrintLoading, setBatchPrintLoading] = useState(false);
     const [batchPrintSearch, setBatchPrintSearch] = useState('');
+    const canManageShippingDrafts = getIntakeRoles().some(role => ['admin', 'store_manager', 'salesperson', 'clerk'].includes(role));
     const [status, setStatus] = useState(() => {
         const urlStatus = searchParams.get('status');
         if (urlStatus) return urlStatus.split(',');
@@ -383,7 +384,7 @@ function PackingListWorkspace() {
 
             <div className={entryStyles.listHeading}>
                 <Title level={screens.md ? 2 : 4} style={{ margin: 0 }}>装箱单列表</Title>
-                {canReviewIntake() && <Button type="link" icon={<FileSearchOutlined />} onClick={() => navigate('/intakes')}>待核对纸质单?</Button>}
+                {canManageShippingDrafts && <Button type="link" icon={<FileSearchOutlined />} onClick={() => navigate('/shipping-confirmation-drafts')}>出货确认单草稿</Button>}
             </div>
 
             {/* 搜索筛选 */}
@@ -433,6 +434,9 @@ function PackingListWorkspace() {
                     <Button icon={<PrinterOutlined />} onClick={handleOpenBatchPrint}>
                         批量打印
                     </Button>
+                    {canManageShippingDrafts && <Button icon={<PrinterOutlined />} onClick={() => navigate('/shipping-confirmation-drafts')}>
+                        出货确认单（PDF）
+                    </Button>}
                 </Space>
             </Card>
 

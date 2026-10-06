@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Button, Input, message, Modal, Row, Space, Table, Typography } from "antd";
 import { DeleteOutlined, HistoryOutlined, SearchOutlined } from "@ant-design/icons";
-import orderProperty from "../common/orderProperty";
+import { buildOrderColumns } from '../common/orderColumns';
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { endpoint } from "../config.js";
 import getSafeHeader from '../common/safeHeader';
@@ -103,41 +103,7 @@ export default function OrderList() {
     }, []);
 
     // 配置字段名以及类型
-    const columns = orderProperty.map((property, i) => {
-        return {
-            key: property.name,
-            title: property.label,
-            dataIndex: property.name,
-            width: i < 2 ? 160 : property.width || 200,
-            ellipsis: true,
-            sorter: property.name === 'order_date' || property.name === 'update_date' ?
-                {
-                    compare: (a, b) => new Date(a[property.name]).getTime() - new Date(b[property.name]).getTime(),
-                    multiple: 1
-                } :
-                (property.name === 'receiver_name' || property.name === 'customer_name')
-                    ?
-                    {
-                        compare: (a, b) => {
-                            // 处理null或undefined情况
-                            const nameA = a[property.name] || '';
-                            const nameB = b[property.name] || '';
-                            return nameA.localeCompare(nameB);
-                        },
-                        multiple: 2
-                    } :
-                    false,
-            fixed: i < 2 ? 'left' : '',
-            render: (text, record, i) => {
-                if (property.name === 'order_id') {
-                    return text && <Typography.Text copyable key={i}>
-                        <Button type='link' onClick={() => openOrder(record.uid)}>{text}</Button>
-                    </Typography.Text>
-                }
-                return text && <Typography.Text copyable key={i}>{text}</Typography.Text>
-            }
-        }
-    });
+    const columns = buildOrderColumns({ onOpenOrder: uid => openOrder(uid) });
 
     columns.push({
         title: '操作',

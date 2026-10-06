@@ -33,14 +33,26 @@ test('worker packing-list entry renders the personal unified list without a pape
     expect(screen.queryByRole('button', { name: /待核对纸质单/ })).not.toBeInTheDocument();
 });
 
-test('reviewer opens the paper review queue from the link beside the packing-list heading', async () => {
+test('clerk opens the shipping draft page from the link beside the packing-list heading', async () => {
     setRole('clerk');
     render(<MemoryRouter initialEntries={['/packing-lists']}><Routes>
         <Route path="/packing-lists" element={<PackingListList />} />
-        <Route path="/intakes" element={<div>待核对队列页面</div>} />
+        <Route path="/shipping-confirmation-drafts" element={<div>出货确认单草稿页面</div>} />
     </Routes></MemoryRouter>);
-    fireEvent.click(await screen.findByRole('button', { name: /待核对纸质单\?/ }));
-    expect(await screen.findByText('待核对队列页面')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /待核对纸质单/ })).not.toBeInTheDocument();
+    fireEvent.click(await screen.findByRole('button', { name: /出货确认单草稿/ }));
+    expect(await screen.findByText('出货确认单草稿页面')).toBeInTheDocument();
+});
+
+test('PDF entry opens the shipping draft page without an editor modal', async () => {
+    setRole('salesperson');
+    render(<MemoryRouter initialEntries={['/packing-lists']}><Routes>
+        <Route path="/packing-lists" element={<PackingListList />} />
+        <Route path="/shipping-confirmation-drafts" element={<div>出货确认单草稿页面</div>} />
+    </Routes></MemoryRouter>);
+    fireEvent.click(await screen.findByRole('button', { name: /出货确认单（PDF）/ }));
+    expect(await screen.findByText('出货确认单草稿页面')).toBeInTheDocument();
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
 });
 
 test('creation page keeps manual entry and offers paper upload without a separate parser page', async () => {
@@ -54,19 +66,23 @@ test('creation page keeps manual entry and offers paper upload without a separat
     expect(screen.queryByText('识别候选内容')).not.toBeInTheDocument();
 });
 
-test('formal route permissions keep worker upload and personal records accessible while reserving paper review for reviewers', () => {
+test('route permissions allow uploaders to finish their uploads and reserve shipping drafts for shipping staff', () => {
     expect(getLandingPage(['worker'])).toBe('/packing-lists');
     expect(getLandingPage(['employee'])).toBe('/packing-lists');
     for (const role of ['worker', 'employee']) {
         expect(hasPermission([role], menuPermissions['packing-list/new'])).toBe(true);
         expect(hasPermission([role], routePermissions['/packing-list/new'])).toBe(true);
         expect(hasPermission([role], routePermissions['/packing-lists'])).toBe(true);
-        expect(hasPermission([role], routePermissions['/intakes'])).toBe(false);
-        expect(hasPermission([role], routePermissions['/intakes/:uid'])).toBe(false);
+        expect(hasPermission([role], routePermissions['/packing-list/upload/:uid'])).toBe(true);
+        expect(hasPermission([role], routePermissions['/shipping-confirmation-drafts'])).toBe(false);
+        expect(hasPermission([role], routePermissions['/shipping-confirmation-drafts/:uid'])).toBe(false);
     }
     for (const role of ['admin', 'store_manager', 'salesperson', 'clerk']) {
-        expect(hasPermission([role], routePermissions['/intakes'])).toBe(true);
-        expect(hasPermission([role], routePermissions['/intakes/:uid'])).toBe(true);
+        expect(hasPermission([role], routePermissions['/packing-list/upload/:uid'])).toBe(true);
+        expect(hasPermission([role], routePermissions['/shipping-confirmation-drafts'])).toBe(true);
+        expect(hasPermission([role], routePermissions['/shipping-confirmation-drafts/:uid'])).toBe(true);
     }
     expect(menuPermissions).not.toHaveProperty('intakes');
+    expect(routePermissions).not.toHaveProperty('/intakes');
+    expect(routePermissions).not.toHaveProperty('/intakes/:uid');
 });

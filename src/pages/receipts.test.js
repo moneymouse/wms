@@ -1,432 +1,148 @@
 import React from 'react';
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
-import dayjs from 'dayjs';
-
 import Receipts from './receipts';
+import { PaymentEditor, RecordDetail } from './financeWorkspace';
 
-jest.mock('../components/FeatureTour', () => () => null);
-
+jest.mock('../components/FinanceHistoryDrawer', () => function History({ open, historyUrl }) { return open ? <div>历史路径 {historyUrl}</div> : null; });
 jest.setTimeout(15000);
-
-const order = {
-    uid: 'order-1', order_id: 'ORDER-1', customer_id: 1, customer_name: '客户A',
-    create_date: '2026-08-27 09:12:34', quoter_name: '业务员A',
-    billing_weight: 10, receivable_amount: 100, approved_received: 0,
-    pending_amount: 0, available_amount: 100,
-};
-const secondOrder = { ...order, uid: 'order-2', order_id: 'ORDER-2', create_date: null };
-const thirdOrder = { ...order, uid: 'order-3', order_id: 'ORDER-3', customer_id: 2, customer_name: '客户B' };
-const rejectedReceipt = {
-    id: 9, receipt_no: 'RC-REJECTED', customer_id: 1, customer_name: '客户A',
-    receipt_date: '2026-08-26', total_amount: 45, status: 'rejected',
-    payment_method: 'bank_transfer', remark: '重新登记', settlement_status: 'settled',
-    items: [{ order_uid: 'order-1', amount: 45 }],
-};
-
-function response(data, extra = {}) {
-    return { ok: true, json: async () => ({ code: 200, data, ...extra }) };
-}
-
+const response = data => Promise.resolve({ ok: true, status: 200, json: async () => ({ code: 200, data }) });
+const fail = msg => Promise.resolve({ ok: false, status: 409, json: async () => ({ code: 409, msg }) });
+const list = (items, total = items.length) => ({ items, total, page: 1, page_size: 20 });
+const draft = { id: 8, number: 'PAY-0008', partner_type: 'customer', partner_id: 2, partner_name: '客户甲', direction: 'incoming', account_id: 1, account_name: '银行账户', payment_date: '2026-10-05', amount: '100.00', unallocated_amount: '100.00', allocated_amount: '0.00', status: 'draft', version: 1, created_by_id: 7, created_by_name: '业务员甲', requires_submission: true, reference_order_uids: [], reference_orders: [] };
 function mockApi(overrides = {}) {
-    global.fetch = jest.fn(async (url, options) => {
-        const parsed = new URL(url, 'http://localhost');
-        if (parsed.pathname.endsWith('/receivables/orders')) {
-            if (overrides.orders) return overrides.orders(parsed.searchParams);
-            return response([order, secondOrder, thirdOrder], { page: 1, page_size: 20, total: 3 });
-        }
-        if (parsed.pathname.endsWith('/receivable-adjustments')) {
-            return response(overrides.adjustments || [], { page: 1, page_size: 20, total: (overrides.adjustments || []).length });
-        }
-        if (options?.method === 'POST') {
-            return overrides.submit ? overrides.submit(options) : response({ id: 10, receipt_no: 'RC-NEW' });
-        }
-        if (parsed.pathname.endsWith('/customer_list')) return response([{ id: 1, name: '客户A' }, { id: 2, name: '客户B' }]);
-        if (parsed.pathname.endsWith('/work/workers')) return response([{ id: 7, name: '业务员A' }]);
-        if (parsed.pathname.endsWith('/receipts/9')) return response(overrides.detail ? overrides.detail() : rejectedReceipt);
-        if (parsed.pathname.endsWith('/receipts')) return response(overrides.receipts || [rejectedReceipt], { page: 1, page_size: 20, total: 1 });
-        if (parsed.pathname.endsWith('/pdf')) return response('cGRm');
-        throw new Error(`Unexpected request: ${url}`);
+    let current = { ...draft, ...overrides.payment };
+    global.fetch = jest.fn((rawUrl, options = {}) => {
+        const url = new URL(rawUrl, 'http://localhost'); const path = url.pathname.split('/finance/v2')[1];
+        if (path?.startsWith('/payment-options/customers')) return response(list([{ id: 2, name: '客户甲' }, { id: 3, name: '客户乙' }]));
+        if (path?.startsWith('/payment-options/accounts')) return response(list([{ id: 1, name: '银行账户', currency: 'CNY' }]));
+        if (path?.startsWith('/payment-options/orders')) return response(list([{ order_uid: 'empty-order', order_number: '空订单', customer_id: 2 }, { order_uid: 'settled-order', order_number: '已结清订单', customer_id: 2 }]));
+        if (path === '/payments/8/submit') { if (overrides.submit) return overrides.submit(options); current = { ...current, status: 'pending', version: current.version + 1 }; return response(current); }
+        if (path === '/payments/8/pdf') return response('cGRm');
+        if (path === '/payments/8') { if (options.method === 'PATCH') current = { ...current, ...JSON.parse(options.body), version: current.version + 1 }; return response(current); }
+        if (path === '/payments' && options.method === 'POST') { current = { ...current, ...JSON.parse(options.body) }; return response(current); }
+        if (path === '/payments') return response(list(overrides.empty ? [] : [current]));
+        throw new Error(`Unexpected request ${rawUrl}`);
     });
 }
-
-test('shows pending re-quote adjustments as non-cash tasks', async () => {
-    mockApi({
-        adjustments: [{
-            id: 3,
-            order_uid: 'order-1',
-            order_id: 'ORDER-1',
-            customer_name: '客户A',
-            old_receivable: 100,
-            new_receivable: 85,
-            delta_amount: -15,
-            direction: 'refund',
-            status: 'pending',
-            quoter_name: '业务员A',
-            create_date: '2026-09-17 10:00:00',
-        }],
-    });
-    renderPage();
-
-    expect(await screen.findByText('待退款')).toBeInTheDocument();
-    expect(screen.getByText('-15.00')).toBeInTheDocument();
-    expect(screen.getByText(/不代表现金已经收取或退还/)).toBeInTheDocument();
-});
-
-function renderPage(admin = false) {
-    const payload = window.btoa(JSON.stringify({ user_id: 7, roles: [admin ? 'admin' : 'salesperson'] }));
-    window.localStorage.setItem('jwt', `header.${payload}.signature`);
-    return render(<MemoryRouter><Receipts /></MemoryRouter>);
+function setUser(roles = ['salesperson'], id = 7) { window.localStorage.setItem('jwt', `h.${window.btoa(JSON.stringify({ user_id: id, roles }))}.s`); }
+function renderPage(context) { return render(<MemoryRouter initialEntries={[{ pathname: '/receipts', state: context ? { paymentContext: context } : undefined }]}><Receipts /></MemoryRouter>); }
+async function select(input, text) { fireEvent.mouseDown(input); fireEvent.click(await screen.findByText(text, { selector: '.ant-select-item-option-content' })); }
+async function fillNew({ withOrder = false } = {}) {
+    await select(screen.getByRole('combobox', { name: '收付款客户' }), '客户甲');
+    await select(screen.getByLabelText('收付款账户'), '银行账户');
+    fireEvent.change(screen.getByLabelText('金额(CNY)'), { target: { value: '37.25' } });
+    fireEvent.blur(screen.getByLabelText('金额(CNY)'));
+    if (withOrder) {
+        fireEvent.click(screen.getByRole('tab', { name: /订单备注/ }));
+        fireEvent.click(within(await screen.findByRole('row', { name: /空订单/ })).getByRole('checkbox'));
+    }
 }
-
-function rowFor(id = 'ORDER-1') {
-    return screen.getByRole('link', { name: id }).closest('tr');
-}
-
-async function selectOrder(id = 'ORDER-1') {
-    await screen.findByRole('link', { name: id });
-    fireEvent.click(within(rowFor(id)).getByRole('checkbox'));
-}
-
-async function selectOption(label, option) {
-    fireEvent.mouseDown(screen.getByLabelText(label));
-    fireEvent.click(await screen.findByText(option, { selector: '.ant-select-item-option-content' }));
-}
-
-async function setDateRange() {
-    const start = screen.getByPlaceholderText('开始日期');
-    const end = screen.getByPlaceholderText('结束日期');
-    fireEvent.mouseDown(start);
-    fireEvent.focus(start);
-    fireEvent.change(start, { target: { value: '2026-08-01' } });
-    fireEvent.keyDown(start, { key: 'Enter', keyCode: 13 });
-    fireEvent.focus(end);
-    fireEvent.change(end, { target: { value: '2026-08-31' } });
-    fireEvent.keyDown(end, { key: 'Enter', keyCode: 13 });
-    await waitFor(() => expect(lastOrderQuery().get('date_to')).toBe('2026-08-31'));
-}
-
-function lastOrderQuery() {
-    const calls = global.fetch.mock.calls.filter(([url]) => url.includes('/receivables/orders'));
-    return new URL(calls[calls.length - 1][0], 'http://localhost').searchParams;
-}
-
-function postCalls() {
-    return global.fetch.mock.calls.filter(([, options]) => options?.method === 'POST');
-}
-
 beforeEach(() => {
-    window.localStorage.clear();
-    window.sessionStorage.clear();
-    window.matchMedia = jest.fn(query => ({
-        matches: false, media: query, addListener: jest.fn(), removeListener: jest.fn(),
-        addEventListener: jest.fn(), removeEventListener: jest.fn(),
-    }));
-    jest.spyOn(window, 'open').mockReturnValue(null);
+    window.localStorage.clear(); window.sessionStorage.clear(); setUser();
+    Object.defineProperty(window, 'matchMedia', { writable: true, value: query => ({ matches: false, media: query, onchange: null, addListener: () => {}, removeListener: () => {}, addEventListener: () => {}, removeEventListener: () => {}, dispatchEvent: () => false }) });
     mockApi();
 });
-
 afterEach(() => jest.restoreAllMocks());
 
-test('filters default to all dates, only admins load owners, and the action is above the order table', async () => {
-    const { container } = renderPage();
-    await screen.findByRole('link', { name: 'ORDER-1' });
-    expect(screen.queryByLabelText('业务员')).not.toBeInTheDocument();
-    expect(global.fetch.mock.calls.some(([url]) => url.includes('/work/workers'))).toBe(false);
-    expect(lastOrderQuery().has('date_from')).toBe(false);
-    expect(lastOrderQuery().has('customer_id')).toBe(false);
-    expect(within(rowFor()).getByText('2026-08-27 09:12:34')).toBeInTheDocument();
-    expect(within(rowFor('ORDER-2')).getByText('-')).toBeInTheDocument();
-    const action = screen.getByRole('button', { name: '生成并提交收款单' });
-    expect(action).toBeDisabled();
-    const orderTable = container.querySelector('[data-tour="receipt-orders"] .ant-table');
-    expect(action.compareDocumentPosition(orderTable) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-    expect(container.querySelector('[data-tour="receipt-basics"]')).not.toHaveTextContent('收款日期');
+test('independent advance creates one payment then submits that same id without allocating an order', async () => {
+    renderPage(); fireEvent.click(screen.getByRole('button', { name: /登记收款/ })); await fillNew();
+    fireEvent.click(screen.getByRole('button', { name: '提交' }));
+    await waitFor(() => expect(global.fetch.mock.calls.some(([url]) => String(url).endsWith('/payments/8/submit'))).toBe(true));
+    const create = global.fetch.mock.calls.find(([url, options]) => String(url).endsWith('/finance/v2/payments') && options.method === 'POST');
+    expect(JSON.parse(create[1].body)).toMatchObject({ partner_type: 'customer', partner_id: 2, direction: 'incoming', amount: '37.25', account_id: 1, reference_order_uids: [], is_opening: false });
+    expect(global.fetch.mock.calls.filter(([url, options]) => String(url).endsWith('/finance/v2/payments') && options.method === 'POST')).toHaveLength(1);
+    expect(global.fetch.mock.calls.some(([url]) => /order-allocations|\/allocations|receivables|receivable-adjustments/.test(String(url)))).toBe(false);
+    expect(global.fetch.mock.calls.some(([url, options]) => String(url).endsWith('/receipts') && options.method === 'POST')).toBe(false);
+    expect((await screen.findAllByText('待财务确认')).length).toBeGreaterThan(0);
 });
 
-test('admin filters combine, reset selection/page, and can be cleared', async () => {
-    renderPage(true);
-    await selectOrder();
-    await selectOption('客户', '客户A');
-    expect(lastOrderQuery().get('customer_id')).toBe('1');
-    expect(screen.getByRole('button', { name: '生成并提交收款单' })).toBeDisabled();
-    await selectOption('业务员', '业务员A');
-    await setDateRange();
-    expect(Object.fromEntries(lastOrderQuery())).toMatchObject({
-        customer_id: '1', owner_id: '7', date_from: '2026-08-01', date_to: '2026-08-31', p: '1', s: '20',
-    });
-    fireEvent.mouseDown(screen.getByLabelText('业务员').closest('.ant-select').querySelector('.ant-select-clear'));
-    await waitFor(() => expect(lastOrderQuery().has('owner_id')).toBe(false));
-    fireEvent.mouseDown(screen.getByLabelText('客户').closest('.ant-select').querySelector('.ant-select-clear'));
-    fireEvent.click(document.querySelector('.ant-picker-clear'));
-    await waitFor(() => {
-        expect(lastOrderQuery().has('date_from')).toBe(false);
-        expect(lastOrderQuery().has('customer_id')).toBe(false);
-    });
+test('an empty order is optional reference only, while the payment amount remains independent', async () => {
+    const saved = jest.fn(); render(<PaymentEditor open business onClose={jest.fn()} onSaved={saved} />); await fillNew({ withOrder: true });
+    fireEvent.click(screen.getByRole('button', { name: '保存' })); await waitFor(() => expect(saved).toHaveBeenCalled());
+    const body = JSON.parse(global.fetch.mock.calls.find(([, options]) => options.method === 'POST')[1].body);
+    expect(body).toMatchObject({ amount: '37.25', reference_order_uids: ['empty-order'] });
+    expect(body.items).toBeUndefined(); expect(body.allocations).toBeUndefined(); expect(body.order_uid).toBeUndefined();
 });
 
-test('pagination preserves filters, cross-page selection and edited amounts', async () => {
-    mockApi({ orders: params => response(
-        params.get('p') === '2' ? [secondOrder] : [order],
-        { page: Number(params.get('p')), page_size: 20, total: 21 },
-    ) });
+test('navigation carries customer/reference context with no amount or implicit allocation', async () => {
+    renderPage({ customerId: 2, customerName: '客户甲', orderUid: 'empty-order', orderNumber: '空订单' });
+    expect(await screen.findByRole('dialog', { name: '登记收付款' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '移除参考订单 空订单' })).toBeInTheDocument();
+    expect(within(await screen.findByRole('row', { name: /空订单/ })).getByRole('checkbox')).toBeChecked();
+    expect(screen.getByLabelText('金额(CNY)')).toHaveValue('');
+    expect(screen.queryByText('可收余额')).not.toBeInTheDocument();
+    expect(global.fetch.mock.calls.some(([url]) => /order-settlements|receivables/.test(String(url)))).toBe(false);
+});
+
+test('failed submit retains the created draft; retry updates and submits the same payment instead of duplicating cash', async () => {
+    const submit = jest.fn().mockImplementationOnce(() => fail('连接中断')).mockImplementation(() => response({ ...draft, status: 'pending', version: 3 }));
+    mockApi({ submit }); const saved = jest.fn(); render(<PaymentEditor open business onClose={jest.fn()} onSaved={saved} />); await fillNew();
+    fireEvent.click(screen.getByRole('button', { name: '提交' })); await screen.findByText('草稿 PAY-0008 已保存，提交失败：连接中断');
+    fireEvent.click(await screen.findByRole('button', { name: '提交' })); await waitFor(() => expect(saved).toHaveBeenCalledTimes(1));
+    expect(global.fetch.mock.calls.filter(([url, options]) => String(url).endsWith('/payments') && options.method === 'POST')).toHaveLength(1);
+    expect(global.fetch.mock.calls.filter(([url, options]) => String(url).endsWith('/payments/8') && options.method === 'PATCH')).toHaveLength(1);
+    expect(JSON.parse(submit.mock.calls[1][0].body)).toMatchObject({ version: 2 });
+});
+
+test('returned business draft shows review reason and can resubmit but cannot post itself', async () => {
+    mockApi({ payment: { review_remark: '流水号需核对', version: 4 } });
+    render(<RecordDetail entity="payments" recordId={8} business onClose={jest.fn()} onChanged={jest.fn()} />);
+    await screen.findByText('退回原因：流水号需核对');
+    expect(screen.getByRole('button', { name: '编辑草稿' })).toBeEnabled();
+    expect(screen.queryByRole('button', { name: '确认生效' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '提交' }));
+    await screen.findByText('提交后由另一位财务人员核对实际收付款。参考订单不会自动核销。');
+    const modal = screen.getAllByRole('dialog').find(item => within(item).queryByText('提交后由另一位财务人员核对实际收付款。参考订单不会自动核销。'));
+    fireEvent.click(within(modal).getByRole('button', { name: '提交' }));
+    await waitFor(() => expect(global.fetch.mock.calls.some(([url]) => String(url).endsWith('/payments/8/submit'))).toBe(true));
+    const options = global.fetch.mock.calls.find(([url]) => String(url).endsWith('/payments/8/submit'))[1];
+    expect(JSON.parse(options.body).version).toBe(4);
+});
+
+test('business view of posted funds supports history and print but never financial allocations or reversal', async () => {
+    mockApi({ payment: { status: 'posted', review_remark: '到账一致' } });
+    render(<RecordDetail entity="payments" recordId={8} business onClose={jest.fn()} onChanged={jest.fn()} />);
+    await screen.findByText('财务处理意见：到账一致');
+    expect(screen.queryByRole('button', { name: /核销|冲销|确认收付款|退回修改/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /打印/ })).toBeEnabled();
+    fireEvent.click(screen.getByRole('button', { name: /修改历史/ }));
+    expect(screen.getByText('历史路径 /finance/v2/payments/8/history')).toBeInTheDocument();
+    expect(global.fetch.mock.calls.some(([url]) => String(url).includes('/allocations'))).toBe(false);
+});
+
+test('zero amount cannot create or submit a draft', async () => {
+    render(<PaymentEditor open business onClose={jest.fn()} onSaved={jest.fn()} />); await fillNew();
+    fireEvent.change(screen.getByLabelText('金额(CNY)'), { target: { value: '' } });
+    fireEvent.click(screen.getByRole('button', { name: '提交' })); await screen.findByText('请填写金额');
+    expect(global.fetch.mock.calls.some(([, options]) => ['POST', 'PATCH'].includes(options.method))).toBe(false);
+});
+
+test('changing the customer clears reference orders before a draft is saved', async () => {
+    const done = jest.fn(); render(<PaymentEditor open business initialContext={{ customerId: 2, customerName: '客户甲', orderUid: 'empty-order', orderNumber: '空订单' }} onClose={jest.fn()} onSaved={done} />);
+    await select(screen.getByRole('combobox', { name: '收付款客户' }), '客户乙');
+    expect(screen.queryByRole('button', { name: '移除参考订单 空订单' })).not.toBeInTheDocument();
+    await select(screen.getByLabelText('收付款账户'), '银行账户'); fireEvent.change(screen.getByLabelText('金额(CNY)'), { target: { value: '10' } });
+    fireEvent.click(screen.getByRole('button', { name: '保存' })); await waitFor(() => expect(done).toHaveBeenCalled());
+    const body = JSON.parse(global.fetch.mock.calls.find(([, options]) => options.method === 'POST')[1].body);
+    expect(body).toMatchObject({ partner_id: 3, reference_order_uids: [] });
+});
+
+test('closing after a failed submit surfaces the already saved draft instead of hiding the financial record', async () => {
+    mockApi({ submit: () => fail('提交暂不可用') }); const saved = jest.fn(); const close = jest.fn();
+    render(<PaymentEditor open business onClose={close} onSaved={saved} />); await fillNew();
+    fireEvent.click(screen.getByRole('button', { name: '提交' })); await screen.findByText('草稿 PAY-0008 已保存，提交失败：提交暂不可用');
+    fireEvent.click(await screen.findByRole('button', { name: 'Close' }));
+    expect(saved).toHaveBeenCalledWith(expect.objectContaining({ id: 8, status: 'draft' })); expect(close).toHaveBeenCalledTimes(1);
+    expect(global.fetch.mock.calls.filter(([url, options]) => String(url).endsWith('/payments') && options.method === 'POST')).toHaveLength(1);
+});
+
+test('business mine/all permissions honor mixed legacy role and roles JWTs consistently with navigation', async () => {
+    window.localStorage.setItem('jwt', `h.${window.btoa(JSON.stringify({ user_id: 7, role: 'finance', roles: ['salesperson'] }))}.s`);
     renderPage();
-    await selectOption('客户', '客户A');
-    await selectOrder();
-    fireEvent.change(within(rowFor()).getByRole('spinbutton'), { target: { value: '35' } });
-    fireEvent.click(screen.getByTitle('2'));
-    await selectOrder('ORDER-2');
-    expect(lastOrderQuery().get('customer_id')).toBe('1');
-    fireEvent.click(screen.getByRole('button', { name: '生成并提交收款单' }));
-    let modal = within(screen.getByRole('dialog'));
-    expect(modal.getByText('本次收款后剩余应收合计：65.00 CNY')).toBeInTheDocument();
-    await selectOption('结清状态', '已结清');
-    fireEvent.click(modal.getByRole('button', { name: /取\s*消/ }));
-    fireEvent.click(screen.getByTitle('1'));
-    await screen.findByRole('link', { name: 'ORDER-1' });
-    expect(within(rowFor()).getByRole('spinbutton')).toHaveValue('35.00');
-    expect(within(rowFor()).getByRole('checkbox')).toBeChecked();
-    expect(within(document.querySelector('[data-tour="receipt-submit"]')).getByText('本次合计：135.00 CNY')).toBeVisible();
-    fireEvent.click(screen.getByRole('button', { name: '生成并提交收款单' }));
-    modal = within(screen.getByRole('dialog'));
-    expect(modal.getByText('已结清', { selector: '.ant-select-selection-item' })).toBeInTheDocument();
-});
-
-test('late filter responses cannot replace the latest order list', async () => {
-    let finishOldRequest;
-    mockApi({ orders: params => params.get('customer_id') === '1'
-        ? new Promise(resolve => { finishOldRequest = resolve; })
-        : response(params.get('customer_id') === '2' ? [thirdOrder] : [order]) });
-    renderPage();
-    await selectOption('客户', '客户A');
-    await selectOption('客户', '客户B');
-    await screen.findByRole('link', { name: 'ORDER-3' });
-    await act(async () => finishOldRequest(response([order])));
-    expect(screen.queryByRole('link', { name: 'ORDER-1' })).not.toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'ORDER-3' })).toBeInTheDocument();
-});
-
-test('a refreshed approved amount recalculates settlement while a pending-only change preserves a manual choice', async () => {
-    let latestOrder = { ...order };
-    mockApi({ orders: params => response(
-        params.get('p') === '2' ? [secondOrder] : [latestOrder],
-        { page: Number(params.get('p')), page_size: 20, total: 21 },
-    ) });
-    renderPage();
-    await selectOrder();
-    fireEvent.change(within(rowFor()).getByRole('spinbutton'), { target: { value: '60' } });
-    fireEvent.click(screen.getByRole('button', { name: '生成并提交收款单' }));
-    await selectOption('结清状态', '已结清');
-    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: /取\s*消/ }));
-    fireEvent.click(screen.getByTitle('2'));
-    await screen.findByRole('link', { name: 'ORDER-2' });
-    latestOrder = { ...order, pending_amount: 10, available_amount: 90 };
-    fireEvent.click(screen.getByTitle('1'));
-    await screen.findByRole('link', { name: 'ORDER-1' });
-    fireEvent.click(screen.getByRole('button', { name: '生成并提交收款单' }));
-    expect(within(screen.getByRole('dialog')).getByText('已结清', { selector: '.ant-select-selection-item' })).toBeInTheDocument();
-    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: /取\s*消/ }));
-    fireEvent.click(screen.getByTitle('2'));
-    await screen.findByRole('link', { name: 'ORDER-2' });
-    latestOrder = { ...order, approved_received: 10, available_amount: 90 };
-    fireEvent.click(screen.getByTitle('1'));
-    await screen.findByRole('link', { name: 'ORDER-1' });
-    fireEvent.click(screen.getByRole('button', { name: '生成并提交收款单' }));
-    const modal = within(screen.getByRole('dialog'));
-    expect(modal.getByText('本次收款后剩余应收合计：30.00 CNY')).toBeInTheDocument();
-    expect(modal.getByText('未结清', { selector: '.ant-select-selection-item' })).toBeInTheDocument();
-});
-
-test('opening/cancelling the modal does not submit, preserves inputs, and restricts customer selection', async () => {
-    renderPage();
-    await selectOrder();
-    expect(within(rowFor('ORDER-3')).getByRole('checkbox')).toBeDisabled();
-    fireEvent.click(screen.getByRole('button', { name: '生成并提交收款单' }));
-    const modal = within(await screen.findByRole('dialog'));
-    expect(modal.getByText('客户：客户A')).toBeInTheDocument();
-    expect(modal.getByLabelText('收款日期')).toHaveValue(dayjs().format('YYYY-MM-DD'));
-    expect(modal.getByText('现金 / Cash')).toBeInTheDocument();
-    expect(modal.getByText('已结清', { selector: '.ant-select-selection-item' })).toBeInTheDocument();
-    await selectOption('结清状态', '未结清');
-    fireEvent.change(modal.getByLabelText('备注'), { target: { value: '保留备注' } });
-    fireEvent.click(modal.getByRole('button', { name: /取\s*消/ }));
-    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
-    fireEvent.click(screen.getByRole('button', { name: '生成并提交收款单' }));
-    expect(within(screen.getByRole('dialog')).getByLabelText('备注')).toHaveValue('保留备注');
-    expect(within(screen.getByRole('dialog')).getByText('未结清', { selector: '.ant-select-selection-item' })).toBeInTheDocument();
-    expect(postCalls()).toHaveLength(0);
-});
-
-test('empty amounts and missing receipt dates are rejected before submission', async () => {
-    renderPage();
-    await selectOrder();
-    fireEvent.change(within(rowFor()).getByRole('spinbutton'), { target: { value: '' } });
-    fireEvent.click(screen.getByRole('button', { name: '生成并提交收款单' }));
-    let modal = within(screen.getByRole('dialog'));
-    fireEvent.click(modal.getByRole('button', { name: '确认提交' }));
-    await screen.findByText(/本次收款必须大于 0/);
-    expect(postCalls()).toHaveLength(0);
-    fireEvent.click(modal.getByRole('button', { name: /取\s*消/ }));
-    fireEvent.change(within(rowFor()).getByRole('spinbutton'), { target: { value: '25' } });
-    fireEvent.click(screen.getByRole('button', { name: '生成并提交收款单' }));
-    modal = within(screen.getByRole('dialog'));
-    fireEvent.click(modal.getByLabelText('收款日期').closest('.ant-picker').querySelector('.ant-picker-clear'));
-    fireEvent.click(modal.getByRole('button', { name: '确认提交' }));
-    await screen.findByText('请选择收款日期');
-    expect(postCalls()).toHaveLength(0);
-});
-
-test('submission errors retain the dialog and successful retry submits once, refreshes, and resets the form', async () => {
-    let finishSubmit;
-    let attempts = 0;
-    mockApi({ submit: () => {
-        attempts += 1;
-        if (attempts === 1) return { ok: false, json: async () => ({ code: 400, msg: '可收余额已变化' }) };
-        return new Promise(resolve => { finishSubmit = resolve; });
-    } });
-    const preview = { document: { write: jest.fn() }, location: {}, close: jest.fn() };
-    window.open.mockReturnValue(preview);
-    URL.createObjectURL = jest.fn(() => 'blob:receipt');
-    URL.revokeObjectURL = jest.fn();
-    renderPage();
-    await selectOrder();
-    fireEvent.click(screen.getByRole('button', { name: '生成并提交收款单' }));
-    const modal = within(screen.getByRole('dialog'));
-    fireEvent.change(modal.getByLabelText('备注'), { target: { value: '收款测试' } });
-    await selectOption('结清状态', '未结清');
-    fireEvent.click(modal.getByRole('button', { name: '确认提交' }));
-    await screen.findByText('可收余额已变化');
-    expect(screen.getByRole('dialog')).toBeInTheDocument();
-    expect(modal.getByLabelText('备注')).toHaveValue('收款测试');
-    expect(modal.getByText('未结清', { selector: '.ant-select-selection-item' })).toBeInTheDocument();
-    const confirmButton = modal.getByRole('button', { name: '确认提交' });
-    fireEvent.click(confirmButton);
-    fireEvent.click(confirmButton);
-    await waitFor(() => expect(postCalls()).toHaveLength(2));
-    expect(JSON.parse(postCalls()[1][1].body)).toEqual({
-        customer_id: 1, receipt_date: dayjs().format('YYYY-MM-DD'), payment_method: 'cash',
-        remark: '收款测试', settlement_status: 'unsettled', items: [{ order_uid: 'order-1', amount: 100 }],
-    });
-    await act(async () => finishSubmit(response({ id: 10, receipt_no: 'RC-NEW' })));
-    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
-    expect(screen.getByRole('tab', { name: '收款单记录' })).toHaveAttribute('aria-selected', 'true');
-    expect(preview.location.href).toBe('blob:receipt');
-    fireEvent.click(screen.getByRole('tab', { name: '收款登记' }));
-    await selectOrder();
-    fireEvent.click(screen.getByRole('button', { name: '生成并提交收款单' }));
-    expect(within(screen.getByRole('dialog')).getByLabelText('备注')).toHaveValue('');
-});
-
-test('copying a rejected receipt clears date/owner filters and prefills the modal', async () => {
-    renderPage(true);
-    await selectOption('业务员', '业务员A');
-    await setDateRange();
-    fireEvent.click(screen.getByRole('tab', { name: '收款单记录' }));
-    fireEvent.click(await screen.findByRole('button', { name: /复制新建/ }));
-    await waitFor(() => expect(screen.getByRole('tab', { name: '收款登记' })).toHaveAttribute('aria-selected', 'true'));
-    expect(lastOrderQuery().get('customer_id')).toBe('1');
-    expect(lastOrderQuery().has('date_from')).toBe(false);
-    expect(lastOrderQuery().has('owner_id')).toBe(false);
-    expect(within(rowFor()).getByRole('spinbutton')).toHaveValue('45.00');
-    fireEvent.click(screen.getByRole('button', { name: '生成并提交收款单' }));
-    const modal = within(screen.getByRole('dialog'));
-    expect(modal.getByLabelText('备注')).toHaveValue('重新登记');
-    expect(modal.getByText('银行转账 / Bank Transfer')).toBeInTheDocument();
-    expect(modal.getByText('本次收款后剩余应收合计：55.00 CNY')).toBeInTheDocument();
-    expect(modal.getByText('已结清', { selector: '.ant-select-selection-item' })).toBeInTheDocument();
-    fireEvent.click(modal.getByRole('button', { name: /取\s*消/ }));
-    fireEvent.change(within(rowFor()).getByRole('spinbutton'), { target: { value: '40' } });
-    fireEvent.click(screen.getByRole('button', { name: '生成并提交收款单' }));
-    expect(within(screen.getByRole('dialog')).getByText('未结清', { selector: '.ant-select-selection-item' })).toBeInTheDocument();
-    expect(postCalls()).toHaveLength(0);
-});
-
-test('the modal recalculates the strict 30 CNY default when payment changes without changing actual amounts', async () => {
-    renderPage();
-    await selectOrder();
-    fireEvent.change(within(rowFor()).getByRole('spinbutton'), { target: { value: '70.01' } });
-    fireEvent.click(screen.getByRole('button', { name: '生成并提交收款单' }));
-    let modal = within(screen.getByRole('dialog'));
-    expect(modal.getByText('本次收款后剩余应收合计：29.99 CNY')).toBeInTheDocument();
-    expect(modal.getByText('已结清', { selector: '.ant-select-selection-item' })).toBeInTheDocument();
-    await selectOption('结清状态', '未结清');
-    fireEvent.click(modal.getByRole('button', { name: /取\s*消/ }));
-    expect(within(rowFor()).getByRole('spinbutton')).toHaveValue('70.01');
-    fireEvent.change(within(rowFor()).getByRole('spinbutton'), { target: { value: '70' } });
-    fireEvent.click(screen.getByRole('button', { name: '生成并提交收款单' }));
-    modal = within(screen.getByRole('dialog'));
-    expect(modal.getByText('本次收款后剩余应收合计：30.00 CNY')).toBeInTheDocument();
-    expect(modal.getByText('未结清', { selector: '.ant-select-selection-item' })).toBeInTheDocument();
-    await selectOption('结清状态', '已结清');
-    fireEvent.click(modal.getByRole('button', { name: /取\s*消/ }));
-    fireEvent.change(within(rowFor()).getByRole('spinbutton'), { target: { value: '50' } });
-    fireEvent.click(screen.getByRole('button', { name: '生成并提交收款单' }));
-    expect(within(screen.getByRole('dialog')).getByText('未结清', { selector: '.ant-select-selection-item' })).toBeInTheDocument();
-});
-
-test('changing selected orders recalculates the aggregate default and ignores other pending amounts', async () => {
-    mockApi({ orders: () => response([
-        { ...order, pending_amount: 20, available_amount: 80 },
-        { ...secondOrder, pending_amount: 20, available_amount: 80 },
-    ]) });
-    renderPage();
-    await selectOrder();
-    fireEvent.click(screen.getByRole('button', { name: '生成并提交收款单' }));
-    let modal = within(screen.getByRole('dialog'));
-    expect(modal.getByText('本次收款后剩余应收合计：20.00 CNY')).toBeInTheDocument();
-    expect(modal.getByText('已结清', { selector: '.ant-select-selection-item' })).toBeInTheDocument();
-    await selectOption('结清状态', '未结清');
-    fireEvent.click(modal.getByRole('button', { name: /取\s*消/ }));
-    await selectOrder('ORDER-2');
-    fireEvent.click(screen.getByRole('button', { name: '生成并提交收款单' }));
-    modal = within(screen.getByRole('dialog'));
-    expect(modal.getByText('本次收款后剩余应收合计：40.00 CNY')).toBeInTheDocument();
-    expect(modal.getByText('未结清', { selector: '.ant-select-selection-item' })).toBeInTheDocument();
-    await selectOption('结清状态', '已结清');
-    fireEvent.click(modal.getByRole('button', { name: /取\s*消/ }));
-    fireEvent.click(within(rowFor('ORDER-2')).getByRole('checkbox'));
-    fireEvent.change(within(rowFor()).getByRole('spinbutton'), { target: { value: '60' } });
-    fireEvent.click(screen.getByRole('button', { name: '生成并提交收款单' }));
-    expect(within(screen.getByRole('dialog')).getByText('未结清', { selector: '.ant-select-selection-item' })).toBeInTheDocument();
-});
-
-test('copying a historic rejected receipt calculates a default without applying a historic settlement', async () => {
-    mockApi({ receipts: [{ ...rejectedReceipt, settlement_status: null }] });
-    renderPage();
-    fireEvent.click(screen.getByRole('tab', { name: '收款单记录' }));
-    expect(await screen.findByText('未设置')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: /复制新建/ }));
-    await waitFor(() => expect(screen.getByRole('tab', { name: '收款登记' })).toHaveAttribute('aria-selected', 'true'));
-    fireEvent.click(screen.getByRole('button', { name: '生成并提交收款单' }));
-    expect(within(screen.getByRole('dialog')).getByText('未结清', { selector: '.ant-select-selection-item' })).toBeInTheDocument();
-});
-
-test('receipt details refresh their preview and keep settlement differences separate from received amounts', async () => {
-    let previewDifference = 55;
-    const pending = { ...rejectedReceipt, items: undefined, status: 'pending' };
-    mockApi({
-        receipts: [pending],
-        detail: () => ({ ...pending, items: [{
-            id: 1, order_uid: 'order-1', order_id: 'ORDER-DETAIL', amount: 45,
-            receivable_snapshot: 100, remaining_after: 40, settlement_difference: null,
-            preview_settlement_difference: previewDifference,
-        }] }),
-    });
-    renderPage();
-    fireEvent.click(screen.getByRole('tab', { name: '收款单记录' }));
-    await screen.findByText('RC-REJECTED');
-    expect(screen.getByRole('columnheader', { name: '审核状态' })).toBeInTheDocument();
-    expect(screen.getByRole('columnheader', { name: '结清状态' })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Expand row' }));
-    await screen.findByRole('link', { name: 'ORDER-DETAIL' });
-    expect(screen.getByRole('columnheader', { name: '预计结清差额' })).toBeInTheDocument();
-    const detailRow = rowFor('ORDER-DETAIL');
-    expect(within(detailRow).getByText('45.00')).toBeInTheDocument();
-    expect(within(detailRow).getByText('55.00')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Collapse row' }));
-    previewDifference = 35;
-    fireEvent.click(screen.getByRole('button', { name: 'Expand row' }));
-    await waitFor(() => expect(within(rowFor('ORDER-DETAIL')).getByText('35.00')).toBeInTheDocument());
-    expect(global.fetch.mock.calls.filter(([url]) => url.endsWith('/receipts/9'))).toHaveLength(2);
+    expect(screen.getByRole('combobox', { name: '登记人范围' })).toBeInTheDocument();
+    await select(screen.getByRole('combobox', { name: '登记人范围' }), '全部收付款');
+    await waitFor(() => expect(global.fetch.mock.calls.some(([url]) => {
+        const parsed = new URL(url, 'http://localhost'); return parsed.pathname.endsWith('/payments') && !parsed.searchParams.has('created_by_id');
+    })).toBe(true));
 });

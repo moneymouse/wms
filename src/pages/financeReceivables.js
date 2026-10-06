@@ -1,13 +1,13 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
-    Alert, Button, Card, Col, DatePicker, Input, Modal, Row, Select, Space, Statistic, Table, Tag,
+    Alert, Button, Card, Col, DatePicker, Input, Modal, Row, Select, Space, Statistic, Table,
     Typography, message
 } from 'antd';
 import { PrinterOutlined, ReloadOutlined } from '@ant-design/icons';
-import dayjs from 'dayjs';
 
 import { endpoint } from '../config';
 import getSafeHeader from '../common/safeHeader';
+import FinanceHistoryDrawer from '../components/FinanceHistoryDrawer';
 import { getSettlementDifferenceDisplay, getSettlementStatus } from '../common/receiptSettlement';
 import FeatureTour from '../components/FeatureTour';
 import { COST_QUOTE_RECEIPT_TOUR, getCostQuoteReceiptChapter } from '../common/featureTourConfig';
@@ -44,8 +44,7 @@ const receiptAuditTourTargets = {
 };
 
 function defaultDateRange() {
-    const today = dayjs();
-    return [today.startOf('month'), today];
+    return null;
 }
 
 function openPdfData(result, messageApi) {
@@ -60,7 +59,7 @@ function openPdfData(result, messageApi) {
 
 function SettlementTag({ status }) {
     const display = getSettlementStatus(status);
-    return <Tag color={display.color}>{display.label}</Tag>;
+    return <Text>{display.label}</Text>;
 }
 
 function ReceiptItems({ receipt, loading = false }) {
@@ -143,7 +142,7 @@ export function ReceivableLedger() {
         }
     };
 
-    // Initial ledger query uses the current month range and default filters.
+    // Include opening arrears; a month filter would hide older unpaid orders.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     useEffect(() => { fetchLedger(); }, []);
 
@@ -164,13 +163,14 @@ export function ReceivableLedger() {
         { title: '待审核', dataIndex: 'pending_amount', key: 'pending_amount', width: 105, render: v => Number(v || 0).toFixed(2) },
         {
             title: '状态', dataIndex: 'settlement_status', key: 'settlement_status', width: 105,
-            render: v => <Tag color={STATUS[v]?.color}>{STATUS[v]?.label || v}</Tag>
+            render: v => <Text>{STATUS[v]?.label || v}</Text>
         },
     ];
 
     return (
         <div>
             {contextHolder}
+            <Alert type="info" showIcon style={{ marginBottom: 16 }} message="订单结算参考：此页按实时订单报价及原收款统计；正式账簿与往来对账在财务工作台。" />
             <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 4 }}>
                 <FeatureTour
                     chapter={receivableLedgerTourChapter}
@@ -190,7 +190,7 @@ export function ReceivableLedger() {
                     <DatePicker.RangePicker
                         value={dateRange}
                         onChange={setDateRange}
-                        allowClear={false}
+                        allowClear
                         format="YYYY-MM-DD"
                         placeholder={['开始日期', '结束日期']}
                     />
@@ -232,6 +232,9 @@ export function ReceiptAudit() {
     const [status, setStatus] = useState('pending');
     const [receiptNoSearch, setReceiptNoSearch] = useState('');
     const [receipts, setReceipts] = useState([]);
+    const [pagination, setPagination] = useState({ current: 1, pageSize: 20, total: 0 });
+    const listRequest = useRef(0);
+    const [historyReceipt, setHistoryReceipt] = useState(null);
     const [loading, setLoading] = useState(false);
     const [detailStates, setDetailStates] = useState({});
     const detailRequests = useRef({});
@@ -251,20 +254,24 @@ export function ReceiptAudit() {
             || document.querySelector('[data-tour="audit-table"]'),
     }));
 
-    const fetchReceipts = async () => {
+    const fetchReceipts = async (page = 1, pageSize = pagination.pageSize) => {
+        const requestId = ++listRequest.current;
         setLoading(true);
         try {
-            const params = new URLSearchParams({ p: 1, s: 200 });
+            const params = new URLSearchParams({ p: page, s: pageSize });
             if (status) params.set('status', status);
             if (receiptNoSearch.trim()) params.set('q', receiptNoSearch.trim());
             const response = await fetch(`${endpoint}/receipts?${params}`, { headers: getSafeHeader() });
             const result = await response.json();
+            if (requestId !== listRequest.current) return;
             if (!response.ok || result.code !== 200) throw new Error(result.msg || '获取失败');
             setReceipts(result.data || []);
+            setPagination({ current: result.page || page, pageSize: result.page_size || pageSize, total: result.total ?? result.data?.length ?? 0 });
         } catch (error) {
+            if (requestId !== listRequest.current) return;
             messageApi.error(error.message || '获取收款单失败');
         } finally {
-            setLoading(false);
+            if (requestId === listRequest.current) setLoading(false);
         }
     };
     // Status is the only input that should automatically refresh this list.
@@ -347,7 +354,7 @@ export function ReceiptAudit() {
                 closeReview();
                 setReviewRemark('');
             }
-            fetchReceipts();
+            fetchReceipts(pagination.current);
         } catch (error) {
             messageApi.error(error.message || '审核失败');
         } finally {
@@ -386,11 +393,12 @@ export function ReceiptAudit() {
         { title: '创建人', dataIndex: 'creator_name', key: 'creator_name', width: 105 },
         { title: '审核人', dataIndex: 'reviewer_name', key: 'reviewer_name', width: 105, render: v => v || '-' },
         { title: '结清状态', dataIndex: 'settlement_status', key: 'settlement_status', width: 105, render: v => <SettlementTag status={v} /> },
-        { title: '审核状态', dataIndex: 'status', key: 'status', width: 95, render: v => <Tag color={RECEIPT_STATUS[v]?.color}>{RECEIPT_STATUS[v]?.label || v}</Tag> },
+        { title: '审核状态', dataIndex: 'status', key: 'status', width: 95, render: v => <Text type={v === 'rejected' ? 'danger' : undefined}>{RECEIPT_STATUS[v]?.label || v}</Text> },
         {
-            title: '操作', key: 'action', fixed: 'right', width: 160,
+            title: '操作', key: 'action', fixed: 'right', width: 235,
             render: (_, record) => <Space>
                 <Button size="small" icon={<PrinterOutlined />} onClick={() => print(record)}>打印</Button>
+                <Button size="small" onClick={() => setHistoryReceipt(record)}>历史</Button>
                 {record.status === 'pending' && <Button data-tour="audit-review-action" size="small" type="primary" onClick={() => openReview(record)}>审核</Button>}
             </Space>
         },
@@ -437,7 +445,7 @@ export function ReceiptAudit() {
                             style={{ width: 260 }}
                         />
                         <Select value={status} onChange={setStatus} style={{ width: 130 }} options={[{ value: 'pending', label: '待审核' }, { value: 'approved', label: '已生效' }, { value: 'rejected', label: '已驳回' }, { value: '', label: '全部' }]} />
-                        <Button icon={<ReloadOutlined />} onClick={fetchReceipts}>刷新</Button>
+                        <Button icon={<ReloadOutlined />} onClick={() => fetchReceipts(pagination.current)}>刷新</Button>
                     </Space>
                 </div>
                 <Table
@@ -445,7 +453,8 @@ export function ReceiptAudit() {
                     loading={loading}
                     dataSource={receipts}
                     columns={columns}
-                    pagination={{ pageSize: 20 }}
+                    pagination={{ ...pagination, showSizeChanger: true, showTotal: total => `共 ${total} 张收款单` }}
+                    onChange={next => fetchReceipts(next.current, next.pageSize)}
                     scroll={{ x: 'max-content' }}
                     expandable={{
                         onExpand: (expanded, record) => {
@@ -495,6 +504,9 @@ export function ReceiptAudit() {
                     </Space>
                 </div>}
             </Modal>
+            <FinanceHistoryDrawer open={!!historyReceipt} onClose={() => setHistoryReceipt(null)}
+                title={historyReceipt ? `${historyReceipt.receipt_no} · 修改历史` : '收款修改历史'}
+                historyUrl={historyReceipt ? `/receipts/${historyReceipt.id}/history` : null} />
         </div>
     );
 }

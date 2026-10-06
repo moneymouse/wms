@@ -6,11 +6,10 @@ import { intakeRequest } from '../common/intakeApi';
 import styles from './MyPackingLists.module.css';
 
 const PAGE_SIZE = 20;
-const REFRESH_INTERVAL = 5000;
 const LOAD_ERROR = '装箱单加载失败，请重试';
 const displayTime = value => String(value || '-').replace('T', ' ');
 const STATUS = {
-    pending_review: { label: '待核对', color: 'gold' },
+    uploading: { label: '上传未完成', color: 'gold' },
     draft: { label: '草稿', color: 'default' },
     completed: { label: '已创建', color: 'green' },
 };
@@ -32,8 +31,6 @@ export default function MyPackingLists({ refreshKey = 0 }) {
     useEffect(() => {
         const controller = new AbortController();
         let active = true;
-        let timer;
-        let hasPending = false;
         setRecords([]);
         setTotal(0);
         setLoading(true);
@@ -50,40 +47,37 @@ export default function MyPackingLists({ refreshKey = 0 }) {
                 setRecords(data.items);
                 setTotal(data.total);
                 setError('');
-                hasPending = data.items.some(item => item.status === 'pending_review');
             } catch {
                 if (!active) return;
                 setError(LOAD_ERROR);
             } finally {
-                if (active) {
-                    setLoading(false);
-                    // Schedule only after the previous request finishes, so polls never overlap.
-                    if (hasPending) timer = window.setTimeout(load, REFRESH_INTERVAL);
-                }
+                if (active) setLoading(false);
             }
         };
         load();
         return () => {
             active = false;
             controller.abort();
-            window.clearTimeout(timer);
         };
     }, [query, reloadKey, refreshKey]);
 
     const reload = () => setReloadKey(value => value + 1);
     const renderStatus = record => {
-        const status = STATUS[record.status];
+        const status = record.source === 'paper' && record.status === 'completed'
+            ? { label: '已核对', color: 'green' } : STATUS[record.status];
         return status ? <Tag className={styles.status} color={status.color}>{status.label}</Tag> : '-';
     };
     const renderAction = record => (
-        record.packing_list_uid && record.status !== 'pending_review'
+        record.status === 'uploading'
+            ? <Link to={`/packing-list/upload/${encodeURIComponent(record.intake_uid || record.uid)}`}>继续检查并上传</Link>
+            : record.packing_list_uid
             ? <Link to={`/packing-lists/${encodeURIComponent(record.packing_list_uid)}`}>查看装箱单</Link>
-            : <Typography.Text type="secondary">{record.status === 'pending_review' ? '等待核对' : '-'}</Typography.Text>
+            : <Typography.Text type="secondary">-</Typography.Text>
     );
     const columns = [
         {
             title: '唛头', key: 'mark', render: (_, record) => (
-                <span className={styles.mark}>{record.mark || '唛头待核对'}</span>
+                <span className={styles.mark}>{record.mark || '唛头待填写'}</span>
             ),
         },
         { title: '来源', key: 'source', render: (_, record) => record.source === 'paper' ? '拍照上传' : '手动录入' },
@@ -113,9 +107,9 @@ export default function MyPackingLists({ refreshKey = 0 }) {
                 action={<Button size="small" onClick={reload}>重试</Button>} />}
             {compactView ? <Spin spinning={loading}>
                 <div className={styles.mobileList}>
-                    {records.length ? records.map(record => <article key={record.uid} className={styles.mobileCard}>
+                    {records.length ? records.map(record => <article key={record.uid} aria-label={`装箱单 ${record.mark || '唛头待填写'}`} className={styles.mobileCard}>
                         <div className={styles.mobileHeader}>
-                            <span className={`${styles.mark} ${styles.mobileMark}`}>{record.mark || '唛头待核对'}</span>
+                            <span className={`${styles.mark} ${styles.mobileMark}`}>{record.mark || '唛头待填写'}</span>
                             {renderStatus(record)}
                         </div>
                         <div className={styles.mobileInfo}>

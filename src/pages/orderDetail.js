@@ -14,6 +14,7 @@ import {
     Table,
     Tag,
     Timeline,
+    Tooltip,
     Typography
 } from "antd";
 import orderProperty from "../common/orderProperty";
@@ -28,10 +29,10 @@ import trackStatus from "../common/trackStatus";
 import GoodInput from "../components/GoodName";
 import BoxAssignmentModal from "../components/BoxAssignmentModal";
 import Transportation from "../components/transportation";
-import { DeleteOutlined, DollarOutlined, HistoryOutlined, InboxOutlined, PrinterOutlined } from "@ant-design/icons";
-import { hasPermission } from "../common/roleConfig";
+import { DeleteOutlined, DollarOutlined, HistoryOutlined, InboxOutlined, PrinterOutlined, ReloadOutlined } from "@ant-design/icons";
+import { getUserRoles, hasPermission } from "../common/roleConfig";
 import { normalizeOrderEditPolicy } from "../common/orderEditPolicy";
-import { isBoxIdentityEditable, isCargoOutboundOrLater } from "../common/cargoStatus";
+import { isBoxOriginalNumberEditable, isCargoOutboundOrLater } from "../common/cargoStatus";
 import OrderHistoryDrawer from "../components/OrderHistoryDrawer";
 import OrderReceiptButton from "../components/OrderReceiptButton";
 import { buildCustomsCodeOptions } from "../common/customsCodeLookup";
@@ -85,6 +86,28 @@ function base64ToBlob(base64, mimeType) {
     return new Blob([bytes], { type: mimeType });
 }
 
+const fieldTooltipStyle = { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' };
+
+const DetailText = ({ children, ...props }) => (
+    <Tooltip title={children} styles={{ body: fieldTooltipStyle }}>
+        <Typography.Text {...props}>{children}</Typography.Text>
+    </Tooltip>
+);
+
+const CargoText = ({ value, suffix = '', ellipsis = false, title }) => {
+    if (value === undefined || value === null || value === '') return null;
+    const text = `${value}${suffix}`;
+    return (
+        <Typography.Text className={styles.cargoText} copyable={{ text }}>
+            <Tooltip title={text} styles={{ body: fieldTooltipStyle }}>
+                <span className={`${styles.cargoTextValue}${ellipsis ? ` ${styles.cargoTextEllipsis}` : ''}`} title={title}>
+                    {text}
+                </span>
+            </Tooltip>
+        </Typography.Text>
+    );
+};
+
 
 const EditableCell = (props) => {
     const {
@@ -98,6 +121,8 @@ const EditableCell = (props) => {
         onClick,
         onEnter,
         onBlur,
+        generateButton,
+        generatingNumber,
         ...restProps
     } = props;
     const dict = {
@@ -114,41 +139,35 @@ const EditableCell = (props) => {
     return (
         <td {...restProps}>
             {editing ? (
-                <Form.Item
-                    name={dataIndex}
-                    style={{
-                        margin: 0,
-                    }}
-                    rules={[
-                        {
-                            required: false,
-                            message: `请输入 ${title}!`,
-                        },
-                    ]}
-                >
-
-                    {dataIndex !== 'real_en_name' ? (<Space>
-                        <Input
-                            rootClassName={'myEditableCellInputIdToAvoidBlur'}
-                            onBlur={onBlur}
-                            ref={(node) => {
-                                if (focusFlag === dataIndex && node) {
-                                    node.focus();
-                                    focusFlag = '';
-                                }
-                                return () => {
-                                    focusFlag = '';
-                                }
-                            }}
-                            onPressEnter={() => onEnter(dataIndex)}
-                            defaultValue={record[dataIndex] === 0 ? '' : record[dataIndex]}
-                        />
-                    </Space>) :
-                        (<GoodInput onEnter={() => onEnter(dataIndex)} onBlur={onBlur}
-                            defaultValue={record[dataIndex]} />)}
-
-
-                </Form.Item>
+                <Space>
+                    <Form.Item
+                        name={dataIndex}
+                        style={{ margin: 0 }}
+                        rules={[{ required: false, message: `请输入 ${title}!` }]}
+                    >
+                        {dataIndex !== 'real_en_name' ? (
+                            <Input
+                                rootClassName={'myEditableCellInputIdToAvoidBlur'}
+                                disabled={generatingNumber}
+                                onBlur={onBlur}
+                                ref={(node) => {
+                                    if (focusFlag === dataIndex && node) {
+                                        node.focus();
+                                        focusFlag = '';
+                                    }
+                                    return () => {
+                                        focusFlag = '';
+                                    }
+                                }}
+                                onPressEnter={() => onEnter(dataIndex)}
+                            />
+                        ) : (
+                            <GoodInput onEnter={() => onEnter(dataIndex)} onBlur={onBlur}
+                                defaultValue={record[dataIndex]} />
+                        )}
+                    </Form.Item>
+                    {generateButton}
+                </Space>
             ) : (
                 <div
                     className={dataIndex ? styles['editable-cell-value-wrap'] : ""}
@@ -177,6 +196,7 @@ export default function OrderDetail() {
 
     //description data状态管理
     const [descriptionData, setDescriptionData] = useState({});
+    const orderDetailRequestId = useRef(0);
     const [jwtPayload, setJwtPayload] = useState({});
     const [historyOpen, setHistoryOpen] = useState(false);
     const [historyRefreshKey, setHistoryRefreshKey] = useState(0);
@@ -196,7 +216,16 @@ export default function OrderDetail() {
     const [quotePdfPrinting, setQuotePdfPrinting] = useState(false);
     const [form] = Form.useForm();
     const [editingKey, setEditingKey] = useState('');
+    const editingCargoUidRef = useRef('');
+    editingCargoUidRef.current = editingKey;
+    const [generatingNumbers, setGeneratingNumbers] = useState(new Set());
+    const numberGenerationInFlightRef = useRef(new Set());
+    const numberGenerationContextRef = useRef(0);
+    const [orderNumberEditing, setOrderNumberEditing] = useState(false);
+    const [orderNumberDraft, setOrderNumberDraft] = useState('');
+    const [orderNumberSaving, setOrderNumberSaving] = useState(false);
     const [cargoData, setCargoData] = useState([]);
+    const cargoRequestId = useRef(0);
     const [selectedKeys, setSelectedKeys] = useState([]);
     const quoteUnitPrice = Form.useWatch('unit_price', quoteForm);
     const quoteSurcharge = Form.useWatch('surcharge', quoteForm);
@@ -204,7 +233,7 @@ export default function OrderDetail() {
     const [customsCodesLoading, setCustomsCodesLoading] = useState(false);
 
     // 客户联系信息状态
-    const [customerContact, setCustomerContact] = useState({ phone: '', wechat: '' });
+    const [customerContact, setCustomerContact] = useState({ contextKey: null, phone: '', wechat: '' });
     const [customerContactLoading, setCustomerContactLoading] = useState(false);
 
     // 箱子分配模态框状态
@@ -213,6 +242,13 @@ export default function OrderDetail() {
     const specialFieldDraftRef = useRef('');
     const specialFieldCommitRef = useRef(false);
     const cargoSaveInFlightRef = useRef(new Set());
+
+    useEffect(() => {
+        setGeneratingNumbers(new Set(numberGenerationInFlightRef.current));
+        setOrderNumberEditing(false);
+        setOrderNumberSaving(false);
+        return () => { numberGenerationContextRef.current += 1; };
+    }, [order_id]);
 
     const fetchQuoteHistory = useCallback(async () => {
         if (!canViewQuotes) return [];
@@ -233,9 +269,11 @@ export default function OrderDetail() {
     }, [order_id, canViewQuotes]);
 
     const fetchOrderDetail = useCallback(async () => {
+        const requestId = ++orderDetailRequestId.current;
         try {
             const response = await fetch(`${endpoint}/orders/${order_id}`, { headers: getSafeHeader() });
             const result = await response.json();
+            if (requestId !== orderDetailRequestId.current) return null;
             if (!response.ok || result.code !== 200 || !result.data) {
                 message.error(result.msg || result.message || '获取订单详情失败');
                 return null;
@@ -247,6 +285,7 @@ export default function OrderDetail() {
             await fetchQuoteHistory();
             return data;
         } catch (error) {
+            if (requestId !== orderDetailRequestId.current) return null;
             console.error('获取订单详情失败:', error);
             message.error('获取订单详情失败');
             return null;
@@ -258,11 +297,25 @@ export default function OrderDetail() {
         if (reloadOrder) await fetchOrderDetail();
     }, [fetchOrderDetail]);
 
-    // 检查是否有查看客户联系信息的权限
-    const canViewCustomerContact = hasPermission(jwtPayload?.roles, ['admin', 'store_manager', 'salesperson']);
+    const currentUserId = jwtPayload?.user_id ?? jwtPayload?.id ?? jwtPayload?.uid;
+    const userRoles = getUserRoles(jwtPayload);
+    const assignedSalesmanId = salesman?.id ?? descriptionData?.salesman_id;
+    const isCurrentSalesman = currentUserId != null && assignedSalesmanId != null
+        && String(currentUserId) === String(assignedSalesmanId);
+    // 业务员只能查看自己负责订单的客户联系信息，管理员和店长保留完整权限。
+    const canViewCustomerContact = String(descriptionData.uid || '') === String(order_id)
+        && (hasPermission(userRoles, ['admin', 'store_manager'])
+            || (hasPermission(userRoles, ['salesperson']) && isCurrentSalesman));
+    const customerContactId = descriptionData.customer_ids?.[0] ?? descriptionData.customer_id;
+    const customerContactKey = JSON.stringify([order_id, customerContactId, assignedSalesmanId, currentUserId]);
+    const displayedCustomerContact = customerContact.contextKey === customerContactKey
+        ? customerContact : { phone: '', wechat: '' };
     // 检查是否有分配箱子的权限
-    const canAssignBoxes = hasPermission(jwtPayload?.roles, ['admin', 'store_manager', 'salesperson', 'clerk']);
+    const canAssignBoxes = hasPermission(userRoles, ['admin', 'store_manager', 'salesperson', 'clerk']);
     useEffect(() => {
+        let active = true;
+        setDescriptionData({});
+        setSalesman(null);
         const jwt = localStorage.getItem('jwt');
         if (jwt) {
             try {
@@ -281,17 +334,21 @@ export default function OrderDetail() {
             setSalesmanLoading(true);
             try {
                 const res = await (await fetch(`${endpoint}/orders/${order_id}/salesman`, { headers: getSafeHeader() })).json();
-                if (res.code === 200) {
+                if (active && res.code === 200) {
                     setSalesman(res.data || null);
                     setSalesmanEditorValue(res.data?.id ?? undefined);
                     setDescriptionData(prev => ({ ...prev, salesman: res.data || null, salesman_id: res.data?.id ?? null }));
                 }
             } finally {
-                setSalesmanLoading(false);
+                if (active) setSalesmanLoading(false);
             }
         })();
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
+        return () => {
+            active = false;
+            orderDetailRequestId.current += 1;
+            quoteHistoryRequestId.current += 1;
+        };
+    }, [order_id, fetchOrderDetail]);
 
     useEffect(() => {
         (async () => {
@@ -354,34 +411,39 @@ export default function OrderDetail() {
 
     // 获取客户联系信息
     useEffect(() => {
-        if (canViewCustomerContact && descriptionData.customer_ids) {
+        let active = true;
+        setCustomerContact({ contextKey: customerContactKey, phone: '', wechat: '' });
+        setCustomerContactLoading(false);
+        if (canViewCustomerContact && customerContactId != null) {
             (async () => {
-
                 setCustomerContactLoading(true);
                 try {
-                    const res = await (await fetch(`${endpoint}/customer_detail/${descriptionData.customer_ids[0]}`, { headers: getSafeHeader() })).json();
-                    if (res.code === 200 && res.data) {
+                    const response = await fetch(`${endpoint}/orders/${order_id}/customer-contact`, { headers: getSafeHeader() });
+                    const res = await response.json();
+                    if (active && response.ok && res.code === 200 && res.data) {
                         setCustomerContact({
+                            contextKey: customerContactKey,
                             phone: res.data.phone || '',
                             wechat: res.data.wechat || ''
                         });
                     }
                 } catch (e) {
-                    console.error('获取客户联系信息失败:', e);
+                    if (active) console.error('获取客户联系信息失败:', e);
                 } finally {
-                    setCustomerContactLoading(false);
+                    if (active) setCustomerContactLoading(false);
                 }
             })();
         }
-    }, [canViewCustomerContact, descriptionData.customer_ids]);
-
-    const currentUserId = jwtPayload?.user_id ?? jwtPayload?.id ?? jwtPayload?.uid;
-    const userRoles = jwtPayload?.roles || (jwtPayload?.role ? [jwtPayload.role] : []);
-    const assignedSalesmanId = salesman?.id ?? descriptionData?.salesman_id;
-    const isCurrentSalesman = currentUserId != null && assignedSalesmanId != null
-        && String(currentUserId) === String(assignedSalesmanId);
+        return () => { active = false; };
+    }, [canViewCustomerContact, customerContactId, customerContactKey, order_id]);
     const canQuote = hasPermission(userRoles, ['salesperson']) && isCurrentSalesman;
     const canViewOrderHistory = hasPermission(userRoles, ['admin', 'store_manager']);
+    const canUndoOutbound = hasPermission(userRoles, ['admin', 'store_manager']);
+    const [undoingCargoUid, setUndoingCargoUid] = useState(null);
+    const cargoRemovalBlocked = record => record?.removal_allowed === false
+        || (record?.removal_allowed == null && (isCargoOutboundOrLater(record) || Boolean(record?.date)));
+    const removalBlockedMessage = '包裹已出库，请先撤销出库后再移除';
+    const selectedRemovalBlocked = cargoData.some(record => selectedKeys.includes(record.uid) && cargoRemovalBlocked(record));
     const canEditSalesmanByRole = hasPermission(userRoles, ['admin']) || isCurrentSalesman;
     const editPolicy = normalizeOrderEditPolicy(descriptionData.edit_policy, {
         defaults: {
@@ -417,17 +479,87 @@ export default function OrderDetail() {
             return isBox ? editPolicy.box_weight : editPolicy.cargo_weight;
         }
         if (field === 'transfer_id') {
-            return editPolicy.tracking_numbers && (!isBox || isBoxIdentityEditable(record));
+            return editPolicy.tracking_numbers && (!isBox || isBoxOriginalNumberEditable(record));
         }
         if (field === 'waybill_id') return editPolicy.tracking_numbers;
         return isBox ? editPolicy.box_content : editPolicy.cargo_content;
     };
+    const canGenerateNumbers = String(descriptionData.uid || '') === String(order_id)
+        && hasPermission(userRoles, ['admin', 'store_manager', 'salesperson', 'clerk']);
+    const generationKey = (record) => `${order_id}:${record ? `cargo:${record.uid}` : 'order'}`;
+    const generateNumber = async (record) => {
+        const field = record ? 'transfer_id' : 'order_id';
+        if (!canGenerateNumbers || !(record ? canEditCargoField(record, field) : canEditOrderField(field))) return;
+        if (record ? editingCargoUidRef.current !== record.uid : !orderNumberEditing) return;
+        const key = generationKey(record);
+        if (numberGenerationInFlightRef.current.has(key)) return;
+        if (record ? cargoSaveInFlightRef.current.has(record.uid) : orderNumberSaving) return;
+        const context = numberGenerationContextRef.current;
+        numberGenerationInFlightRef.current.add(key);
+        if (record) cargoSaveInFlightRef.current.add(record.uid);
+        setGeneratingNumbers(new Set(numberGenerationInFlightRef.current));
+        const label = record ? '原单号' : '订单号';
+        try {
+            const url = record
+                ? `${endpoint}/orders/${order_id}/cargo/${record.uid}/generate-original-number`
+                : `${endpoint}/orders/${order_id}/generate-order-number`;
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: { ...getSafeHeader(), 'Content-Type': 'application/json' },
+                body: JSON.stringify({ expected_value: (record || descriptionData)[field] ?? null }),
+            });
+            const result = await response.json();
+            if (context !== numberGenerationContextRef.current) return;
+            if (!response.ok || result.code !== 200 || !result.data?.[field]) {
+                throw new Error(result.msg || result.message || (response.status === 409
+                    ? '单号已被修改，请刷新页面后重试' : `生成${label}失败`));
+            }
+            const number = result.data[field];
+            orderDetailRequestId.current += 1;
+            if (record) {
+                cargoRequestId.current += 1;
+                setCargoData(current => current.map(item => item.uid === record.uid ? { ...item, transfer_id: number } : item));
+                if (editingCargoUidRef.current === record.uid) form.setFieldsValue({ transfer_id: number });
+            } else {
+                setOrderNumberDraft(number);
+            }
+            setDescriptionData(current => ({
+                ...current,
+                ...(!record ? { order_id: number } : {}),
+                ...(result.data.current_version != null ? {
+                    current_version: Math.max(Number(current.current_version) || 0, Number(result.data.current_version) || 0),
+                } : {}),
+            }));
+            setHistoryRefreshKey(value => value + 1);
+            messageX.success(`${label}已生成并保存`);
+        } catch (error) {
+            if (context === numberGenerationContextRef.current) messageX.error(error.message || `生成${label}失败`);
+        } finally {
+            numberGenerationInFlightRef.current.delete(key);
+            if (record) cargoSaveInFlightRef.current.delete(record.uid);
+            setGeneratingNumbers(new Set(numberGenerationInFlightRef.current));
+        }
+    };
+    const renderCargoNumberGeneration = (record) => canGenerateNumbers && isEditing(record) && canEditCargoField(record, 'transfer_id') ? (
+        <Tooltip title="随机生成并保存原单号">
+            <Button
+                type="text"
+                size="small"
+                icon={<ReloadOutlined />}
+                aria-label="生成原单号"
+                className="myEditableCellInputIdToAvoidBlur"
+                loading={generatingNumbers.has(generationKey(record))}
+                disabled={generatingNumbers.has(generationKey(record))}
+                onMouseDown={event => event.preventDefault()}
+                onClick={event => {
+                    event.stopPropagation();
+                    generateNumber(record);
+                }}
+            />
+        </Tooltip>
+    ) : null;
     const finalQuote = quoteHistory.find(item => item.is_final);
-    const canCollect = Boolean(finalQuote?.is_effective) && (
-        hasPermission(userRoles, ['admin'])
-        || (hasPermission(userRoles, ['salesperson']) && currentUserId != null
-            && String(finalQuote.quoter_id) === String(currentUserId))
-    );
+    const canCollect = String(descriptionData.uid || '') === String(order_id) && hasPermission(userRoles, ['admin', 'salesperson', 'finance']);
     const currentTransportation = (descriptionData.transportation || '').trim();
     const currentQuoteMode = transportationModes.find(item => item.name === currentTransportation);
     const currentMinPrice = currentQuoteMode ? Number(currentQuoteMode.min_price || 0) : 0;
@@ -655,21 +787,29 @@ export default function OrderDetail() {
         quoteSurcharge
     );
     const displayedQuoteReceivable = quoteReceivablePreview;
-    const fetchCargoData = async () => {
-        const {
-            code,
-            data
-        } = await (await fetch(`${endpoint}/orders/${order_id}/cargo?time=${(new Date()).getTime()}`, { headers: getSafeHeader() })).json();
-        if (code === 500) {
-            message.error("17Track 获取订单跟踪信息失败")
+    const fetchCargoData = useCallback(async () => {
+        const requestId = ++cargoRequestId.current;
+        try {
+            const { code, data } = await (await fetch(`${endpoint}/orders/${order_id}/cargo?time=${(new Date()).getTime()}`, { headers: getSafeHeader() })).json();
+            if (requestId !== cargoRequestId.current) return;
+            if (code === 500) {
+                message.error("17Track 获取订单跟踪信息失败")
+            }
+            setCargoData((data || []).map(v => ({ ...v, key: v['uid'] })));
+        } catch (error) {
+            if (requestId !== cargoRequestId.current) return;
+            console.error('获取包裹详情失败:', error);
+            message.error('获取包裹详情失败');
         }
-        setCargoData((data || []).map(v => ({ ...v, key: v['uid'] })));
-    };
+    }, [order_id]);
     useEffect(() => {
-        (async () => {
-            await fetchCargoData();
-        })();
-    }, [])
+        setCargoData([]);
+        setEditingKey('');
+        setSelectedKeys([]);
+        form.resetFields();
+        fetchCargoData();
+        return () => { cargoRequestId.current += 1; };
+    }, [fetchCargoData, form]);
     const isEditing = (record) => {
         return record['uid'] === editingKey;
     }
@@ -693,8 +833,10 @@ export default function OrderDetail() {
             return;
         }
         if (cargoSaveInFlightRef.current.has(key)) return;
+        let ownsSaveLock = false;
         try {
             const row = await form.validateFields();
+            if (cargoSaveInFlightRef.current.has(key)) return;
 
             const newData = [...cargoData];
             const index = newData.findIndex((item) => key === item.uid);
@@ -712,6 +854,7 @@ export default function OrderDetail() {
                     return;
                 }
                 cargoSaveInFlightRef.current.add(key);
+                ownsSaveLock = true;
                 const updateRes = await (await fetch(`${endpoint}/cargo/${key}`, {
                     headers: { ...getSafeHeader(), 'Content-Type': 'application/json' },
                     body: JSON.stringify(changedRow),
@@ -734,7 +877,7 @@ export default function OrderDetail() {
                     updatedItem.status = 1;
                 }
                 newData.splice(index, 1, updatedItem);
-                setCargoData(newData);
+                setCargoData(current => current.map(cargo => cargo.uid === key ? { ...cargo, ...updatedItem } : cargo));
             } else {
                 newData.push(row);
                 setCargoData(newData);
@@ -748,7 +891,7 @@ export default function OrderDetail() {
             }
             console.log('Validate Failed:', errInfo);
         } finally {
-            cargoSaveInFlightRef.current.delete(key);
+            if (ownsSaveLock) cargoSaveInFlightRef.current.delete(key);
         }
     };
     const columns = [
@@ -756,20 +899,20 @@ export default function OrderDetail() {
             title: '原单号',
             key: 'transfer_id',
             dataIndex: 'transfer_id',
-            ellipsis: true,
+            ellipsis: false,
             fixed: 'left',
             editable: true,
-            width: 200,
-            render: (text, record, i) => text && <Typography.Text copyable key={i}>{text}</Typography.Text>
+            width: 270,
+            render: (text) => <CargoText value={text} />
         }, {
             title: '转单号（运单号）',
             key: 'waybill_id',
             dataIndex: 'waybill_id',
-            ellipsis: true,
+            ellipsis: { showTitle: false },
             fixed: 'left',
             editable: true,
             width: 200,
-            render: (text, record, i) => text && <Typography.Text copyable key={i}>{text}</Typography.Text>
+            render: (text) => <CargoText value={text} ellipsis />
         },
         {
             title: '唛头',
@@ -781,29 +924,31 @@ export default function OrderDetail() {
             render(text, record) {
                 if (!text) return null;
                 if (!record?.packing_list_uid) {
-                    return <Typography.Text copyable>{text}</Typography.Text>;
+                    return <CargoText value={text} />;
                 }
                 return (
-                    <Button
-                        type="link"
-                        style={{
-                            padding: 0,
-                            height: 'auto',
-                            width: '100%',
-                            maxWidth: '100%',
-                            whiteSpace: 'normal',
-                            overflowWrap: 'anywhere',
-                            wordBreak: 'break-all',
-                            textAlign: 'left',
-                            lineHeight: 1.5,
-                        }}
-                        onClick={(event) => {
-                            event.stopPropagation();
-                            navigate(`/packing-lists/${encodeURIComponent(record.packing_list_uid)}`);
-                        }}
-                    >
-                        {text}
-                    </Button>
+                    <Tooltip title={text} styles={{ body: fieldTooltipStyle }}>
+                        <Button
+                            type="link"
+                            style={{
+                                padding: 0,
+                                height: 'auto',
+                                width: '100%',
+                                maxWidth: '100%',
+                                whiteSpace: 'normal',
+                                overflowWrap: 'anywhere',
+                                wordBreak: 'break-all',
+                                textAlign: 'left',
+                                lineHeight: 1.5,
+                            }}
+                            onClick={(event) => {
+                                event.stopPropagation();
+                                navigate(`/packing-lists/${encodeURIComponent(record.packing_list_uid)}`);
+                            }}
+                        >
+                            {text}
+                        </Button>
+                    </Tooltip>
                 );
             }
         },
@@ -823,9 +968,7 @@ export default function OrderDetail() {
             ellipsis: false,
             editable: true,
             width: 150,
-            render(text, _, i) {
-                return text && <Typography.Text copyable={true} key={i}>{text ? text + '件' : ''}</Typography.Text>
-            }
+            render: (text) => <CargoText value={text} suffix="件" />
         },
         {
             title: '英文品名',
@@ -834,9 +977,7 @@ export default function OrderDetail() {
             ellipsis: false,
             editable: true,
             width: 150,
-            render(text, _, i) {
-                return text && <Typography.Text copyable key={i}>{text}</Typography.Text>
-            }
+            render: (text) => <CargoText value={text} />
         },
         {
             title: '重量(KG)',
@@ -845,12 +986,12 @@ export default function OrderDetail() {
             ellipsis: false,
             editable: true,
             width: 150,
-            render(text, record, i) {
-                return text && <Typography.Text
-                    copyable
-                    key={i}
+            render(text, record) {
+                return <CargoText
+                    value={text}
+                    suffix="KG"
                     title={isCargoOutboundOrLater(record) ? '货物已出库，重量不可修改' : undefined}
-                >{text ? text + 'KG' : ''}</Typography.Text>
+                />
             }
         },
         {
@@ -860,9 +1001,7 @@ export default function OrderDetail() {
             ellipsis: false,
             editable: true,
             width: 150,
-            render(text, _, i) {
-                return text && <Typography.Text copyable={true} key={i}>{text}</Typography.Text>
-            }
+            render: (text) => <CargoText value={text} />
         },
         {
             title: '状态',
@@ -875,7 +1014,7 @@ export default function OrderDetail() {
                 if (record?.packing_list_uid) {
                     const cargoStatus = Number(record?.status || 0);
                     if (cargoStatus !== 1) {
-                        return <Badge status={'processing'} text={'待出库'} />;
+                        return <Tooltip title="待出库"><Badge status={'processing'} text={'待出库'} /></Tooltip>;
                     }
 
                     // For shipped packing-list boxes, prefer latest 17track status when available.
@@ -911,7 +1050,7 @@ export default function OrderDetail() {
                     } title={<Typography.Text level={5}>{_trackStatus.title}</Typography.Text>} placement="top">
                         <Button type={"text"} style={{ padding: "unset", background: "transparent" }}><MyBadge /></Button>
                     </Popover>
-                    : (<MyBadge />)
+                    : (<Tooltip title={_trackStatus.badgeText} styles={{ body: fieldTooltipStyle }}><span><MyBadge /></span></Tooltip>)
                 // return text === 0 ? <Badge status={'default'} text={'在库'}/> :
                 //     <Badge status={'success'} text={<Typography.Text>出库</Typography.Text>} style={{cursor: "pointer"}} onClick={() =>
                 //     {window.open("https://t.17track.net/zh-cn#nums="+record['waybill_id'])}}/>
@@ -923,19 +1062,19 @@ export default function OrderDetail() {
             key: 'date',
             dataIndex: 'date',
             width: 200,
-            render: (text, record, i) => text && <Typography.Text copyable key={i}>{text}</Typography.Text>
+            render: (text) => <CargoText value={text} />
         }, {
             title: '创建日期',
             key: 'create_date',
             dataIndex: 'create_date',
             width: 200,
-            render: (text, record, i) => text && <Typography.Text copyable key={i}>{text}</Typography.Text>
+            render: (text) => <CargoText value={text} />
         }, {
             title: '更新日期',
             key: 'update_date',
             dataIndex: 'update_date',
             width: 200,
-            render: (text, record, i) => text && <Typography.Text copyable key={i}>{text}</Typography.Text>
+            render: (text) => <CargoText value={text} />
         },
         {
             title: '操作',
@@ -943,13 +1082,15 @@ export default function OrderDetail() {
             dataIndex: '',
             fixed: 'right',
             align: 'center',
-            width: 140,
+            width: 230,
             render(_, record) {
                 const editable = isEditing(record);
+                const removalBlocked = cargoRemovalBlocked(record);
                 return editable ? (
                     <Space size={'middle'}>
                         <Button type={'text'}
                             onClick={() => save(record.uid)}
+                            disabled={generatingNumbers.has(generationKey(record))}
                             style={{
                                 color: "#1677FF"
                             }}
@@ -965,12 +1106,19 @@ export default function OrderDetail() {
                             title="移除包裹关联"
                             description="你确认要将该包裹从当前订单中移除吗？"
                             onConfirm={() => handleDeleteCargo([record.uid])}
+                            disabled={!editPolicy.box_membership || removalBlocked}
                             okText="确认移除"
                             cancelText="取消"
                         >
-                            <Button type={'text'} danger disabled={!editPolicy.box_membership}>移除</Button>
+                            <Tooltip title={removalBlocked ? removalBlockedMessage : undefined}>
+                                <span><Button type={'text'} danger disabled={!editPolicy.box_membership || removalBlocked}>移除</Button></span>
+                            </Tooltip>
                         </Popconfirm>
-                        <Button type={'text'} style={{ color: "#1677FF" }} disabled={editingKey !== '' || !canEditCargoRecord(record)}
+                        {removalBlocked && canUndoOutbound && <Popconfirm title="撤销包裹出库" description="将包裹重新入库并清空转单号，原出库和成本历史保留。撤销后可移除包裹。"
+                            onConfirm={() => handleUndoOutbound(record)} okText="确认撤销" cancelText="取消" disabled={!!undoingCargoUid}>
+                            <Button type="text" loading={undoingCargoUid === record.uid} disabled={!!undoingCargoUid}>撤销出库</Button>
+                        </Popconfirm>}
+                        <Button type={'text'} style={{ color: "#1677FF" }} disabled={editingKey !== '' || !canEditCargoRecord(record) || generatingNumbers.has(generationKey(record))}
                             onClick={() => edit(record)}>
                             编辑
                         </Button>
@@ -992,8 +1140,12 @@ export default function OrderDetail() {
                     dataIndex: col.dataIndex,
                     title: col.title,
                     editing: isEditing(record) && fieldEditable,
+                    generateButton: col.dataIndex === 'transfer_id' ? renderCargoNumberGeneration(record) : null,
+                    generatingNumber: col.dataIndex === 'transfer_id' && generatingNumbers.has(generationKey(record)),
                     onEnter: async (flag) => {
+                        if (cargoSaveInFlightRef.current.has(record.uid)) return;
                         await save(record.uid);
+                        if (cargoSaveInFlightRef.current.has(record.uid)) return;
                         focusFlag = flag;
                         const index = cargoData.findIndex((item) => record.uid === item.uid);
                         if (index > -1 && index < cargoData.length - 1) {
@@ -1036,6 +1188,10 @@ export default function OrderDetail() {
             messageX.warning('未找到可移除的包裹');
             return;
         }
+        if (cargoData.some(record => record_ids.includes(record.uid) && cargoRemovalBlocked(record))) {
+            messageX.warning(removalBlockedMessage);
+            return;
+        }
 
         const result = await (await fetch(`${endpoint}/cargo/unbind`, {
             headers: getSafeHeader(),
@@ -1055,6 +1211,23 @@ export default function OrderDetail() {
         messageX.success(`已从订单移除 ${successIds.length} 个包裹`);
         await markVersionChanged();
     }
+
+    const handleUndoOutbound = async record => {
+        if (!canUndoOutbound || undoingCargoUid) return;
+        setUndoingCargoUid(record.uid);
+        try {
+            const response = await fetch(`${endpoint}/cargo/${record.uid}/undo-outbound`, { method: 'POST', headers: getSafeHeader() });
+            const result = await response.json();
+            if (!response.ok || result.code !== 200) throw new Error(result.msg || '撤销出库失败');
+            messageX.success('已撤销出库，现在可以移除包裹');
+            await fetchCargoData();
+            await markVersionChanged();
+        } catch (error) {
+            messageX.error(error.message || '撤销出库失败');
+        } finally {
+            setUndoingCargoUid(null);
+        }
+    };
 
     const [count, setCount] = useState(1);//包装箱添加计数
     const handleAdd = async () => {
@@ -1133,11 +1306,16 @@ export default function OrderDetail() {
                 <Space style={{ marginBottom: '1rem' }} align="center" wrap size="small">
                     <Typography.Text strong>业务员：</Typography.Text>
                     {!salesmanEditing ? (
-                        <Input
-                            readOnly
-                            style={{ width: 240, height: 32 }}
-                            value={salesman ? `${salesman.name || '-'}${salesman.phone ? ` / ${salesman.phone}` : ''}` : '未分配'}
-                        />
+                        <Tooltip
+                            title={salesman ? `${salesman.name || '-'}${salesman.phone ? ` / ${salesman.phone}` : ''}` : '未分配'}
+                            styles={{ body: fieldTooltipStyle }}
+                        >
+                            <Input
+                                readOnly
+                                style={{ width: 240, height: 32 }}
+                                value={salesman ? `${salesman.name || '-'}${salesman.phone ? ` / ${salesman.phone}` : ''}` : '未分配'}
+                            />
+                        </Tooltip>
                     ) : (
                         salesmanOptions.length > 0 ? (
                             <Select
@@ -1193,8 +1371,9 @@ export default function OrderDetail() {
                         <OrderReceiptButton
                             key={order_id}
                             orderUid={order_id}
-                            messageApi={messageX}
-                            onSuccess={markVersionChanged}
+                            orderNumber={descriptionData.order_id}
+                            customerId={descriptionData.customer_ids?.[0] || descriptionData.customer_id}
+                            customerName={descriptionData.customer_name}
                         />
                     )}
                     {canQuote && !salesmanEditing && (
@@ -1368,6 +1547,69 @@ export default function OrderDetail() {
                         }
                     };
 
+                    if (v.name === 'order_id') {
+                        const generating = generatingNumbers.has(generationKey());
+                        const saveOrderNumber = async () => {
+                            if (numberGenerationInFlightRef.current.has(generationKey()) || orderNumberSaving) return;
+                            setOrderNumberEditing(false);
+                            setOrderNumberSaving(true);
+                            try {
+                                await handleDescriptionDataChange(orderNumberDraft.trim());
+                            } finally {
+                                setOrderNumberSaving(false);
+                            }
+                        };
+                        return (
+                            <Descriptions.Item key={k} span={v.span || 1} label={v.label.split('/')[0]}>
+                                <Space wrap>
+                                    {orderNumberEditing ? (
+                                        <Input
+                                            autoFocus
+                                            aria-label="订单号"
+                                            value={orderNumberDraft}
+                                            readOnly={generating}
+                                            disabled={orderNumberSaving}
+                                            onChange={event => setOrderNumberDraft(event.target.value)}
+                                            onPressEnter={saveOrderNumber}
+                                            onBlur={event => {
+                                                if (event.relatedTarget?.closest('.myEditableCellInputIdToAvoidBlur')) return;
+                                                saveOrderNumber();
+                                            }}
+                                            onKeyDown={event => {
+                                                if (event.key === 'Escape') setOrderNumberEditing(false);
+                                            }}
+                                        />
+                                    ) : (
+                                        <DetailText
+                                            copyable={!!descriptionData.order_id}
+                                            editable={!canEditOrderField(v.name) || generating || orderNumberSaving ? false : {
+                                                onStart: () => {
+                                                    setOrderNumberDraft(descriptionData.order_id || '');
+                                                    setOrderNumberEditing(true);
+                                                },
+                                            }}
+                                        >{descriptionData.order_id}</DetailText>
+                                    )}
+                                    {orderNumberEditing && canGenerateNumbers && canEditOrderField(v.name) && (
+                                        <Tooltip title="随机生成并保存订单号">
+                                            <Button
+                                                type="text"
+                                                size="small"
+                                                icon={<ReloadOutlined />}
+                                                aria-label="生成订单号"
+                                                className="myEditableCellInputIdToAvoidBlur"
+                                                loading={generating}
+                                                disabled={generating || orderNumberSaving}
+                                                onMouseDown={event => event.preventDefault()}
+                                                onClick={() => generateNumber()}
+                                            />
+                                        </Tooltip>
+                                    )}
+                                </Space>
+                            </Descriptions.Item>
+                        );
+                    }
+
                     if (v.name === 'transportation') {
                         return (
                             <Descriptions.Item key={k} span={v.span || 1} label={v.label.split('/')[0]}>
@@ -1379,12 +1621,12 @@ export default function OrderDetail() {
                                         defaultValue={specialFieldDraft}
                                     />
                                 ) : (
-                                    <Typography.Text
+                                    <DetailText
                                         copyable={!!descriptionData[v.name]}
                                         editable={canEditOrderField(v.name) ? { onStart: beginSpecialFieldEdit } : false}
                                     >
                                         {descriptionData[v.name]}
-                                    </Typography.Text>
+                                    </DetailText>
                                 )}
                             </Descriptions.Item>
                         );
@@ -1413,14 +1655,14 @@ export default function OrderDetail() {
                                         notFoundContent={customsCodesLoading ? '加载中...' : '未找到匹配的海关编码'}
                                     />
                                 ) : (
-                                    <Typography.Text
+                                    <DetailText
                                         copyable={!!descriptionData[v.name]}
                                         editable={canEditOrderField(v.name) ? {
                                             onStart: () => setTransportationEditing(v.name),
                                         } : false}
                                     >
                                         {descriptionData[v.name]}
-                                    </Typography.Text>
+                                    </DetailText>
                                 )}
                             </Descriptions.Item>
                         );
@@ -1436,22 +1678,22 @@ export default function OrderDetail() {
                                     defaultValue={specialFieldDraft} />
                             ) : (
                                 <>
-                                    <Typography.Text
+                                    <DetailText
                                         copyable={!!descriptionData[v.name]}
                                         editable={canEditOrderField(v.name) ? {
                                             onStart: beginSpecialFieldEdit,
-                                        } : false}>{descriptionData[v.name]}</Typography.Text>{descriptionData[v.name] &&
+                                        } : false}>{descriptionData[v.name]}</DetailText>{descriptionData[v.name] &&
                                             <span>{v.name === 'total_weight' ? 'kg' : ''}</span>}
                                 </>
                             )}
                         </Descriptions.Item>
                     ) : (
                         <Descriptions.Item key={k} span={v.span || 1} label={v.label.split('/')[0]}>
-                            <Typography.Text
+                            <DetailText
                                 copyable={!!descriptionData[v.name]}
                                 editable={!canEditOrderField(v.name) ? false : {
                                     onChange: handleDescriptionDataChange,
-                                }}>{descriptionData[v.name]}</Typography.Text>{descriptionData[v.name] &&
+                                }}>{descriptionData[v.name]}</DetailText>{descriptionData[v.name] &&
                                     <span>{v.name === 'total_weight' ? 'kg' : ''}</span>}
                         </Descriptions.Item>
                     )
@@ -1460,16 +1702,16 @@ export default function OrderDetail() {
                     <>
                         <Descriptions.Item label="客户手机号">
                             {customerContactLoading ? '加载中...' : (
-                                <Typography.Text copyable={!!customerContact.phone}>
-                                    {customerContact.phone || '-'}
-                                </Typography.Text>
+                                <DetailText copyable={!!displayedCustomerContact.phone}>
+                                    {displayedCustomerContact.phone || '-'}
+                                </DetailText>
                             )}
                         </Descriptions.Item>
                         <Descriptions.Item label="客户微信">
                             {customerContactLoading ? '加载中...' : (
-                                <Typography.Text copyable={!!customerContact.wechat}>
-                                    {customerContact.wechat || '-'}
-                                </Typography.Text>
+                                <DetailText copyable={!!displayedCustomerContact.wechat}>
+                                    {displayedCustomerContact.wechat || '-'}
+                                </DetailText>
                             )}
                         </Descriptions.Item>
                     </>
@@ -1498,12 +1740,15 @@ export default function OrderDetail() {
                         title={`批量移除 ${selectedKeys.length} 个包裹`}
                         description="确认将选中的包裹从当前订单移除吗？"
                         onConfirm={() => handleDeleteCargo(selectedKeys)}
+                        disabled={!editPolicy.box_membership || selectedRemovalBlocked}
                         okText="确认移除"
                         cancelText="取消"
                     >
-                        <Button danger icon={<DeleteOutlined />} disabled={!editPolicy.box_membership}>
-                            批量移除（{selectedKeys.length}）
-                        </Button>
+                        <Tooltip title={selectedRemovalBlocked ? '所选包裹包含已出库记录，请先撤销出库后再批量移除' : undefined}>
+                            <span><Button danger icon={<DeleteOutlined />} disabled={!editPolicy.box_membership || selectedRemovalBlocked}>
+                                批量移除（{selectedKeys.length}）
+                            </Button></span>
+                        </Tooltip>
                     </Popconfirm>
                 )}
             </Space>

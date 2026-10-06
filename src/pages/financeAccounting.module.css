@@ -1,0 +1,110 @@
+.accounting,
+.panel {
+    min-width: 0;
+}
+
+.panelHead,
+.toolbar,
+.reportHeading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px;
+}
+
+.panelHead,
+.toolbar {
+    margin-bottom: 16px;
+}
+
+.panelTitle {
+    margin: 0 !important;
+}
+
+.panelBody {
+    min-width: 0;
+}
+
+.openingNotice {
+    margin-bottom: 8px;
+}
+
+.sectionNav {
+    margin-top: 8px;
+}
+
+.subtitle {
+    margin-bottom: 16px !important;
+}
+
+.setupForm {
+    max-width: 720px;
+}
+
+.formGrid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-gap: 16px;
+}
+
+.formGrid :global(.ant-input-number) {
+    width: 100%;
+}
+
+.lineForm {
+    margin-bottom: 20px;
+}
+
+.lineForm .formGrid {
+    grid-template-columns: minmax(0, 2fr) minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr);
+}
+
+.formSummary {
+    display: flex;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    gap: 20px;
+    margin-top: 16px;
+}
+
+.amount {
+    white-space: nowrap;
+}
+
+.error {
+    margin-bottom: 12px;
+}
+
+.footnote {
+    margin: 12px 0;
+}
+
+.reportHeading {
+    align-items: baseline;
+    margin: 8px 0 20px;
+}
+
+.reportHeading > div {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+@media (max-width: 760px) {
+    .lineForm .formGrid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
+@media (max-width: 520px) {
+    .formGrid,
+    .lineForm .formGrid {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .formSummary {
+        justify-content: flex-start;
+        gap: 12px;
+    }
+}

@@ -2,7 +2,15 @@
 
 **Base URL:** `http://localhost:5001`
 
-**版本:** 1.17
+**版本:** 1.30
+
+财务新接口与迁移说明见 [API v1.20 财务](../../wms_backend/doc/API-v1.20-finance.md)。
+
+统一业务收付款见 [API v1.22](../../wms_backend/doc/API-v1.22-customer-payments.md)，订单应收和核销见 [API v1.23](../../wms_backend/doc/API-v1.23-order-settlement.md)，包裹撤销出库及移除保护见 [API v1.21](../../wms_backend/doc/API-v1.21-outbound-removal.md)。旧 `POST /api/receipts` 已停用，历史只读及剩余审核保留。
+
+装箱单出货确认单与草稿见 [API v1.27](../../wms_backend/doc/API-v1.27-packing-shipping-drafts.md)，收据备注装箱单箱子与订单核销见 [API v1.28](../../wms_backend/doc/API-v1.28-receipt-packing-boxes.md)，批量生成原单号及 `XD8xxxxxxxxL` 格式见 [API v1.29](../../wms_backend/doc/API-v1.29-packing-original-numbers.md)。
+
+纸质单上传前检查、本人未完成上传及出货确认单草稿独立页面见 [API v1.30](../../wms_backend/doc/API-v1.30-uploader-check-and-shipping-drafts-page.md)。
 
 ---
 
@@ -683,7 +691,9 @@ x-token: <JWT_TOKEN>
 - `transfer_id`：原单号。
 - `waybill_id`：转单号（运单号）。
 
-箱子一旦出库，箱号和原单号固定，撤销出库后也不能修改。箱子响应 `identity_editable=false` 时这两个字段只读且保存时不提交，当前出库/后续状态也作只读兜底；转单号仍按角色权限编辑。装箱单操作栏允许管理员和店长通过 `POST /api/box/<uid>/undo-ship` 撤销出库，确认后刷新箱子列表；恢复待出库、清空转单号和出库时间，保留订单归属、原单号与历史记录。操作区每行两个按钮：第一行“编辑、撤销出库”，第二行“归档、删除”；归档带垃圾桶图标，删除无图标。
+箱子一旦出库，箱号固定，撤销出库后也不能修改。箱号由响应 `identity_editable` 控制；原单号单独由 `original_number_editable` 控制，当前出库/后续状态或仍有出库时间时只读，撤销出库并恢复待出库后允许修改。字段只读时保存不提交；转单号仍按角色权限编辑。旧响应缺少 `original_number_editable` 时回落到 `identity_editable`。装箱单操作栏允许管理员和店长通过 `POST /api/box/<uid>/undo-ship` 撤销出库，确认后刷新箱子列表；恢复待出库、清空转单号和出库时间，保留订单归属、原单号与历史记录。操作区每行两个按钮：第一行“编辑、撤销出库”，第二行“归档、删除”；归档带垃圾桶图标，删除无图标。
+
+订单详情中的订单号、原单号随机生成入口仅在对应字段进入编辑状态后显示，使用刷新图标，Tooltip 提示“随机生成并保存订单号”或“随机生成并保存原单号”。点击后调用 `POST /api/orders/<uid>/generate-order-number` 或 `POST /api/orders/<uid>/cargo/<cargo_uid>/generate-original-number`，以已保存编号作为 `expected_value`；成功后立即更新已保存编号和编辑草稿，原单号生成保留该行其他未保存字段。查看状态、进入编辑和取消编辑均不会触发生成；生成期间禁止重复生成和旧编号保存。
 
 ---
 
@@ -1228,6 +1238,14 @@ x-token: <JWT_TOKEN>
 管理员进入收款管理时，业务员筛选默认选择本人，可清空查看全部或切换其他业务员。筛选位于页签上方，适用于可收款订单、待处理差价及收款单记录。`owner_id` 在订单和差价列表按当前有效报价人筛选，在 `GET /api/receipts` 按收款单创建人筛选；管理员代登记的收据归创建该单的管理员。业务员的范围继续由服务端限制，传入他人的 `owner_id` 不会扩大权限。
 
 ## 7. 其他
+
+### 客户管理与订单联系方式
+
+业务员可进入「客户管理」，`GET /api/customers_detail` 由服务端限定为本人创建的客户；修改、删除和单笔客户详情接口也校验客户创建人。管理员和店长沿用全部客户权限。
+
+订单详情的「客户手机号」「客户微信」仅对管理员、店长或当前订单业务员显示。通过 `GET /api/orders/<uid>/customer-contact` 获取联系方式，由服务端校验订单当前业务员和实际关联客户；业务员不要求是该客户创建人。切换客户、重新分配业务员或请求失败时清理旧联系方式，忽略已失效请求的返回结果。
+
+新客户由后端自动记录创建账号；历史客户创建人未知时仅管理角色可在客户管理中看到，本人订单仍可通过订单接口读取联系方式。发布前需完成相应 Alembic 迁移。
 
 ### 7.1 获取客户端 IP
 

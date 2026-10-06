@@ -110,8 +110,9 @@ test('the receivable ledger exposes stable targets for filters, totals and detai
     await waitFor(() => expect(global.fetch).toHaveBeenCalled());
     const ledgerRequest = global.fetch.mock.calls.find(([url]) => url.includes('/finance/accounts-receivable'))?.[0];
     const params = new URLSearchParams(ledgerRequest.split('?')[1]);
-    expect(params.has('date_from')).toBe(true);
-    expect(params.has('date_to')).toBe(true);
+    // An unrestricted initial range keeps prior-month arrears visible.
+    expect(params.has('date_from')).toBe(false);
+    expect(params.has('date_to')).toBe(false);
     expect(params.has('as_of')).toBe(false);
     expect(screen.getByPlaceholderText('开始日期')).toBeInTheDocument();
     expect(screen.getByPlaceholderText('结束日期')).toBeInTheDocument();

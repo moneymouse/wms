@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { createMemoryRouter, RouterProvider } from 'react-router-dom';
-import Intakes, { IntakeDetail, PaperIntakeUpload } from './intakes';
+import { PaperIntakeUploadDetail, PaperIntakeUpload } from './intakes';
 import { getIntakeRoles, normalizeIntakeDraft, validateIntakeDraft } from '../common/intakeApi';
 
 const initialRecord = {
@@ -21,10 +21,9 @@ let failSave;
 const response = data => ({ ok: true, json: async () => ({ code: 200, data }) });
 const mutationCalls = action => global.fetch.mock.calls.filter(([url, options]) => String(url).endsWith(`/${action}`) && options.method !== 'GET');
 
-function renderPage(initialPath = '/intakes/intake-1', onSubmitted) {
+function renderPage(initialPath = '/packing-list/upload/intake-1', onSubmitted) {
     const router = createMemoryRouter([
-        { path: '/intakes', element: <Intakes /> },
-        { path: '/intakes/:uid', element: <IntakeDetail /> },
+        { path: '/packing-list/upload/:uid', element: <PaperIntakeUploadDetail /> },
         { path: '/upload', element: <PaperIntakeUpload onSubmitted={onSubmitted} /> },
         { path: '/packing-lists', element: <div>装箱单列表</div> },
         { path: '/packing-lists/:uid', element: <div>装箱单详情</div> },
@@ -42,7 +41,7 @@ beforeEach(() => {
         const url = String(rawUrl);
         if (url.endsWith('/workers')) return response([{ id: 1, name: '张师傅' }, { id: 2, name: '李师傅' }, { id: 3, name: '王师傅' }]);
         if (url.includes('/photos/')) return { ok: true, blob: async () => new Blob(['paper']) };
-        if (url.includes('?status=')) return response({ items: [record], total: 1, page_size: 20 });
+        if (url.includes('/my-packing-lists?')) return response({ items: [], total: 0, page_size: 20 });
         if (url.endsWith('/draft')) {
             if (failSave) return { ok: false, json: async () => ({ code: 409, msg: '草稿保存失败' }) };
             const body = JSON.parse(options.body);
@@ -64,32 +63,51 @@ beforeEach(() => {
 
 afterEach(() => { localStorage.clear(); jest.restoreAllMocks(); jest.useRealTimers(); });
 
-test('worker photo-only upload is embedded, keeps optional metadata collapsed and never opens recognition details', async () => {
+test('workers check recognition before upload completion and finish only after acknowledging the paper', async () => {
+    jest.useFakeTimers();
     localStorage.setItem('jwt', `header.${btoa(JSON.stringify({ roles: ['worker'] }))}.signature`);
-    record.recognition_status = 'running';
+    record = { ...record, recognition_status: 'running', draft_is_manual: false, draft: { mark: '', boxes: [] } };
     const onSubmitted = jest.fn();
     const view = renderPage('/upload', onSubmitted);
     expect(screen.getByLabelText('唛头提示')).not.toBeVisible();
     const photo = new File(['image'], 'paper.jpg', { type: 'image/jpeg' });
     fireEvent.change(screen.getByLabelText('纸单照片'), { target: { files: [photo] } });
-    fireEvent.click(screen.getByRole('button', { name: /提交照片/ }));
-    await screen.findByText('照片已提交');
+    fireEvent.click(screen.getByRole('button', { name: /识别照片并检查/ }));
+    await screen.findByText('正在识别');
     const call = global.fetch.mock.calls.find(([, options]) => options.method === 'POST');
     expect(call[1].body.getAll('photos')).toEqual([photo]);
     expect(call[1].body.has('mark_hint')).toBe(false);
     expect(call[1].headers['x-token']).toEqual(localStorage.getItem('jwt'));
     expect(call[1].headers).not.toHaveProperty('Content-Type');
-    expect(onSubmitted).toHaveBeenCalledWith(record);
+    expect(onSubmitted).not.toHaveBeenCalled();
+    expect(screen.queryByText('照片已提交')).not.toBeInTheDocument();
+    expect(screen.getByRole('checkbox', { name: /我已对照纸质单/ })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /核对完成并上传/ })).toBeDisabled();
+    record = { ...record, version: 2, recognition_status: 'succeeded', recognition_result: candidate };
+    await act(async () => { jest.advanceTimersByTime(3000); });
+    await screen.findByDisplayValue('OCR-MARK');
+    expect(screen.getByRole('button', { name: /核对完成并上传/ })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText('第1箱重量'), { target: { value: '2.5' } });
+    fireEvent.click(screen.getByRole('checkbox', { name: /我已对照纸质单/ }));
+    fireEvent.click(screen.getByRole('button', { name: /核对完成并上传/ }));
+    await screen.findByRole('link', { name: '查看装箱单' });
+    expect(JSON.parse(mutationCalls('draft')[0][1].body)).toMatchObject({ draft: { mark: 'OCR-MARK', boxes: [{ weight: 2.5 }] } });
+    expect(JSON.parse(mutationCalls('confirm')[0][1].body)).toEqual({ version: 3, reviewed: true });
+    expect(onSubmitted).toHaveBeenCalledTimes(1);
+    expect(onSubmitted).toHaveBeenCalledWith(expect.objectContaining({ status: 'confirmed', packing_list_uid: 'packing-1' }));
     expect(view.state.location.pathname).toBe('/upload');
-    expect(screen.queryByText('正在识别')).not.toBeInTheDocument();
-    expect(screen.queryByText('待核对纸质单')).not.toBeInTheDocument();
-    expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(screen.getByText('已核对')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /上传下一份/ }));
+    expect(screen.getByRole('button', { name: /识别照片并检查/ })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /核对完成并上传/ })).not.toBeInTheDocument();
+    expect(screen.queryByText(/已选择/)).not.toBeInTheDocument();
 });
 
 test('workers download a real PDF template using authenticated API access from the upload page', async () => {
     localStorage.setItem('jwt', `header.${btoa(JSON.stringify({ roles: ['worker'] }))}.signature`);
     const pdf = new Blob(['%PDF-1.4\nA4 paper template'], { type: 'application/pdf' });
-    global.fetch.mockResolvedValueOnce({ ok: true, headers: { get: () => 'application/pdf' }, blob: async () => pdf });
+    const fetchImpl = global.fetch.getMockImplementation();
+    global.fetch.mockImplementation((url, options) => String(url).endsWith('/template') ? Promise.resolve({ ok: true, headers: { get: () => 'application/pdf' }, blob: async () => pdf }) : fetchImpl(url, options));
     const downloadClick = jest.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
     const view = renderPage('/upload');
     fireEvent.click(screen.getByRole('button', { name: '下载空白装箱单模板' }));
@@ -108,7 +126,8 @@ test.each([
     ['empty PDF', { ok: true, headers: { get: () => 'application/pdf' }, blob: async () => new Blob([], { type: 'application/pdf' }) }, '模板文件为空，请重试'],
     ['HTML login response', { ok: true, headers: { get: () => 'text/html' }, blob: async () => new Blob(['<html>Login</html>'], { type: 'text/html' }) }, '模板文件不可用，请重试'],
 ])('template download rejects %s without producing an empty or invalid download', async (_, templateResponse, errorText) => {
-    global.fetch.mockResolvedValueOnce(templateResponse);
+    const fetchImpl = global.fetch.getMockImplementation();
+    global.fetch.mockImplementation((url, options) => String(url).endsWith('/template') ? Promise.resolve(templateResponse) : fetchImpl(url, options));
     const downloadClick = jest.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
     renderPage('/upload');
     fireEvent.click(screen.getByRole('button', { name: '下载空白装箱单模板' }));
@@ -136,10 +155,32 @@ test('camera and picker append photos, preview them and submit only retained pho
     expect(within(dialog).getByRole('img', { name: 'first.jpg预览' })).toHaveAttribute('src', 'blob:paper');
     fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }));
     fireEvent.click(screen.getByRole('button', { name: '移除第2张照片' }));
-    fireEvent.click(screen.getByRole('button', { name: /提交照片/ }));
-    await screen.findByText('照片已提交');
+    fireEvent.click(screen.getByRole('button', { name: /识别照片并检查/ }));
+    await screen.findByRole('heading', { name: /检查纸质装箱单/ });
     const call = global.fetch.mock.calls.find(([, options]) => options.method === 'POST');
     expect(call[1].body.getAll('photos')).toEqual([first, third]);
+});
+
+test('photo staging failure preserves selected files and can be retried before checking', async () => {
+    let failUpload = true;
+    const fetchImpl = global.fetch.getMockImplementation();
+    global.fetch.mockImplementation((url, options = {}) => String(url).endsWith('/intakes') && options.method === 'POST' && failUpload
+        ? Promise.resolve({ ok: false, json: async () => ({ code: 503, msg: '照片上传失败，请重试' }) }) : fetchImpl(url, options));
+    const onSubmitted = jest.fn();
+    renderPage('/upload', onSubmitted);
+    const photo = new File(['image'], 'retain.jpg', { type: 'image/jpeg' });
+    fireEvent.change(screen.getByLabelText('纸单照片'), { target: { files: [photo] } });
+    fireEvent.click(screen.getByRole('button', { name: /识别照片并检查/ }));
+    await screen.findByText('照片上传失败，请重试');
+    expect(screen.getByText('已选择 1 / 8 张，合计 0.0 MB')).toBeInTheDocument();
+    expect(onSubmitted).not.toHaveBeenCalled();
+    failUpload = false;
+    fireEvent.click(screen.getByRole('button', { name: /识别照片并检查/ }));
+    await screen.findByDisplayValue('MARK-1');
+    const uploads = global.fetch.mock.calls.filter(([url, options]) => String(url).endsWith('/intakes') && options.method === 'POST');
+    expect(uploads).toHaveLength(2);
+    expect(uploads[1][1].body.getAll('photos')).toEqual([photo]);
+    expect(onSubmitted).not.toHaveBeenCalled();
 });
 
 test('photo count and size limits reject additions without removing the current selection', () => {
@@ -169,23 +210,30 @@ test('total upload size stays below twenty-four MB', () => {
     expect(screen.getByText('已选择 2 / 8 张，合计 20.0 MB')).toBeInTheDocument();
 });
 
-test.each(['/intakes', '/intakes/intake-1'])('worker direct access to %s redirects to packing lists without fetching recognition', async route => {
-    localStorage.setItem('jwt', `header.${btoa(JSON.stringify({ roles: ['worker'] }))}.signature`);
-    const view = renderPage(route);
-    await screen.findByText('装箱单列表');
-    expect(view.state.location.pathname).toBe('/packing-lists');
-    expect(global.fetch).not.toHaveBeenCalled();
+test('all uploader roles can resume their own unfinished paper through the creation page', async () => {
+    localStorage.setItem('jwt', `header.${btoa(JSON.stringify({ roles: ['salesperson'] }))}.signature`);
+    const fetchImpl = global.fetch.getMockImplementation();
+    global.fetch.mockImplementation((url, options) => String(url).includes('/my-packing-lists?') ? Promise.resolve(response({ items: [{ uid: 'intake-1', mark: 'MY-UPLOAD', box_count: 2, created_at: '2026-10-01 10:00:00' }], total: 21 })) : fetchImpl(url, options));
+    const view = renderPage('/upload');
+    const section = await screen.findByRole('region', { name: '我的未完成上传' });
+    expect(await within(section).findByRole('link', { name: '继续检查并上传' })).toHaveAttribute('href', '/packing-list/upload/intake-1');
+    fireEvent.click(within(section).getByTitle('2'));
+    await waitFor(() => expect(global.fetch.mock.calls.some(([url]) => String(url).includes('status=uploading&page=2&page_size=20'))).toBe(true));
+    fireEvent.click(await within(section).findByRole('link', { name: '继续检查并上传' }));
+    await screen.findByDisplayValue('MARK-1');
+    expect(view.state.location.pathname).toBe('/packing-list/upload/intake-1');
+    expect(screen.queryByText('待核对纸质单')).not.toBeInTheDocument();
 });
 
-test('the reviewer list contains only pending papers and mark search, with no upload form', async () => {
-    renderPage('/intakes');
-    await screen.findByRole('link', { name: 'MARK-1' });
-    expect(screen.getByRole('heading', { name: '待核对纸质单' })).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: '返回装箱单列表' })).toHaveAttribute('href', '/packing-lists');
-    expect(screen.queryByRole('button', { name: /提交照片/ })).not.toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText('按唛头查找纸单'), { target: { value: ' ABC/01 ' } });
-    fireEvent.click(screen.getByRole('button', { name: /查\s*找/ }));
-    await waitFor(() => expect(global.fetch.mock.calls.some(([url]) => String(url).includes('?status=pending&page=1&mark=ABC%2F01'))).toBe(true));
+test('owner access denied by the server cannot expose another uploader paper or complete it', async () => {
+    const fetchImpl = global.fetch.getMockImplementation();
+    global.fetch.mockImplementation((url, options) => String(url).endsWith('/intakes/intake-1') ? Promise.resolve({ ok: false, json: async () => ({ code: 403, msg: '仅上传者可继续检查此纸单' }) }) : fetchImpl(url, options));
+    renderPage();
+    await screen.findByText('仅上传者可继续检查此纸单');
+    expect(screen.queryByLabelText('第1箱品名')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /核对完成并上传/ })).not.toBeInTheDocument();
+    expect(global.fetch.mock.calls.some(([url]) => String(url).includes('/photos/'))).toBe(false);
+    expect(mutationCalls('confirm')).toHaveLength(0);
 });
 
 test('untouched first review puts recognition straight into the editable table with matched workers', async () => {
@@ -197,7 +245,8 @@ test('untouched first review puts recognition straight into the editable table w
     expect(screen.queryByText('识别候选内容')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /填入核对表/ })).not.toBeInTheDocument();
     expect(mutationCalls('draft')).toHaveLength(0);
-    await waitFor(() => expect(screen.getByRole('button', { name: /确认生成装箱单/ })).not.toBeDisabled());
+    fireEvent.click(screen.getByRole('checkbox', { name: /我已对照纸质单/ }));
+    await waitFor(() => expect(screen.getByRole('button', { name: /核对完成并上传/ })).not.toBeDisabled());
 });
 
 test('an existing saved manual draft stays authoritative over recognition', async () => {
@@ -254,52 +303,55 @@ test('doubt messages use one bounded scroll region and concise list items', asyn
     expect(css).toMatch(/\.warningScroll\s*\{[^}]*height:\s*132px;[^}]*overflow-y:\s*auto;/);
 });
 
-test('the primary confirmation action saves edits first and confirms using the returned version', async () => {
+test('the primary completion action requires a fresh acknowledgement and uses the saved version', async () => {
     renderPage();
     await screen.findByDisplayValue('MARK-1');
-    fireEvent.change(screen.getByLabelText('唛头'), { target: { value: 'EDITED-MARK' } });
-    const mainAction = screen.getByRole('button', { name: /确认生成装箱单/ });
+    const mainAction = screen.getByRole('button', { name: /核对完成并上传/ });
+    const acknowledgement = screen.getByRole('checkbox', { name: /我已对照纸质单/ });
     expect(mainAction).toHaveClass('ant-btn-primary');
-    expect(screen.getByRole('button', { name: /保存草稿/ })).not.toHaveClass('ant-btn-primary');
+    expect(mainAction).toBeDisabled();
+    fireEvent.click(acknowledgement);
     expect(mainAction).not.toBeDisabled();
+    fireEvent.change(screen.getByLabelText('唛头'), { target: { value: 'EDITED-MARK' } });
+    expect(acknowledgement).not.toBeChecked();
+    expect(mainAction).toBeDisabled();
+    fireEvent.click(acknowledgement);
     fireEvent.click(mainAction);
-    const dialog = await screen.findByRole('dialog', { name: '确认生成装箱单' });
-    expect(within(dialog).getByText(/先保存当前核对内容/)).toBeInTheDocument();
-    fireEvent.click(within(dialog).getByRole('button', { name: /^确认生成$/ }));
-    await screen.findByRole('link', { name: '查看生成的装箱单' });
+    await screen.findByRole('link', { name: '查看装箱单' });
     expect(JSON.parse(mutationCalls('draft')[0][1].body)).toMatchObject({ version: 1, draft: { mark: 'EDITED-MARK', worker_ids: [1] } });
-    expect(JSON.parse(mutationCalls('confirm')[0][1].body)).toEqual({ version: 2 });
+    expect(JSON.parse(mutationCalls('confirm')[0][1].body)).toEqual({ version: 2, reviewed: true });
     expect(screen.getByLabelText('唛头')).toBeDisabled();
 });
 
-test('if saving before confirmation fails, confirmation does not run and edits remain', async () => {
+test('save failure keeps edits and does not finish upload', async () => {
     failSave = true;
     renderPage();
     await screen.findByDisplayValue('MARK-1');
     fireEvent.change(screen.getByLabelText('唛头'), { target: { value: 'UNSAVED' } });
-    fireEvent.click(screen.getByRole('button', { name: /确认生成装箱单/ }));
-    const dialog = await screen.findByRole('dialog', { name: '确认生成装箱单' });
-    fireEvent.click(within(dialog).getByRole('button', { name: /^确认生成$/ }));
-    await within(dialog).findByText('草稿保存失败');
+    fireEvent.click(screen.getByRole('checkbox', { name: /我已对照纸质单/ }));
+    fireEvent.click(screen.getByRole('button', { name: /核对完成并上传/ }));
+    await screen.findByText('草稿保存失败');
     expect(mutationCalls('confirm')).toHaveLength(0);
     expect(screen.getByLabelText('唛头')).toHaveValue('UNSAVED');
+    expect(screen.queryByRole('link', { name: '查看装箱单' })).not.toBeInTheDocument();
 });
 
-test('a confirmation failure after saving permits retry with the latest saved version', async () => {
+test('confirmation failure permits retry with the latest saved version', async () => {
     failConfirm = true;
     renderPage();
     await screen.findByDisplayValue('MARK-1');
     fireEvent.change(screen.getByLabelText('唛头'), { target: { value: 'SAVED-EDIT' } });
-    fireEvent.click(screen.getByRole('button', { name: /确认生成装箱单/ }));
-    const dialog = await screen.findByRole('dialog', { name: '确认生成装箱单' });
-    fireEvent.click(within(dialog).getByRole('button', { name: /^确认生成$/ }));
-    await within(dialog).findByText('纸单已被更新，请重新加载');
+    fireEvent.click(screen.getByRole('checkbox', { name: /我已对照纸质单/ }));
+    fireEvent.click(screen.getByRole('button', { name: /核对完成并上传/ }));
+    await screen.findByText('纸单已被更新，请重新加载');
+    expect(screen.queryByRole('link', { name: '查看装箱单' })).not.toBeInTheDocument();
     failConfirm = false;
-    fireEvent.click(await within(dialog).findByRole('button', { name: /^确认生成$/ }));
-    await screen.findByRole('link', { name: '查看生成的装箱单' });
+    fireEvent.click(screen.getByRole('checkbox', { name: /我已对照纸质单/ }));
+    fireEvent.click(screen.getByRole('button', { name: /核对完成并上传/ }));
+    await screen.findByRole('link', { name: '查看装箱单' });
     expect(mutationCalls('draft')).toHaveLength(1);
     expect(mutationCalls('confirm')).toHaveLength(2);
-    expect(JSON.parse(mutationCalls('confirm')[1][1].body)).toEqual({ version: 2 });
+    expect(JSON.parse(mutationCalls('confirm')[1][1].body)).toEqual({ version: 2, reviewed: true });
 });
 
 test('unknown handwritten names require choosing real approved workers before confirmation', async () => {
@@ -307,12 +359,13 @@ test('unknown handwritten names require choosing real approved workers before co
     renderPage();
     await screen.findByDisplayValue('OCR-MARK');
     expect(screen.getByText(/纸面署名：纸上未知姓名/)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /确认生成装箱单/ })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /核对完成并上传/ })).toBeDisabled();
     await waitFor(() => expect(screen.getByRole('combobox', { name: '实际操作人员' })).not.toBeDisabled());
     fireEvent.mouseDown(screen.getByRole('combobox', { name: '实际操作人员' }));
     fireEvent.click(await screen.findByText('王师傅'));
-    expect(screen.getByRole('button', { name: /确认生成装箱单/ })).not.toBeDisabled();
-    fireEvent.click(screen.getByRole('button', { name: /保存草稿/ }));
+    fireEvent.click(screen.getByRole('checkbox', { name: /我已对照纸质单/ }));
+    expect(screen.getByRole('button', { name: /核对完成并上传/ })).not.toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: /保存检查进度/ }));
     await waitFor(() => expect(mutationCalls('draft')).toHaveLength(1));
     expect(JSON.parse(mutationCalls('draft')[0][1].body).draft).toMatchObject({ operator_name: '纸上未知姓名', worker_ids: [3] });
 });
@@ -321,7 +374,7 @@ test('missing or inactive worker IDs block confirmation', async () => {
     record.draft.worker_ids = [99];
     renderPage();
     await screen.findByText('人员 99（请重新选择）');
-    expect(screen.getByRole('button', { name: /确认生成装箱单/ })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /核对完成并上传/ })).toBeDisabled();
     expect(await screen.findByText(/存在已停用或未审核的人员/)).toBeInTheDocument();
 });
 
@@ -332,7 +385,7 @@ test('approved workers with the same name are distinguished by their real IDs', 
     await screen.findByText('张师傅 · ID 1');
     fireEvent.mouseDown(screen.getByRole('combobox', { name: '实际操作人员' }));
     fireEvent.click(await screen.findByText('张师傅 · ID 2'));
-    fireEvent.click(screen.getByRole('button', { name: /保存草稿/ }));
+    fireEvent.click(screen.getByRole('button', { name: /保存检查进度/ }));
     await waitFor(() => expect(mutationCalls('draft')).toHaveLength(1));
     expect(JSON.parse(mutationCalls('draft')[0][1].body).draft.worker_ids).toEqual([1, 2]);
 });
@@ -342,10 +395,10 @@ test('partial drafts save without a worker binding or complete box fields', asyn
     renderPage();
     await screen.findByDisplayValue('MARK-1');
     fireEvent.change(screen.getByLabelText('唛头'), { target: { value: '' } });
-    fireEvent.click(screen.getByRole('button', { name: /保存草稿/ }));
+    fireEvent.click(screen.getByRole('button', { name: /保存检查进度/ }));
     await waitFor(() => expect(mutationCalls('draft')).toHaveLength(1));
     expect(JSON.parse(mutationCalls('draft')[0][1].body).draft).toMatchObject({ mark: '', worker_ids: [] });
-    expect(screen.getByRole('button', { name: /确认生成装箱单/ })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /核对完成并上传/ })).toBeDisabled();
 });
 
 test('polling detects concurrent saved edits while preserving local content', async () => {
@@ -356,9 +409,9 @@ test('polling detects concurrent saved edits while preserving local content', as
     fireEvent.change(screen.getByLabelText('唛头'), { target: { value: 'LOCAL' } });
     record = { ...record, version: 2, draft: { ...record.draft, mark: 'OTHER' } };
     await act(async () => { jest.advanceTimersByTime(3000); });
-    await screen.findByText('纸单已被其他人更新，请重新加载后继续。当前核对内容已保留。');
+    await screen.findByText('纸单已在其他页面更新，请重新加载后继续。当前检查内容已保留。');
     expect(screen.getByLabelText('唛头')).toHaveValue('LOCAL');
-    expect(screen.getByRole('button', { name: /保存草稿/ })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /保存检查进度/ })).toBeDisabled();
 });
 
 test('a poll started before saving cannot overwrite the saved review', async () => {
@@ -372,7 +425,7 @@ test('a poll started before saving cannot overwrite the saved review', async () 
     global.fetch.mockImplementation((url, options = {}) => String(url).endsWith('/intakes/intake-1') && !options.method ? new Promise(resolve => { resolvePoll = resolve; }) : fetchImpl(url, options));
     await act(async () => { jest.advanceTimersByTime(3000); });
     fireEvent.change(screen.getByLabelText('唛头'), { target: { value: 'SAVED-MARK' } });
-    fireEvent.click(screen.getByRole('button', { name: /保存草稿/ }));
+    fireEvent.click(screen.getByRole('button', { name: /保存检查进度/ }));
     await waitFor(() => expect(mutationCalls('draft')).toHaveLength(1));
     await act(async () => { resolvePoll(response(stale)); });
     expect(screen.getByLabelText('唛头')).toHaveValue('SAVED-MARK');
@@ -389,6 +442,38 @@ test('failed recognition offers reviewer retry and photos download under their p
     expect(mutationCalls('recognize')).toHaveLength(1);
 });
 
+test('reloading locks review fields and ignores edits and confirmation until its delayed response arrives', async () => {
+    failSave = true;
+    renderPage();
+    await screen.findByDisplayValue('MARK-1');
+    fireEvent.change(screen.getByLabelText('唛头'), { target: { value: 'DISCARD-ME' } });
+    fireEvent.click(screen.getByRole('button', { name: /保存检查进度/ }));
+    await screen.findByText('草稿保存失败');
+    const fetchImpl = global.fetch.getMockImplementation();
+    let resolveReload;
+    global.fetch.mockImplementation((url, options = {}) => String(url).endsWith('/intakes/intake-1') && !options.method
+        ? new Promise(resolve => { resolveReload = resolve; }) : fetchImpl(url, options));
+    fireEvent.click(screen.getByRole('button', { name: /重新加载/ }));
+    const dialog = await screen.findByRole('dialog', { name: '重新加载纸单' });
+    fireEvent.click(within(dialog).getByRole('button', { name: /放弃修改并重新加载/ }));
+    expect(screen.getByLabelText('唛头')).toBeDisabled();
+    expect(screen.getByLabelText('第1箱品名')).toBeDisabled();
+    expect(screen.getByRole('combobox', { name: '实际操作人员' })).toBeDisabled();
+    expect(screen.getByRole('checkbox', { name: /我已对照纸质单/ })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /核对完成并上传/ })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText('唛头'), { target: { value: 'EDIT-DURING-RELOAD' } });
+    fireEvent.change(screen.getByLabelText('第1箱品名'), { target: { value: 'EDIT-DURING-RELOAD' } });
+    fireEvent.click(screen.getByRole('button', { name: /核对完成并上传/ }));
+    expect(screen.getByLabelText('唛头')).toHaveValue('DISCARD-ME');
+    expect(screen.getByLabelText('第1箱品名')).toHaveValue('鞋子');
+    expect(mutationCalls('confirm')).toHaveLength(0);
+    await act(async () => { resolveReload(response({ ...record, draft: { ...record.draft, mark: 'SERVER-MARK' } })); });
+    expect(await screen.findByDisplayValue('SERVER-MARK')).not.toBeDisabled();
+    expect(screen.getByRole('checkbox', { name: /我已对照纸质单/ })).not.toBeChecked();
+    fireEvent.change(screen.getByLabelText('唛头'), { target: { value: 'AFTER-RELOAD' } });
+    expect(screen.getByLabelText('唛头')).toHaveValue('AFTER-RELOAD');
+});
+
 test('unsaved human edits block navigation and browser unload', async () => {
     const view = renderPage();
     await screen.findByDisplayValue('MARK-1');
@@ -396,33 +481,11 @@ test('unsaved human edits block navigation and browser unload', async () => {
     const event = new Event('beforeunload', { cancelable: true });
     window.dispatchEvent(event);
     expect(event.defaultPrevented).toBe(true);
-    fireEvent.click(screen.getByRole('link', { name: '返回待核对纸质单' }));
+    fireEvent.click(screen.getByRole('link', { name: '返回装箱单列表' }));
     const dialog = await screen.findByRole('dialog', { name: '有未保存的内容' });
-    expect(view.state.location.pathname).toBe('/intakes/intake-1');
+    expect(view.state.location.pathname).toBe('/packing-list/upload/intake-1');
     fireEvent.click(within(dialog).getByRole('button', { name: /继续编辑/ }));
     expect(screen.getByLabelText('唛头')).toHaveValue('UNSAVED');
-});
-
-test('older list responses cannot overwrite a later mark query', async () => {
-    let resolveInitial;
-    global.fetch.mockImplementation(url => String(url).includes('&mark=NEW') ? Promise.resolve(response({ items: [{ ...record, display_name: 'NEW-MARK' }], total: 1, page_size: 20 })) : new Promise(resolve => { resolveInitial = resolve; }));
-    renderPage('/intakes');
-    fireEvent.change(screen.getByLabelText('按唛头查找纸单'), { target: { value: 'NEW' } });
-    fireEvent.click(screen.getByRole('button', { name: /查\s*找/ }));
-    await screen.findByRole('link', { name: 'NEW-MARK' });
-    await act(async () => { resolveInitial(response({ items: [{ ...record, display_name: 'OLD-MARK' }], total: 1, page_size: 20 })); });
-    expect(screen.getByRole('link', { name: 'NEW-MARK' })).toBeInTheDocument();
-    expect(screen.queryByRole('link', { name: 'OLD-MARK' })).not.toBeInTheDocument();
-});
-
-test('a filtered empty reviewer list still refreshes as uploads finish recognizing', async () => {
-    jest.useFakeTimers();
-    let listCalls = 0;
-    global.fetch.mockImplementation(async () => { listCalls += 1; return response({ items: listCalls > 1 ? [record] : [], total: listCalls > 1 ? 1 : 0, page_size: 20 }); });
-    renderPage('/intakes');
-    await screen.findByText('暂无待核对纸质单');
-    await act(async () => { jest.advanceTimersByTime(3000); });
-    expect(await screen.findByRole('link', { name: 'MARK-1' })).toBeInTheDocument();
 });
 
 test('role compatibility, box limits and real worker bindings normalize and validate', () => {

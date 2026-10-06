@@ -8,34 +8,34 @@ import genWayBill from "../common/genWayBill";
 const FIXED_EXPORT_ITEMS = [
     { key: 'kehu', label: '转单号列表' },
     { key: 'wayBill', label: '面单' },
+    { key: 'shippingConfirmation', label: '出货确认单（PDF）' },
 ];
 
 const ExportButton = ({ selectedKeys, selectedCargos = [], data, onSuccess }) => {
     const [loading, setLoading] = useState(false);
     const [exportType, setExportType] = useState('jifei');
-    const [templates, setTemplates] = useState([]);
+    const [templates, setTemplates] = useState(FIXED_EXPORT_ITEMS);
 
     useEffect(() => {
         fetch(`${endpoint}/excel-templates`, { headers: getSafeHeader() })
             .then(r => r.json())
             .then(res => {
-                if (res.code === 200) {
-                    const dynamicItems = (res.data || []).map(t => ({
-                        key: t.mode_key,
-                        label: t.label,
-                        requiresValidQuote: t.requires_valid_quote !== false
-                    }));
-                    const allItems = [...dynamicItems, ...FIXED_EXPORT_ITEMS];
-                    setTemplates(allItems);
-                    if (allItems.length > 0 && !allItems.find(i => i.key === exportType)) {
-                        setExportType(allItems[0].key);
-                    }
-                }
+                if (res.code !== 200) throw new Error('获取导出模板失败');
+                const dynamicItems = (res.data || []).map(t => ({
+                    key: t.mode_key,
+                    label: t.label,
+                    requiresValidQuote: t.requires_valid_quote !== false
+                }));
+                const allItems = [...dynamicItems, ...FIXED_EXPORT_ITEMS];
+                setTemplates(allItems);
+                setExportType(current => allItems.some(item => item.key === current)
+                    ? current : allItems[0].key);
             })
             .catch(() => {
+                setExportType(current => FIXED_EXPORT_ITEMS.some(item => item.key === current)
+                    ? current : FIXED_EXPORT_ITEMS[0].key);
                 message.error('获取导出模板失败');
             });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     const handleExportPreview = async () => {
@@ -75,7 +75,30 @@ const ExportButton = ({ selectedKeys, selectedCargos = [], data, onSuccess }) =>
                 a.remove();
                 return ;
             }
-            if (exportType === 'wayBill') {
+            if (exportType === 'shippingConfirmation') {
+                const result = await fetch(`${endpoint}/orders/shipping-confirmation/pdf`, {
+                    body: JSON.stringify({ uid_list: selectedKeys, cargo_list: selectedCargos }),
+                    headers: { ...getSafeHeader(), 'Content-Type': 'application/json' },
+                    method: 'POST'
+                });
+                const contentType = result.headers.get('content-type') || '';
+                if (!result.ok || !contentType.toLowerCase().startsWith('application/pdf')) {
+                    const resultData = await result.json().catch(() => null);
+                    throw new Error(resultData?.msg || '出货确认单导出失败');
+                }
+                const fileUrl = URL.createObjectURL(await result.blob());
+                const a = document.createElement('a');
+                try {
+                    a.href = fileUrl;
+                    a.download = `出货确认单_${Date.now()}.pdf`;
+                    document.body.appendChild(a);
+                    a.click();
+                } finally {
+                    a.remove();
+                    URL.revokeObjectURL(fileUrl);
+                }
+                message.success('出货确认单导出成功');
+            } else if (exportType === 'wayBill') {
                 await handleExportPreview();
             } else {
                 const result = await fetch(`${endpoint}/cargo/excel/${exportType}`, {

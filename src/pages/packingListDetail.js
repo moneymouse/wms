@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import {
     Card,
@@ -29,13 +29,14 @@ import {
     DeleteOutlined,
     EditOutlined,
     ArrowLeftOutlined,
-    CloseOutlined
+    CloseOutlined,
+    ReloadOutlined
 } from '@ant-design/icons';
 import { endpoint } from '../config';
 import getSafeHeader from '../common/safeHeader';
 import { hasPermission } from '../common/roleConfig';
 import { getBoxEditPolicy, normalizeOrderEditPolicy } from '../common/orderEditPolicy';
-import { isBoxIdentityEditable, isCargoOutboundOrLater } from '../common/cargoStatus';
+import { isBoxIdentityEditable, isBoxOriginalNumberEditable, isCargoOutboundOrLater } from '../common/cargoStatus';
 import { buildCustomsCodeOptions, findCustomsCodeForName } from '../common/customsCodeLookup';
 import styles from './packingListDetail.module.css';
 
@@ -169,6 +170,10 @@ export default function PackingListDetail() {
     const [editingPhotos, setEditingPhotos] = useState([]);
     const [savingCustomer, setSavingCustomer] = useState(false);
     const [batchDeleting, setBatchDeleting] = useState(false);
+    const [generatingOriginalNumbers, setGeneratingOriginalNumbers] = useState(false);
+    const originalGenerationPending = useRef(false);
+    const activePackingUid = useRef(uid);
+    activePackingUid.current = uid;
     const [selectedBatchAction, setSelectedBatchAction] = useState('archive');
     const [selectedShipBoxUids, setSelectedShipBoxUids] = useState([]);
     const [boxEditVisible, setBoxEditVisible] = useState(false);
@@ -612,7 +617,7 @@ export default function PackingListDetail() {
     };
 
     const openBoxEditModal = async (box) => {
-        if (!box) return;
+        if (!box || originalGenerationPending.current) return;
         if (!canOpenBoxEditor(box)) {
             messageApi.warning('当前没有修改该箱子的权限');
             return;
@@ -684,7 +689,7 @@ export default function PackingListDetail() {
             }
             if (policy.box_weight) payload.weight = values.weight ?? null;
             if (policy.tracking_numbers) {
-                if (isBoxIdentityEditable(editingBox)) payload.transfer_id = values.transfer_id ?? '';
+                if (isBoxOriginalNumberEditable(editingBox)) payload.transfer_id = values.transfer_id ?? '';
                 payload.waybill_id = values.waybill_id ?? '';
             }
             if (policy.box_workers) payload.worker_ids = values.worker_ids || [];
@@ -834,6 +839,65 @@ export default function PackingListDetail() {
         });
     };
 
+    const handleGenerateSelectedOriginalNumbers = () => {
+        if (!currentDetail?.uid || originalGenerationPending.current) return;
+        const selectedBoxes = (currentDetail.boxes || []).filter(box => selectedShipBoxUids.includes(box.uid));
+        if (!selectedBoxes.length) {
+            messageApi.warning('请先选择要生成原单号的箱子');
+            return;
+        }
+        if (selectedBoxes.some(box => !resolveBoxPolicy(box).tracking_numbers || !isBoxOriginalNumberEditable(box))) {
+            messageApi.warning('所选箱子包含当前不能修改原单号的箱子');
+            return;
+        }
+        const packingUid = currentDetail.uid;
+        const requestBody = {
+            box_uids: selectedBoxes.map(box => box.uid),
+            expected_values: Object.fromEntries(selectedBoxes.map(box => [box.uid, box.transfer_id ?? null])),
+        };
+        const generate = async () => {
+            if (originalGenerationPending.current || activePackingUid.current !== packingUid) return;
+            originalGenerationPending.current = true;
+            setGeneratingOriginalNumbers(true);
+            try {
+                const res = await fetch(`${endpoint}/packing-lists/${packingUid}/boxes/generate-original-numbers`, {
+                    method: 'POST',
+                    headers: { ...getSafeHeader(), 'Content-Type': 'application/json' },
+                    body: JSON.stringify(requestBody),
+                });
+                const data = await res.json();
+                if (activePackingUid.current !== packingUid) return;
+                if (!res.ok || data.code !== 200) {
+                    messageApi.error(data.msg || '生成原单号失败');
+                    return;
+                }
+                const numbers = new Map((data.data?.boxes || []).map(box => [box.uid, box.transfer_id]));
+                setCurrentDetail(previous => previous?.uid === packingUid ? {
+                    ...previous,
+                    boxes: (previous.boxes || []).map(box => numbers.has(box.uid)
+                        ? { ...box, transfer_id: numbers.get(box.uid) } : box),
+                } : previous);
+                messageApi.success(`已为 ${numbers.size} 箱生成原单号`);
+            } catch (error) {
+                if (activePackingUid.current === packingUid) messageApi.error('生成原单号失败');
+                console.error(error);
+            } finally {
+                originalGenerationPending.current = false;
+                setGeneratingOriginalNumbers(false);
+            }
+        };
+        const existingCount = selectedBoxes.filter(box => String(box.transfer_id || '').trim()).length;
+        if (existingCount) {
+            Modal.confirm({
+                title: '确认生成原单号？',
+                content: `将为所选 ${selectedBoxes.length} 箱随机生成并保存原单号，其中 ${existingCount} 箱已有的原单号将被替换。`,
+                okText: '生成并替换', cancelText: '取消', onOk: generate,
+            });
+        } else {
+            generate();
+        }
+    };
+
     const handleDeleteSelectedBoxes = () => {
         if (!currentDetail?.uid) return;
 
@@ -911,6 +975,9 @@ export default function PackingListDetail() {
         : [];
     const selectedSelectableCount = selectedShipBoxUids.filter((uid) => allSelectableBoxUids.includes(uid)).length;
     const selectedPrintableBoxUids = selectedShipBoxUids.filter((uid) => allSelectableBoxUids.includes(uid));
+    const selectedOriginalNumberBoxes = (currentDetail?.boxes || []).filter(box => selectedShipBoxUids.includes(box.uid));
+    const canGenerateSelectedOriginalNumbers = selectedOriginalNumberBoxes.length > 0
+        && selectedOriginalNumberBoxes.every(box => resolveBoxPolicy(box).tracking_numbers && isBoxOriginalNumberEditable(box));
     const selectedBatchCount = selectedShipBoxUids.filter((uid) => allBatchCandidateUids.includes(uid)).length;
     const isShipAllChecked = allSelectableBoxUids.length > 0 && selectedSelectableCount === allSelectableBoxUids.length;
     const isShipIndeterminate = selectedSelectableCount > 0 && selectedSelectableCount < allSelectableBoxUids.length;
@@ -1123,6 +1190,18 @@ export default function PackingListDetail() {
                                 </Button>
                             )}
                             {canBatchActions && (
+                                <Button
+                                    icon={<ReloadOutlined />}
+                                    aria-label="生成原单号"
+                                    onClick={handleGenerateSelectedOriginalNumbers}
+                                    loading={generatingOriginalNumbers}
+                                    disabled={!canGenerateSelectedOriginalNumbers || generatingOriginalNumbers || boxEditVisible}
+                                    title="为所选箱子随机生成并保存原单号"
+                                >
+                                    生成原单号
+                                </Button>
+                            )}
+                            {canBatchActions && (
                                 <Dropdown.Button
                                     menu={{
                                         items: batchActionMenuItems,
@@ -1166,6 +1245,7 @@ export default function PackingListDetail() {
                                                     <Button
                                                         type="link"
                                                         icon={<EditOutlined />}
+                                                        disabled={generatingOriginalNumbers}
                                                         onClick={() => openBoxEditModal(box)}
                                                     >
                                                         编辑
@@ -1232,6 +1312,7 @@ export default function PackingListDetail() {
                                                     <Space direction="vertical" size={6}>
                                                         {canBatchActions ? (
                                                             <Checkbox
+                                                                aria-label={`箱子 ${box.box_number || (idx + 1)}`}
                                                                 checked={selectedShipBoxUids.includes(box.uid)}
                                                                 onChange={(e) => toggleShipBox(box.uid, e.target.checked)}
                                                             >
@@ -1309,6 +1390,7 @@ export default function PackingListDetail() {
                                             <Space size={8}>
                                                 {canBatchActions && (
                                                     <Checkbox
+                                                        aria-label={`箱子 ${box.box_number || (idx + 1)}`}
                                                         checked={selectedShipBoxUids.includes(box.uid)}
                                                         onChange={(e) => toggleShipBox(box.uid, e.target.checked)}
                                                     />
@@ -1674,8 +1756,8 @@ export default function PackingListDetail() {
                         </Form.Item>
                         <Form.Item name="transfer_id" label="原单号" style={{ marginBottom: 0 }}>
                             <Input
-                                placeholder={isBoxIdentityEditable(editingBox) ? '可选' : '箱子出库后，原单号不可修改'}
-                                disabled={!resolveBoxPolicy(editingBox).tracking_numbers || !isBoxIdentityEditable(editingBox)}
+                                placeholder={isBoxOriginalNumberEditable(editingBox) ? '可选' : '箱子已出库，原单号不可修改'}
+                                disabled={!resolveBoxPolicy(editingBox).tracking_numbers || !isBoxOriginalNumberEditable(editingBox)}
                                 style={{ width: 220 }}
                             />
                         </Form.Item>

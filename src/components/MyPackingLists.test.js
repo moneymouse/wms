@@ -7,7 +7,7 @@ import { intakeRequest } from '../common/intakeApi';
 jest.mock('../common/intakeApi', () => ({ intakeRequest: jest.fn() }));
 
 const pending = {
-    uid: 'paper-1', mark: 'PAPER-1', source: 'paper', status: 'pending_review',
+    uid: 'paper-1', mark: 'PAPER-1', source: 'paper', status: 'uploading',
     created_at: '2026-10-02 09:00:00', box_count: null,
 };
 const manual = {
@@ -65,23 +65,24 @@ test('loads the personal endpoint and shows only worker-facing packing-list info
     expect(await screen.findByText('PAPER-1')).toBeInTheDocument();
     expect(intakeRequest).toHaveBeenCalledWith('/my-packing-lists?page=1&page_size=20&mark=', expect.objectContaining({ signal: expect.any(Object) }));
     expect(screen.getByRole('heading', { name: '我的装箱单' })).toBeInTheDocument();
-    expect(screen.getByText('待核对')).toBeInTheDocument();
+    expect(screen.getByText('上传未完成')).toBeInTheDocument();
     expect(screen.getByText('草稿')).toBeInTheDocument();
-    expect(screen.getAllByText('已创建')).toHaveLength(2);
-    const pendingRow = screen.getByText('PAPER-1').closest('tr');
+    expect(screen.getAllByText('已创建')).toHaveLength(1);
+    expect(screen.getByText('已核对')).toBeInTheDocument();
+    const pendingRow = screen.getByRole('row', { name: /PAPER-1/ });
     expect(within(pendingRow).getByText('拍照上传')).toBeInTheDocument();
-    expect(within(pendingRow).queryByRole('link')).not.toBeInTheDocument();
+    expect(within(pendingRow).getByRole('link', { name: '继续检查并上传' })).toHaveAttribute('href', '/packing-list/upload/paper-1');
     expect(screen.queryByText(/内部识别警告|secret-photo|识别状态|查看纸单|解析/)).not.toBeInTheDocument();
-    expect(screen.getAllByRole('link')).toHaveLength(3);
-    expect(within(screen.getByText('MANUAL-1').closest('tr')).getByRole('link')).toHaveAttribute('href', '/packing-lists/packing-manual-1');
-    expect(within(screen.getByText('DRAFT-1').closest('tr')).getByRole('link')).toHaveAttribute('href', '/packing-lists/packing-draft-1');
-    expect(within(screen.getByText('CONFIRMED-1').closest('tr')).getByRole('link')).toHaveAttribute('href', '/packing-lists/packing-paper-1');
+    expect(screen.getAllByRole('link')).toHaveLength(4);
+    expect(within(screen.getByRole('row', { name: /MANUAL-1/ })).getByRole('link')).toHaveAttribute('href', '/packing-lists/packing-manual-1');
+    expect(within(screen.getByRole('row', { name: /DRAFT-1/ })).getByRole('link')).toHaveAttribute('href', '/packing-lists/packing-draft-1');
+    expect(within(screen.getByRole('row', { name: /CONFIRMED-1/ })).getByRole('link')).toHaveAttribute('href', '/packing-lists/packing-paper-1');
 });
 
 test('opens the regular packing-list details and the unified creation page', async () => {
     const view = render(pageElement());
     await screen.findByText('CONFIRMED-1');
-    fireEvent.click(within(screen.getByText('CONFIRMED-1').closest('tr')).getByRole('link', { name: '查看装箱单' }));
+    fireEvent.click(within(screen.getByRole('row', { name: /CONFIRMED-1/ })).getByRole('link', { name: '查看装箱单' }));
     expect(await screen.findByText('正式装箱单详情')).toBeInTheDocument();
     view.unmount();
     render(pageElement());
@@ -141,21 +142,13 @@ test('an older response cannot replace the latest mark search', async () => {
     expect(screen.queryByText('OLD')).not.toBeInTheDocument();
 });
 
-test('polls pending paper records sequentially and stops once the packing list is created', async () => {
+test('unfinished uploads link to the uploader check page without reviewer polling', async () => {
     jest.useFakeTimers();
-    const poll = deferred();
-    intakeRequest.mockResolvedValueOnce(result([pending])).mockReturnValueOnce(poll.promise);
     render(pageElement());
     await screen.findByText('PAPER-1');
-    await act(async () => { jest.advanceTimersByTime(5000); });
-    expect(intakeRequest).toHaveBeenCalledTimes(2);
-    await act(async () => { jest.advanceTimersByTime(15000); });
-    expect(intakeRequest).toHaveBeenCalledTimes(2);
-    await act(async () => { poll.resolve(result([confirmed])); });
-    expect(screen.getByText('已创建')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: '查看装箱单' })).toHaveAttribute('href', '/packing-lists/packing-paper-1');
-    await act(async () => { jest.advanceTimersByTime(10000); });
-    expect(intakeRequest).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole('link', { name: '继续检查并上传' })).toHaveAttribute('href', '/packing-list/upload/paper-1');
+    await act(async () => { jest.advanceTimersByTime(30000); });
+    expect(intakeRequest).toHaveBeenCalledTimes(1);
 });
 
 test('refreshKey refreshes the list after a parent upload completes', async () => {
@@ -179,13 +172,13 @@ test('the real xs breakpoint renders compact cards with no duplicate desktop tab
     expect(cards).toHaveLength(4);
     expect(screen.queryByRole('table')).not.toBeInTheDocument();
     expect(screen.getAllByText('PAPER-1')).toHaveLength(1);
-    const paper = screen.getByText('PAPER-1').closest('article');
-    expect(within(paper).getByText('待核对')).toBeInTheDocument();
+    const paper = screen.getByRole('article', { name: '装箱单 PAPER-1' });
+    expect(within(paper).getByText('上传未完成')).toBeInTheDocument();
     expect(within(paper).getByText('拍照上传')).toBeInTheDocument();
     expect(within(paper).getByText('箱数：-')).toBeInTheDocument();
     expect(within(paper).getByText('创建时间：2026-10-02 09:00:00')).toBeInTheDocument();
-    expect(within(paper).queryByRole('link')).not.toBeInTheDocument();
-    const formal = screen.getByText('CONFIRMED-1').closest('article');
+    expect(within(paper).getByRole('link', { name: '继续检查并上传' })).toHaveAttribute('href', '/packing-list/upload/paper-1');
+    const formal = screen.getByRole('article', { name: '装箱单 CONFIRMED-1' });
     expect(within(formal).getByText('箱数：3')).toBeInTheDocument();
     expect(within(formal).getByRole('link', { name: '查看装箱单' })).toHaveAttribute('href', '/packing-lists/packing-paper-1');
 });

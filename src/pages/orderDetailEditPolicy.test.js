@@ -109,11 +109,12 @@ test('ordinary salesperson permissions still protect another salespersons transp
 
 test.each([
     ['outbound box', { status: 1, identity_editable: false }],
-    ['returned box', { status: 0, identity_editable: false, waybill_id: '' }],
+    ['pending box explicitly denied original number edits', { status: 0, identity_editable: true, original_number_editable: false, waybill_id: '' }],
     ['numeric logistics state without identity metadata', { status: 2 }],
     ['string logistics state with permissive identity metadata', { status: '3', identity_editable: true }],
-    ['outbound box without waybill', { status: 1, waybill_id: '', identity_editable: true }],
+    ['outbound box without waybill', { status: 1, waybill_id: '', identity_editable: true, original_number_editable: true }],
     ['later tracking state', { status: 'InTransit_Other', identity_editable: true }],
+    ['pending status with current shipment date', { status: 0, date: '2026-10-06', original_number_editable: true }],
 ])('%s keeps the original number read only while allowing waybill changes', async (_, overrides) => {
     const box = { ...cargo, packing_list_uid: 'packing-list-1', ...overrides };
     mockFetch(buildOrder(), box);
@@ -141,6 +142,25 @@ test('a box that has never shipped can edit its original number', async () => {
     const row = (await screen.findByText('OLD-1')).closest('tr');
     fireEvent.click(within(row).getByRole('button', { name: /编\s*辑/ }));
     expect(await within(row).findByDisplayValue('OLD-1')).not.toBeDisabled();
+});
+
+test.each([0, 'pending_outbound'])('a returned box in %s status can save a changed original number while its box identity remains locked', async status => {
+    mockFetch(buildOrder(), {
+        ...cargo, status, date: null, waybill_id: '', packing_list_uid: 'packing-list-1',
+        identity_editable: false, original_number_editable: true,
+    });
+    renderOrder();
+    const row = (await screen.findByText('OLD-1')).closest('tr');
+    fireEvent.click(within(row).getByRole('button', { name: /编\s*辑/ }));
+    const originalInput = await within(row).findByDisplayValue('OLD-1');
+    expect(originalInput).not.toBeDisabled();
+    fireEvent.change(originalInput, { target: { value: 'RETURNED-NEW' } });
+    fireEvent.click(within(row).getByRole('button', { name: /保\s*存/ }));
+    await waitFor(() => {
+        const updateCall = global.fetch.mock.calls.find(([url, options]) => String(url).endsWith('/cargo/cargo-1') && options?.method === 'PUT');
+        expect(updateCall).toBeDefined();
+        expect(JSON.parse(updateCall[1].body)).toEqual({ transfer_id: 'RETURNED-NEW' });
+    });
 });
 
 test('ordinary outbound cargo can still change its original number despite identity metadata', async () => {

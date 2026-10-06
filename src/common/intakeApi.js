@@ -47,9 +47,6 @@ export function getIntakeRoles() {
     } catch { return []; }
 }
 
-export const intakeReviewRoles = ['admin', 'store_manager', 'salesperson', 'clerk'];
-export const canReviewIntake = () => getIntakeRoles().some(role => intakeReviewRoles.includes(role));
-
 export const emptyBox = () => ({ box_number: '', item_name: '', count: null, weight: null });
 export const MAX_INTAKE_WORKERS = 4;
 export const normalizeIntakeDraft = draft => ({

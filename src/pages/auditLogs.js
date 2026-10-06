@@ -1,256 +1,75 @@
 import React, { useEffect, useState } from 'react';
-import { Card, Collapse, Empty, Space, Table, Tag, Typography, message } from 'antd';
-import { useNavigate } from 'react-router-dom';
+import { Alert, Button, Card, DatePicker, Empty, Form, Input, Select, Space, Table, Tag, Typography } from 'antd';
+import { AuditOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons';
 import { endpoint } from '../config';
 import getSafeHeader from '../common/safeHeader';
-import { hasPermission } from '../common/roleConfig';
+import { hasPermission, ROLE_LABEL_MAP } from '../common/roleConfig';
+import { AuditChanges, AUDIT_EVENT_LABELS, AUDIT_ACTION_LABELS } from '../components/FinanceHistoryDrawer';
 
-const { Panel } = Collapse;
 const { Title, Text } = Typography;
-
-const EVENT_LABELS = {
-    transportation_cost: '渠道成本',
-    order_quote: '订单报价',
-    order_receipt_revision: '订单业务修订',
-    payment_receipt: '收款单',
-    sales_bonus_rate: '跟单奖金费率',
-    supplier_export: '供应商导出',
-};
-
-const ACTION_COLORS = {
-    create: 'green',
-    update: 'orange',
-    archive: 'red',
-    quote_submit: 'blue',
-    quote_adopt: 'green',
-    quote_approve: 'green',
-    quote_reject: 'red',
-    receipt_create: 'blue',
-    receipt_approve: 'green',
-    receipt_reject: 'red',
-    order_unlock: 'orange',
-    order_relock: 'green',
-    export_blocked_invalid_quote: 'red',
-};
-
-const ACTION_LABELS = {
-    create: '创建',
-    update: '更新',
-    archive: '归档',
-    quote_submit: '提交报价',
-    quote_adopt: '采纳报价',
-    quote_approve: '通过报价',
-    quote_reject: '驳回报价',
-    receipt_create: '创建收款单',
-    receipt_approve: '通过收款单',
-    receipt_reject: '驳回收款单',
-    order_unlock: '解锁订单',
-    order_relock: '重新锁定订单',
-    export_blocked_invalid_quote: '因报价无效阻止导出',
+const adminAccess = () => {
+    try {
+        const encoded = (localStorage.getItem('jwt') || '').split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+        const payload = JSON.parse(atob(encoded));
+        return hasPermission(payload.roles || [payload.role], ['admin']);
+    } catch (_) { return false; }
 };
 
 export default function AuditLogs() {
-    const [tableLoading, setTableLoading] = useState(false);
-    const [logs, setLogs] = useState([]);
-    const [pagination, setPagination] = useState({
-        current: 1,
-        pageSize: 10,
-        total: 0,
-    });
-    const [sortField, setSortField] = useState('create_date');
-    const [sortOrder, setSortOrder] = useState('descend');
-    const [isAdmin, setIsAdmin] = useState(false);
-    const navigate = useNavigate();
-
-    const fetchLogs = async (
-        nextPagination = pagination,
-        nextSortField = sortField,
-        nextSortOrder = sortOrder
-    ) => {
-        setTableLoading(true);
-        try {
-            const requestPagination = { ...pagination, ...nextPagination };
-            const params = new URLSearchParams({
-                p: requestPagination.current,
-                s: requestPagination.pageSize,
-                sf: nextSortField || 'create_date',
-                so: Number(nextSortOrder !== 'ascend'),
-            });
-
-            const response = await fetch(`${endpoint}/audit-logs?${params.toString()}`, {
-                headers: getSafeHeader(),
-            });
-            const result = await response.json();
-
-            if (result.code !== 200) {
-                message.error(result.msg || '获取审计日志失败');
-                return;
-            }
-
-            const data = (result.data || []).map((item, index) => ({
-                ...item,
-                key: item.id ?? `${requestPagination.current}-${index}`,
-            }));
-            setLogs(data);
-            setPagination(prev => ({
-                ...prev,
-                ...requestPagination,
-                current: result.page || requestPagination.current,
-                pageSize: result.page_size || requestPagination.pageSize,
-                total: result.total || 0,
-            }));
-        } catch (error) {
-            console.error('获取审计日志失败:', error);
-            message.error('获取审计日志失败');
-        } finally {
-            setTableLoading(false);
-        }
-    };
-
+    const [form] = Form.useForm();
+    const [allowed] = useState(adminAccess);
+    const [query, setQuery] = useState({ p: 1, s: 20, sf: 'create_date', so: 1 });
+    const [state, setState] = useState({ items: [], total: 0 });
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState('');
+    const [retry, setRetry] = useState(0);
     useEffect(() => {
-        const jwt = localStorage.getItem('jwt');
-        if (!jwt) {
-            message.error('请先登录系统');
-            setTimeout(() => navigate('/'), 2000);
-            return;
-        }
-
-        try {
-            const parts = jwt.split('.');
-            if (parts.length !== 3) throw new Error('invalid token');
-            const payload = JSON.parse(atob(parts[1]));
-            const userRoles = payload.roles || (payload.role ? [payload.role] : []);
-            const allowed = hasPermission(userRoles, ['admin']);
-            setIsAdmin(allowed);
-
-            if (!allowed) {
-                message.error('只有管理员有权限查看审计日志！');
-                setTimeout(() => navigate('/'), 2000);
-                return;
-            }
-
-            fetchLogs();
-        } catch (error) {
-            console.error('解析 JWT 时出错:', error);
-            message.error('权限验证失败');
-            setTimeout(() => navigate('/'), 2000);
-        }
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [navigate]);
-
-    const handleTableChange = (newPagination, filters, sorter) => {
-        const nextSortField = sorter.field || 'create_date';
-        const nextSortOrder = sorter.order || 'descend';
-        setSortField(nextSortField);
-        setSortOrder(nextSortOrder);
-        fetchLogs(newPagination, nextSortField, nextSortOrder);
+        if (!allowed) return undefined;
+        const controller = new AbortController();
+        setLoading(true); setError('');
+        const params = new URLSearchParams(Object.entries(query).filter(([, value]) => value !== undefined && value !== ''));
+        fetch(`${endpoint}/audit-logs?${params}`, { headers: getSafeHeader(), signal: controller.signal })
+            .then(async response => { const result = await response.json(); if (!response.ok || result.code !== 200) throw new Error(result.msg || '获取审计日志失败'); return result; })
+            .then(result => { if (!controller.signal.aborted) setState({ items: result.data || [], total: result.total || 0 }); })
+            .catch(err => { if (!controller.signal.aborted) { setError(err.message); setState({ items: [], total: 0 }); } })
+            .finally(() => { if (!controller.signal.aborted) setLoading(false); });
+        return () => controller.abort();
+    }, [allowed, query, retry]);
+    const submit = values => {
+        const { dates, ...filters } = values;
+        setQuery(prev => ({ ...filters, p: 1, s: prev.s, sf: prev.sf, so: prev.so, date_from: dates?.[0]?.format('YYYY-MM-DD'), date_to: dates?.[1]?.format('YYYY-MM-DD') }));
     };
-
-    const columns = [
-        {
-            title: '日期',
-            dataIndex: 'create_date',
-            key: 'create_date',
-            sorter: true,
-            sortOrder: sortField === 'create_date' ? sortOrder : null,
-            width: 180,
-        },
-        {
-            title: '审计事件',
-            dataIndex: 'event_type',
-            key: 'event_type',
-            width: 140,
-            render: (eventType) => <Tag color="blue">{EVENT_LABELS[eventType] || eventType}</Tag>,
-        },
-        {
-            title: '动作',
-            dataIndex: 'action',
-            key: 'action',
-            width: 130,
-            render: (action) => (
-                <Tag color={ACTION_COLORS[action] || 'default'}>{ACTION_LABELS[action] || action}</Tag>
-            ),
-        },
-        {
-            title: '审计对象',
-            key: 'target',
-            width: 210,
-            render: (_, record) => `${record.target_type || '-'}:${record.target_id || '-'}`,
-        },
-        {
-            title: '责任人',
-            dataIndex: 'operator_name',
-            key: 'operator_name',
-            width: 150,
-            render: (name) => name ? <Text strong>{name}</Text> : '-',
-        },
-        {
-            title: '用户角色',
-            dataIndex: 'operator_role',
-            key: 'operator_role',
-            width: 140,
-            render: (role) => role ? <Tag color={role.includes('admin') ? 'red' : 'blue'}>{role}</Tag> : '-',
-        },
-        {
-            title: 'IP地址',
-            dataIndex: 'ip',
-            key: 'ip',
-            width: 140,
-        },
-        {
-            title: '说明',
-            dataIndex: 'remark',
-            key: 'remark',
-            ellipsis: true,
-        },
-    ];
-
-    const expandedRowRender = (record) => (
-        <Space direction="vertical" style={{ width: '100%' }}>
-            {record.before_data && (
-                <Collapse ghost>
-                    <Panel header="变更前" key="before">
-                        <pre>{JSON.stringify(record.before_data, null, 2)}</pre>
-                    </Panel>
-                </Collapse>
-            )}
-            {record.after_data && (
-                <Collapse ghost>
-                    <Panel header="变更后" key="after">
-                        <pre>{JSON.stringify(record.after_data, null, 2)}</pre>
-                    </Panel>
-                </Collapse>
-            )}
-        </Space>
-    );
-
-    if (!isAdmin) {
-        return (
-            <Card style={{ marginTop: '20px' }}>
-                <Empty
-                    description="无权限查看审计日志"
-                    image={Empty.PRESENTED_IMAGE_SIMPLE}
-                />
-            </Card>
-        );
-    }
-
-    return (
-        <Card>
-            <Title level={4}>系统审计日志</Title>
-            <Table
-                columns={columns}
-                dataSource={logs}
-                rowKey={(record) => record.id ?? record.key}
-                pagination={pagination}
-                loading={tableLoading}
-                onChange={handleTableChange}
-                expandable={{
-                    expandedRowRender,
-                    rowExpandable: (record) => !!record.before_data || !!record.after_data,
-                }}
-                scroll={{ x: 1300 }}
+    if (!allowed) return <Card><Empty description="只有管理员有权限查看审计日志" /></Card>;
+    return <div style={{ maxWidth: 1480, margin: '0 auto', padding: '12px 0' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16, marginBottom: 24 }}>
+            <div><Text style={{ color: '#557b79', letterSpacing: 2, fontSize: 12 }}>AUDIT TRAIL</Text><Title level={3} style={{ margin: '6px 0' }}><AuditOutlined /> 系统审计日志</Title><Text type="secondary">查清谁在何时修改了哪笔业务，逐项核对修改前后的内容。</Text></div>
+            <Button icon={<ReloadOutlined />} onClick={() => setRetry(value => value + 1)}>刷新记录</Button>
+        </div>
+        <Card style={{ borderRadius: 14, marginBottom: 16 }}>
+            <Form form={form} layout="inline" onFinish={submit} style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                <Form.Item name="event_type"><Select aria-label="审计类型" allowClear placeholder="全部审计类型" style={{ width: 170 }} options={Object.entries(AUDIT_EVENT_LABELS).map(([value, label]) => ({ value, label }))} /></Form.Item>
+                <Form.Item name="q"><Input allowClear placeholder="对象编号、操作人或说明" aria-label="搜索审计记录" style={{ width: 230 }} /></Form.Item>
+                <Form.Item name="dates"><DatePicker.RangePicker aria-label="记录日期" /></Form.Item>
+                <Space><Button htmlType="submit" type="primary" icon={<SearchOutlined />}>筛选</Button><Button onClick={() => { form.resetFields(); submit({}); }}>重置</Button></Space>
+            </Form>
+        </Card>
+        {error && <Alert type="error" showIcon message={error} style={{ marginBottom: 16 }} action={<Button onClick={() => setRetry(value => value + 1)}>重试</Button>} />}
+        <Card style={{ borderRadius: 14 }} bodyStyle={{ padding: 0 }}>
+            <div style={{ padding: '16px 20px', borderBottom: '1px solid #eef1f4' }}><Text strong>变更记录</Text><Text type="secondary" style={{ marginLeft: 12 }}>共 {state.total} 条 · 展开记录查看字段差异</Text></div>
+            <Table rowKey="id" loading={loading} dataSource={state.items} scroll={{ x: 1050 }}
+                pagination={{ current: query.p, pageSize: query.s, total: state.total, showSizeChanger: true }}
+                onChange={(pagination, _, sorter) => setQuery(prev => ({ ...prev, p: pagination.current, s: pagination.pageSize, sf: sorter.field || 'create_date', so: sorter.order === 'ascend' ? 0 : 1 }))}
+                expandable={{ expandedRowRender: record => <div style={{ padding: '0 20px 12px' }}>{record.remark && <Alert type="info" showIcon message={record.remark} />}<AuditChanges record={record} />{record.correlation_id && <Text type="secondary">关联号：{record.correlation_id}</Text>}</div> }}
+                columns={[
+                    { title: '记录时间', dataIndex: 'create_date', width: 180, sorter: true, sortOrder: query.sf === 'create_date' ? (query.so ? 'descend' : 'ascend') : null },
+                    { title: '审计事件', dataIndex: 'event_type', width: 145, render: value => <Tag color="cyan">{AUDIT_EVENT_LABELS[value] || value}</Tag> },
+                    { title: '动作', dataIndex: 'action', width: 150, render: value => <Tag color={value.includes('reject') || value === 'archive' ? 'orange' : 'blue'}>{AUDIT_ACTION_LABELS[value] || value}</Tag> },
+                    { title: '对象编号', dataIndex: 'target_id', width: 140, ellipsis: true },
+                    { title: '操作人', dataIndex: 'operator_name', width: 120, render: (value, row) => value || (row.operator_id ? `用户 #${row.operator_id}` : '未记录') },
+                    { title: '角色', dataIndex: 'operator_role', width: 110, render: value => (value || '').split(',').filter(Boolean).map(role => ROLE_LABEL_MAP[role] || role).join('、') || '—' },
+                    { title: '说明', dataIndex: 'remark', ellipsis: true, render: value => value || '—' },
+                ]}
             />
         </Card>
-    );
+    </div>;
 }

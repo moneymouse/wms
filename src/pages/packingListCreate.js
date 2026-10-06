@@ -1189,7 +1189,7 @@ export default function PackingListCreate() {
     return (
         <div className={entryStyles.createPage}>
             <div className={entryStyles.heading}>
-                <div><Title level={3}>创建装箱单</Title><div className={entryStyles.subtitle}>逐箱录入，或拍照提交已填写的纸质装箱单。</div></div>
+                <div><Title level={3}>创建装箱单</Title><div className={entryStyles.subtitle}>逐箱录入，或拍照并检查纸质装箱单的识别结果后上传。</div></div>
                 <Button type="link" onClick={() => navigate('/packing-lists')}>{workerOnly ? '我的装箱单' : '装箱单列表'}</Button>
             </div>
             <div className={entryStyles.entryModes} role="group" aria-label="装箱单创建方式">

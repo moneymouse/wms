@@ -1,5 +1,5 @@
 import React from 'react';
-import { DatePicker, Form, Input, InputNumber, Modal, Select, Space, Typography } from 'antd';
+import { Col, DatePicker, Form, Input, InputNumber, Modal, Row, Select, Typography } from 'antd';
 import dayjs from 'dayjs';
 import { PAYMENT_METHODS } from '../common/receiptApi';
 import { amountToCents, SETTLEMENT_OPTIONS } from '../common/receiptSettlement';
@@ -8,14 +8,18 @@ const { Text } = Typography;
 
 function ReceiptFields() {
     return (
-        <>
-            <Form.Item name="receipt_date" label="收款日期" rules={[{ required: true, message: '请选择收款日期' }]}>
-                <DatePicker style={{ width: '100%' }} />
-            </Form.Item>
-            <Form.Item name="payment_method" label="收款方式" rules={[{ required: true, message: '请选择收款方式' }]}>
-                <Select options={PAYMENT_METHODS} />
-            </Form.Item>
-        </>
+        <Row gutter={16}>
+            <Col xs={24} sm={12}>
+                <Form.Item name="receipt_date" label="收款日期" rules={[{ required: true, message: '请选择收款日期' }]}>
+                    <DatePicker style={{ width: '100%' }} />
+                </Form.Item>
+            </Col>
+            <Col xs={24} sm={12}>
+                <Form.Item name="payment_method" label="收款方式" rules={[{ required: true, message: '请选择收款方式' }]}>
+                    <Select options={PAYMENT_METHODS} />
+                </Form.Item>
+            </Col>
+        </Row>
     );
 }
 
@@ -25,6 +29,7 @@ export default function ReceiptModal({
     return (
         <Modal
             title="确认收款信息"
+            width={640}
             open={open}
             forceRender
             onOk={onSubmit}
@@ -37,12 +42,12 @@ export default function ReceiptModal({
             maskClosable={!submitting}
             keyboard={!submitting}
         >
-            <Space direction="vertical" style={{ marginBottom: 16 }}>
-                <Text>客户：{orders[0]?.customer_name || '-'}</Text>
-                <Text>已选 {orders.length} 笔订单</Text>
-                <Text strong>本次合计：{selectedTotal.toFixed(2)} CNY</Text>
-                <Text>本次收款后剩余应收合计：{(remainingReceivableCents / 100).toFixed(2)} CNY</Text>
-            </Space>
+            <Row gutter={[16, 8]} style={{ marginBottom: 24 }}>
+                <Col span={24}><Text>客户：{orders[0]?.customer_name || '-'}</Text></Col>
+                <Col xs={24} sm={12}><Text>已选 {orders.length} 笔订单</Text></Col>
+                <Col xs={24} sm={12}><Text strong>本次合计：{selectedTotal.toFixed(2)} CNY</Text></Col>
+                <Col span={24}><Text type="secondary">本次收款后剩余应收合计：{(remainingReceivableCents / 100).toFixed(2)} CNY</Text></Col>
+            </Row>
             <Form
                 form={form}
                 layout="vertical"
@@ -55,7 +60,8 @@ export default function ReceiptModal({
                     name="settlement_status"
                     label="结清状态"
                     rules={[{ required: true, message: '请选择结清状态' }]}
-                    extra="原应收减去已审核实收、已生效结清差额及本次收款后，合计小于30元默认已结清，否则默认未结清；可手动修改。其他待审核收款不参与默认计算，结清在财务审核通过后生效，余额为0的订单仍自动结清。"
+                    tooltip="原应收减去已审核实收、已生效结清差额及本次收款后，合计小于30元默认已结清，否则默认未结清。其他待审核收款不参与默认计算，余额为0的订单仍自动结清。"
+                    extra="余款小于30元默认已结清，可手动修改。选择已结清会在审核后将剩余余额记为结清差额，不计入实收。"
                 >
                     <Select options={SETTLEMENT_OPTIONS} />
                 </Form.Item>
@@ -70,6 +76,7 @@ export function AdjustmentReceiptModal({ adjustment, submitting, onSubmit, onCan
     return (
         <Modal
             title="登记差价补收"
+            width={640}
             open
             onOk={() => onSubmit(form)}
             onCancel={onCancel}
@@ -82,12 +89,12 @@ export function AdjustmentReceiptModal({ adjustment, submitting, onSubmit, onCan
             keyboard={!submitting}
         >
             {children}
-            <Space direction="vertical" style={{ marginBottom: 16 }}>
-                <Text>客户：{adjustment.customer_name || '-'}</Text>
-                <Text>订单：{adjustment.order_id}</Text>
-                <Text>报价差价：{Number(adjustment.delta_amount || 0).toFixed(2)} CNY</Text>
-                <Text strong>当前可补收：{Number(adjustment.available_amount || 0).toFixed(2)} CNY</Text>
-            </Space>
+            <Row gutter={[16, 8]} style={{ marginBottom: 24 }}>
+                <Col span={24}><Text>客户：{adjustment.customer_name || '-'}</Text></Col>
+                <Col span={24}><Text>订单：{adjustment.order_id}</Text></Col>
+                <Col xs={24} sm={12}><Text>报价差价：{Number(adjustment.delta_amount || 0).toFixed(2)} CNY</Text></Col>
+                <Col xs={24} sm={12}><Text strong>当前可补收：{Number(adjustment.available_amount || 0).toFixed(2)} CNY</Text></Col>
+            </Row>
             <Form
                 form={form}
                 name="adjustmentReceipt"

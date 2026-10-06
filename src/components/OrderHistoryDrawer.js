@@ -55,6 +55,7 @@ const ACTION_LABELS = {
     box_workers_updated: '修改箱子操作员',
     box_mark_updated: '修改箱子唛头',
     box_shipment_undone: '撤销箱子出库',
+    cargo_shipment_undone: '撤销包裹出库',
     waybills_imported: '批量更新转单号',
     packing_list_deleted: '删除装箱单',
     operator_removed: '删除用户并清理关联',

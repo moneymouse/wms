@@ -24,7 +24,7 @@ beforeEach(() => {
 
 test('auto window includes both configured boundaries and excludes dates outside them', () => {
     const base = {
-        campaign: COST_QUOTE_RECEIPT_TOUR,
+        campaign: { ...COST_QUOTE_RECEIPT_TOUR, enabled: true },
         chapter: quoteChapter,
         state: { schemaVersion: FEATURE_TOUR_SCHEMA_VERSION, campaigns: {} },
         userRoles: ['salesperson'],
@@ -49,7 +49,7 @@ test('completed and dismissed chapters do not auto show again for the same versi
             },
         };
         expect(shouldAutoShowFeatureTour({
-            campaign: COST_QUOTE_RECEIPT_TOUR,
+            campaign: { ...COST_QUOTE_RECEIPT_TOUR, enabled: true },
             chapter: quoteChapter,
             state,
             userRoles: ['salesperson'],
@@ -74,14 +74,14 @@ test('raising only one chapter version makes only that chapter eligible again', 
     const upgradedQuote = { ...quoteChapter, version: 2 };
 
     expect(shouldAutoShowFeatureTour({
-        campaign: COST_QUOTE_RECEIPT_TOUR,
+        campaign: { ...COST_QUOTE_RECEIPT_TOUR, enabled: true },
         chapter: upgradedQuote,
         state,
         userRoles: ['salesperson'],
         now: '2026-09-01T00:00:00+08:00',
     })).toBe(true);
     expect(shouldAutoShowFeatureTour({
-        campaign: COST_QUOTE_RECEIPT_TOUR,
+        campaign: { ...COST_QUOTE_RECEIPT_TOUR, enabled: true },
         chapter: receiptChapter,
         state,
         userRoles: ['salesperson'],
@@ -177,4 +177,11 @@ test('the campaign chooses the correct first workflow stage for each role', () =
         startStage: 'select-quote-order',
     });
     expect(getCostQuoteReceiptOnboardingFlow(['worker'])).toBeNull();
+});
+
+
+test('the retired order-driven receipt campaign never auto invites users', () => {
+    expect(shouldAutoShowFeatureTour({ campaign: COST_QUOTE_RECEIPT_TOUR, chapter: quoteChapter,
+        state: { schemaVersion: FEATURE_TOUR_SCHEMA_VERSION, campaigns: {} }, userRoles: ['salesperson'], now: COST_QUOTE_RECEIPT_TOUR.autoStartAt,
+    })).toBe(false);
 });

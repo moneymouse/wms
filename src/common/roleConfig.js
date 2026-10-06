@@ -22,12 +22,12 @@ export const menuPermissions = {
     '': [ROLES.ADMIN, ROLES.STORE_MANAGER, ROLES.SALESPERSON, ROLES.CLERK], // 创建订单
     'orders': [ROLES.ADMIN, ROLES.STORE_MANAGER, ROLES.SALESPERSON, ROLES.CLERK, ROLES.FINANCE], // 订单列表
     'upload': [ROLES.ADMIN, ROLES.STORE_MANAGER, ROLES.CLERK, ROLES.SALESPERSON], // 上传明细
-    'customers': [ROLES.ADMIN, ROLES.STORE_MANAGER], // 客户管理
+    'customers': [ROLES.ADMIN, ROLES.STORE_MANAGER, ROLES.SALESPERSON], // 客户管理（业务员仅自己的客户）
     'packing-list/new': [ROLES.ADMIN, ROLES.STORE_MANAGER, ROLES.SALESPERSON, ROLES.WORKER, 'employee'], // 创建装箱单
     'packing-lists': [ROLES.ADMIN, ROLES.STORE_MANAGER, ROLES.SALESPERSON, ROLES.CLERK, ROLES.FINANCE, ROLES.WORKER, 'employee'], // 工人仅看自己的装箱单
     'work-details': [ROLES.ADMIN, ROLES.FINANCE, ROLES.WORKER, ROLES.SALESPERSON], // 工作详情
     'bonus': [ROLES.ADMIN, ROLES.FINANCE, ROLES.WORKER, ROLES.SALESPERSON], // 奖金
-    'receipts': [ROLES.ADMIN, ROLES.SALESPERSON], // 收款登记
+    'receipts': [ROLES.ADMIN, ROLES.SALESPERSON, ROLES.FINANCE], // 统一收付款登记
     'finance': [ROLES.ADMIN, ROLES.FINANCE], // 财务配置与汇总
     'cost-management': [ROLES.ADMIN, ROLES.STORE_MANAGER], // 渠道成本管理
     'logs': [ROLES.ADMIN], // 操作日志
@@ -42,16 +42,17 @@ export const routePermissions = {
     '/orders': [ROLES.ADMIN, ROLES.STORE_MANAGER, ROLES.SALESPERSON, ROLES.CLERK, ROLES.FINANCE],
     '/orders/:order_id': [ROLES.ADMIN, ROLES.STORE_MANAGER, ROLES.SALESPERSON, ROLES.CLERK, ROLES.FINANCE],
     '/upload': [ROLES.ADMIN, ROLES.STORE_MANAGER, ROLES.CLERK, ROLES.SALESPERSON],
-    '/customers': [ROLES.ADMIN, ROLES.STORE_MANAGER],
+    '/customers': [ROLES.ADMIN, ROLES.STORE_MANAGER, ROLES.SALESPERSON],
     '/packing-list/new': [ROLES.ADMIN, ROLES.STORE_MANAGER, ROLES.SALESPERSON, ROLES.WORKER, 'employee'],
     '/packing-lists': [ROLES.ADMIN, ROLES.STORE_MANAGER, ROLES.SALESPERSON, ROLES.WORKER, ROLES.CLERK, ROLES.FINANCE, 'employee'],
     '/packing-lists/:uid': [ROLES.ADMIN, ROLES.STORE_MANAGER, ROLES.SALESPERSON, ROLES.WORKER, ROLES.CLERK, ROLES.FINANCE, 'employee'],
-    '/intakes': [ROLES.ADMIN, ROLES.STORE_MANAGER, ROLES.SALESPERSON, ROLES.CLERK],
-    '/intakes/:uid': [ROLES.ADMIN, ROLES.STORE_MANAGER, ROLES.SALESPERSON, ROLES.CLERK],
+    '/packing-list/upload/:uid': [ROLES.ADMIN, ROLES.STORE_MANAGER, ROLES.SALESPERSON, ROLES.CLERK, ROLES.WORKER, 'employee'],
+    '/shipping-confirmation-drafts': [ROLES.ADMIN, ROLES.STORE_MANAGER, ROLES.SALESPERSON, ROLES.CLERK],
+    '/shipping-confirmation-drafts/:uid': [ROLES.ADMIN, ROLES.STORE_MANAGER, ROLES.SALESPERSON, ROLES.CLERK],
     '/work-details': [ROLES.ADMIN, ROLES.FINANCE, ROLES.WORKER, ROLES.SALESPERSON],
     '/bonus': [ROLES.ADMIN, ROLES.FINANCE, ROLES.WORKER, ROLES.SALESPERSON],
     '/bonus-estimate': [ROLES.ADMIN, ROLES.FINANCE, ROLES.WORKER, ROLES.SALESPERSON],
-    '/receipts': [ROLES.ADMIN, ROLES.SALESPERSON],
+    '/receipts': [ROLES.ADMIN, ROLES.SALESPERSON, ROLES.FINANCE],
     '/finance': [ROLES.ADMIN, ROLES.FINANCE],
     '/cost-management': [ROLES.ADMIN, ROLES.STORE_MANAGER],
     '/logs': [ROLES.ADMIN],
@@ -61,6 +62,11 @@ export const routePermissions = {
 };
 
 // 权限检查函数：用户角色集合与允许角色集合交集非空时通过
+export const getUserRoles = (payload = {}) => {
+    const roles = Array.isArray(payload.roles) ? payload.roles : (payload.roles ? [payload.roles] : []);
+    return [...new Set([...roles, ...(payload.role ? [payload.role] : [])])];
+};
+
 export const hasPermission = (userRoles, allowedRoles) => {
     const userRoleSet = new Set(Array.isArray(userRoles) ? userRoles : [userRoles]);
     const allowedRoleSet = new Set(allowedRoles);

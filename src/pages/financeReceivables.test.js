@@ -219,3 +219,22 @@ test('expanded detail errors can be retried and a receipt already reviewed elsew
     await within(dialog).findByText('该收款单已完成审核，请刷新列表查看最新状态。');
     expect(within(dialog).getByRole('button', { name: '审核通过' })).toBeDisabled();
 });
+
+test('receipt audit paginates on the server beyond 200 receipts', async () => {
+    const original = global.fetch;
+    global.fetch = jest.fn(async (url, options) => {
+        const parsed = new URL(url, 'http://localhost');
+        if (parsed.pathname.endsWith('/receipts')) {
+            const page = Number(parsed.searchParams.get('p'));
+            return { ok: true, json: async () => ({ code: 200, data: [page === 1 ? pendingReceipt : secondReceipt], total: 250, page, page_size: 20 }) };
+        }
+        return original(url, options);
+    });
+    render(<ReceiptAudit />);
+    await screen.findByText('RC-PENDING');
+    expect(screen.getByText('共 250 张收款单')).toBeInTheDocument();
+    fireEvent.click(screen.getByTitle('2'));
+    await screen.findByText('RC-SECOND');
+    expect(global.fetch.mock.calls.some(([url]) => new URL(url, 'http://localhost').searchParams.get('p') === '2')).toBe(true);
+    expect(screen.queryByText('RC-PENDING')).not.toBeInTheDocument();
+});
