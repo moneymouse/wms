@@ -2,67 +2,41 @@ import base64
 import json
 import time
 
-from flask import Blueprint, jsonify, request
-from sqlalchemy import func, or_
-
+from flask import Blueprint, current_app, jsonify, request, send_file
 from Auth import verify, allow, get_payload_roles, get_token_payload
-from data import (
-    order_model,
-    cargo_model,
-    RecordExist,
-    add_customer_record,
-)
+from data import order_model
 from data.database import SessionFactory
 from data.DB import (
-    CargoTable,
     OrderQuoteVersionTable,
     OrderTable,
     lock_order_for_update,
 )
-from data.user.User import UserTable, user_model
+from data.user.User import user_model
 from utils.audit import record_audit
 from utils.log import log
 from utils.quote_pdf import build_quote_pdf
-from services import receivable_service
+from utils.shipping_confirmation_pdf import build_shipping_confirmation_pdf
+from services import receivable_service, order_service
+from services.number_generation_service import (
+    GENERATION_ROLES,
+    NumberGenerationError,
+    generate_order_number,
+    generation_options,
+)
 from services.cargo_service import add_cargos_to_order
-from services.order_edit_policy import OrderEditConflictError, build_edit_policy
+from services.order_edit_policy import OrderEditConflictError
 from services.address_recognition import AddressRecognitionError, parse_address
+from services.shipping_confirmation_service import (
+    ShippingConfirmationError,
+    load_shipping_confirmation_details,
+)
 from data.order_version import (
-    current_version_no,
     get_version_detail,
     list_historical_orders,
     list_versions,
 )
 
 order_bp = Blueprint("order", __name__, url_prefix="/api")
-
-ORDER_LIST_EXCLUDED_FIELDS = {
-    "archive",
-    "salesman_id",
-    "cargo_count",
-    "create_date",
-}
-
-ORDER_SEARCH_FIELDS = [
-    "uid",
-    "order_id",
-    "customer_name",
-    "transportation",
-    "receiver",
-    "receiver_phone",
-    "mail",
-    "country",
-    "province",
-    "city",
-    "address",
-    "en_name",
-    "cn_name",
-    "post_code",
-    "zip_code",
-    "order_date",
-    "update_date",
-    "tag_all",
-]
 
 ORDER_UPDATE_FIELDS = {
     "order_id",
@@ -82,47 +56,6 @@ ORDER_UPDATE_FIELDS = {
     "order_date",
     "tag_all",
 }
-
-
-def _serialize_order_list_row(order):
-    return {
-        col.name: getattr(order, col.name)
-        for col in OrderTable.__table__.columns
-        if col.name not in ORDER_LIST_EXCLUDED_FIELDS
-    }
-
-
-def _apply_order_search(query, query_param):
-    if not query_param:
-        return query
-
-    primary = str(query_param).split("-", 1)[0].strip()
-    keywords = [k.strip() for k in str(query_param).splitlines() if k.strip()]
-    conditions = []
-    if primary:
-        like = f"%{primary}%"
-        conditions.extend(
-            getattr(OrderTable, field).ilike(like) for field in ORDER_SEARCH_FIELDS
-        )
-        conditions.append(OrderTable.salesman.has(UserTable.name.ilike(like)))
-    for keyword in keywords:
-        like = f"%{keyword}%"
-        conditions.append(
-            OrderTable.cargos.any(
-                or_(
-                    CargoTable.transfer_id.ilike(like),
-                    CargoTable.waybill_id.ilike(like),
-                )
-            )
-        )
-    return query.filter(or_(*conditions)) if conditions else query
-
-
-def _apply_order_sort(query, sorted_field, sorted_order):
-    column = getattr(OrderTable, sorted_field, None)
-    if column is None:
-        column = OrderTable.create_date
-    return query.order_by(column.desc() if sorted_order == 1 else column.asc())
 
 
 def _current_operator():
@@ -181,115 +114,14 @@ def parse_order_address():
 @log(desc="Create order.", is_json=True)
 @allow()
 def create_order():
-    """创建订单。
-
-    Request body 中优先使用 customer_id 关联客户；customer_name 仅作为兼容兜底和订单快照。
-
-    如果 customer_id / customer_name 对应的客户不存在，返回 404 错误。
-    """
-    from data.customer.Customer import CustomerTable
-    from data.database import SessionFactory
-
-    record = json.loads(request.data)
-    quote_payload = record.pop("quote", None)
-    if quote_payload is not None:
-        try:
-            receivable_service.normalize_quote_payload(quote_payload)
-        except ValueError as exc:
-            return jsonify({"code": 400, "msg": str(exc)}), 400
-
-    payload = get_token_payload() or {}
-    raw_salesman_id = record.get("salesman_id")
-    if raw_salesman_id not in [None, "", 0, "0"]:
-        try:
-            salesman_id = int(raw_salesman_id)
-        except (TypeError, ValueError):
-            return jsonify({"code": 400, "msg": "Invalid salesman_id"}), 400
-        if not user_model.get_by_id(salesman_id):
-            return jsonify({"code": 404, "msg": "Salesman not found"}), 404
-        record["salesman_id"] = salesman_id
-    else:
-        salesman_id = payload.get("user_id") or payload.get("id")
-        if salesman_id is not None:
-            record["salesman_id"] = salesman_id
-
-    if quote_payload is not None and salesman_id is None:
-        return jsonify({"code": 400, "msg": "提供报价时必须指定业务员"}), 400
-
-    customer_name = str(record.get("customer_name", "") or "").strip()
-    raw_customer_id = record.get("customer_id")
-    customer_id = None
-    if raw_customer_id not in [None, "", 0, "0"]:
-        try:
-            customer_id = int(raw_customer_id)
-        except (TypeError, ValueError):
-            return jsonify({"code": 400, "msg": "Invalid customer_id"}), 400
-
-    # 验证客户是否存在
-    customer = None
-    if customer_id or customer_name:
-        s = SessionFactory()
-        try:
-            if customer_id:
-                customer = s.query(CustomerTable).filter_by(id=customer_id).first()
-            else:
-                customer = s.query(CustomerTable).filter_by(name=customer_name).first()
-            if customer is None:
-                target = f"ID:{customer_id}" if customer_id else customer_name
-                return (
-                    jsonify(
-                        {"code": 404, "msg": f"Customer '{target}' not found"}
-                    ),
-                    404,
-                )
-            customer_id = customer.id
-            record["customer_id"] = customer_id
-            record["customer_name"] = customer.name
-        finally:
-            s.close()
-
-    # 添加收件人信息（客户已验证存在）
-    add_customer_record(record)
-
+    """创建订单；共享业务保持现有分阶段提交与响应契约。"""
     try:
-        record["order_date"] = time.strftime("%Y-%m-%d %H:%M")
-        order_uid = order_model.create(record)
-
-    except RecordExist:
-        return jsonify({"code": 500, "msg": "Record Existed"})
-
-    quote_result = None
-    if quote_payload is not None:
-        try:
-            quote_result = receivable_service.create_order_quote(
-                order_uid=order_uid,
-                body=quote_payload,
-                operator_payload=payload,
-                allow_on_behalf=True,
-            )
-        except (ValueError, LookupError, PermissionError) as exc:
-            return jsonify({
-                "code": 500,
-                "msg": f"订单已创建，但报价生成失败：{exc}",
-                "uid": order_uid,
-            }), 500
-        record_audit(
-            event_type="order_quote",
-            target_type="order",
-            target_id=order_uid,
-            action="quote_submit" if quote_result["status"] == "pending" else "quote_adopt",
-            after_data=quote_result,
-            remark=quote_result.get("quote_remark"),
+        result = order_service.create_order(
+            json.loads(request.data), get_token_payload() or {}
         )
-
-    response_data = {
-        "code": 200,
-        "msg": "创建成功并已生成报价" if quote_result else "success",
-        "uid": order_uid,
-    }
-    if quote_result:
-        response_data["data"] = {"quote": quote_result}
-    return jsonify(response_data)
+        return jsonify(result)
+    except order_service.BusinessError as exc:
+        return jsonify(exc.to_dict()), exc.http_status
 
 
 # 获取订单列表（支持分页、搜索、排序）
@@ -297,30 +129,13 @@ def create_order():
 @verify
 @allow(role=["admin", "store_manager", "salesperson", "clerk"])
 def get_order_list():
-    page = request.args.get("p", 1, type=int) - 1
-    page_size = request.args.get("s", 30, type=int)
-    sorted_field = request.args.get("sf", "create_date", type=str)
-    sorted_order = request.args.get("so", 1, type=int)
-    query_param = request.args.get("q", "", type=str)
-
-    page = max(page, 0)
-    page_size = min(max(page_size, 1), 200)
-
-    with SessionFactory() as session:
-        query = session.query(OrderTable).filter(OrderTable.archive == False)  # noqa: E712
-        query = _apply_order_search(query, query_param)
-        total = query.count()
-        rows = (
-            _apply_order_sort(query, sorted_field, sorted_order)
-            .offset(page * page_size)
-            .limit(page_size)
-            .all()
-        )
-        return jsonify({
-            "code": 200,
-            "data": [_serialize_order_list_row(row) for row in rows],
-            "total": total,
-        })
+    return jsonify(order_service.list_orders(
+        p=request.args.get("p", 1, type=int),
+        s=request.args.get("s", 30, type=int),
+        sf=request.args.get("sf", "create_date", type=str),
+        so=request.args.get("so", 1, type=int),
+        q=request.args.get("q", "", type=str),
+    ))
 
 
 # 获取单个订单
@@ -328,24 +143,34 @@ def get_order_list():
 @verify
 @allow()
 def get_order(uid):
-    data = order_model.read(uid)
-    if data is not None:
-        with SessionFactory() as session:
-            payload = get_token_payload() or {}
-            try:
-                policy = build_edit_policy(
-                    session,
-                    uid,
-                    get_payload_roles(payload),
-                    payload.get("user_id") or payload.get("id"),
-                )
-                data.update(policy)
-                data["current_version"] = current_version_no(session, uid)
-            except LookupError:
-                # Compatibility for legacy/model-mocked callers. A real persisted
-                # order always resolves through the policy query above.
-                pass
-    return jsonify({"code": 200, "data": data})
+    return jsonify(order_service.get_order(uid, get_token_payload() or {}))
+
+
+@order_bp.get("/orders/<string:uid>/customer-contact")
+@verify
+@allow(role=["admin", "store_manager", "salesperson"])
+def get_order_customer_contact(uid):
+    payload = get_token_payload() or {}
+    try:
+        result = order_service.get_order_customer_contact(uid, payload)
+    except order_service.BusinessError as exc:
+        return jsonify(exc.to_dict()), exc.http_status
+
+    from services.customer_access import current_user_id
+    from utils.audit_log import log_sensitive_access, ACTION_VIEW_SINGLE
+
+    customer = result["data"]
+    log_sensitive_access(
+        user_id=current_user_id(payload),
+        user_role=get_payload_roles(payload),
+        user_name=payload.get("name"),
+        action=ACTION_VIEW_SINGLE,
+        customer_name=customer["name"] if customer else f"Order:{uid}",
+        ip_address=request.remote_addr,
+    )
+    response = jsonify(result)
+    response.headers["Cache-Control"] = "private, no-store"
+    return response
 
 
 @order_bp.get("/orders/<string:uid>/versions")
@@ -399,6 +224,21 @@ def update_order(uid):
     except OrderEditConflictError as exc:
         return jsonify({"code": 409, "msg": str(exc)}), 409
     return jsonify({"code": 200, "msg": "success"})
+
+
+@order_bp.post("/orders/<string:uid>/generate-order-number")
+@verify
+@allow(role=GENERATION_ROLES)
+@log(desc="Generate order number.", is_json=True)
+def generate_order_number_route(uid):
+    try:
+        options = generation_options(request.get_json(silent=True) if request.data else {})
+        result = generate_order_number(uid, get_token_payload() or {}, **options)
+        return jsonify({"code": 200, "msg": "订单号已生成", "data": result})
+    except NumberGenerationError as exc:
+        return jsonify({"code": exc.code, "msg": str(exc)}), exc.code
+    except OrderEditConflictError as exc:
+        return jsonify({"code": 409, "msg": str(exc)}), 409
 
 
 @order_bp.post("/orders/<string:uid>/archive")
@@ -592,14 +432,6 @@ def create_order_quote(uid):
     except ValueError as exc:
         return jsonify({"code": 400, "msg": str(exc)}), 400
 
-    record_audit(
-        event_type="order_quote",
-        target_type="order",
-        target_id=uid,
-        action="quote_submit" if after_data["status"] == "pending" else "quote_adopt",
-        after_data=after_data,
-        remark=after_data.get("quote_remark"),
-    )
     msg = "报价已采纳" if after_data["status"] == "adopted" else "报价低于最低限制，已提交管理员审核"
     return jsonify({"code": 200, "msg": msg, "data": after_data})
 
@@ -740,21 +572,19 @@ def review_quote_approval(quote_id):
                 summary="报价审核更新订单运输方式",
                 operator_payload=get_token_payload() or {},
             )
-        session.commit()
-        session.refresh(quote)
+        session.flush()
         after_data = _quote_dict(session, quote)
         if action == "approve":
             after_data["order_transportation"] = quote.transportation_name
 
-    record_audit(
-        event_type="order_quote",
-        target_type="quote",
-        target_id=quote_id,
-        action=f"quote_{action}",
-        before_data=before_data,
-        after_data=after_data,
-        remark=review_remark,
-    )
+        record_audit(
+            event_type="order_quote", target_type="quote", target_id=quote_id,
+            action=f"quote_{action}", before_data=before_data,
+            after_data=after_data, remark=review_remark, session=session,
+            operator_payload=get_token_payload() or {},
+            metadata={"order_uid": quote.order_uid},
+        )
+        session.commit()
     return jsonify({"code": 200, "msg": "审核完成", "data": after_data})
 
 
@@ -789,3 +619,35 @@ def get_order_quote_pdf(uid):
             "mime_type": "application/pdf",
             "data": encoded,
         })
+
+
+@order_bp.post("/orders/shipping-confirmation/pdf")
+@verify
+@allow()
+def export_shipping_confirmation_pdf():
+    """Export selected orders or boxes as compact printable confirmation cards."""
+    try:
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            raise ShippingConfirmationError("请求须为 JSON 对象")
+        details = load_shipping_confirmation_details(
+            data.get("uid_list"), data.get("cargo_list")
+        )
+        stream = build_shipping_confirmation_pdf(details)
+    except ShippingConfirmationError as exc:
+        return jsonify({"code": exc.status, "msg": str(exc)}), exc.status
+    except ValueError as exc:
+        return jsonify({"code": 400, "msg": str(exc)}), 400
+    except Exception:
+        current_app.logger.exception("Shipping confirmation PDF export failed")
+        return jsonify({"code": 500, "msg": "出货确认单生成失败，请稍后重试"}), 500
+
+    response = send_file(
+        stream,
+        mimetype="application/pdf",
+        as_attachment=True,
+        download_name="shipping-confirmation.pdf",
+        max_age=0,
+    )
+    response.headers["Cache-Control"] = "private, no-store"
+    return response

@@ -1,4 +1,4 @@
-"""Transactional review workflow and isolated recognition candidates."""
+"""Uploader-checked paper submissions and isolated recognition candidates."""
 import json
 import logging
 import math
@@ -9,7 +9,7 @@ from io import BytesIO
 from uuid import uuid4
 
 from PIL import Image, UnidentifiedImageError
-from sqlalchemy import func, or_
+from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.exc import StaleDataError
 
@@ -21,9 +21,9 @@ from data.packing.PackingList import PackingListTable, BoxModel, BoxWorkerTable
 from data.user.Role import RoleTable
 from data.user.User import UserTable
 
-REVIEW_ROLES = {"admin", "store_manager", "salesperson", "clerk"}
+STAFF_READ_ROLES = {"admin", "store_manager", "salesperson", "clerk"}
 WORKER_ROLES = {"worker", "employee"}
-SUBMIT_ROLES = REVIEW_ROLES | WORKER_ROLES
+SUBMIT_ROLES = STAFF_READ_ROLES | WORKER_ROLES
 MAX_PHOTOS = 8
 MAX_PHOTO_BYTES = 10 * 1024 * 1024
 MAX_TOTAL_PHOTO_BYTES = 24 * 1024 * 1024
@@ -39,14 +39,14 @@ def now():
     return datetime.now().isoformat(timespec="seconds")
 
 
-def require_role(payload, review=False):
-    if not set(get_payload_roles(payload)).intersection(REVIEW_ROLES if review else SUBMIT_ROLES):
+def require_role(payload):
+    if not set(get_payload_roles(payload)).intersection(SUBMIT_ROLES):
         raise IntakeError("没有纸单回传操作权限", 403)
     if not payload.get("user_id"):
         raise IntakeError("登录身份无效", 401)
 
 
-def load_record(session, uid, payload, lock=False):
+def load_record(session, uid, payload, lock=False, owner_only=False):
     require_role(payload)
     query = session.query(IntakeTable).filter_by(uid=uid)
     if lock:
@@ -54,8 +54,10 @@ def load_record(session, uid, payload, lock=False):
     record = query.first()
     if record is None:
         raise IntakeError("回传记录不存在", 404)
-    if not set(get_payload_roles(payload)).intersection(REVIEW_ROLES) and record.submitted_by != payload["user_id"]:
-        raise IntakeError("只能查看自己的回传记录", 403)
+    if record.submitted_by != payload["user_id"]:
+        staff_history = record.status == "confirmed" and bool(set(get_payload_roles(payload)).intersection(STAFF_READ_ROLES))
+        if owner_only or not staff_history:
+            raise IntakeError("只能查看或核对自己的上传记录", 403)
     return record
 
 
@@ -102,7 +104,7 @@ def _approved_workers(session):
 
 
 def list_workers(payload):
-    require_role(payload, review=True)
+    require_role(payload)
     with database.SessionFactory() as session:
         workers = _approved_workers(session).order_by(UserTable.name, UserTable.id).all()
         return [{"id": worker.id, "name": worker.name} for worker in workers]
@@ -162,12 +164,14 @@ def _bind_recognition_workers(session, candidate):
     return candidate
 
 
-def my_packing_lists(payload, page=1, page_size=20, mark=None):
+def my_packing_lists(payload, page=1, page_size=20, mark=None, status=None):
     """Return ownership-scoped metadata for manual lists and paper submissions."""
     require_role(payload)
     page = max(1, int(page))
     page_size = min(100, max(1, int(page_size)))
     mark_filter = _text(mark, "查询唛头", 64).casefold()
+    if status is not None and status not in {"uploading", "draft", "completed"}:
+        raise IntakeError("装箱单状态须为上传中、草稿或已完成")
     with database.SessionFactory() as session:
         formal = session.query(
             PackingListTable.uid, PackingListTable.list_number,
@@ -204,13 +208,15 @@ def my_packing_lists(payload, page=1, page_size=20, mark=None):
                 "uid": row.uid,
                 "mark": effective.get("mark") or draft.get("mark") or row.mark_hint or "",
                 "source": "paper",
-                "status": "pending_review",
+                "status": "uploading",
                 "created_at": row.created_at,
                 "box_count": len(effective.get("boxes") or []),
                 "packing_list_uid": None,
             })
         if mark_filter:
             items = [item for item in items if mark_filter in item["mark"].casefold()]
+        if status:
+            items = [item for item in items if item["status"] == status]
         items.sort(key=lambda item: ((item["created_at"] or "").replace("T", " "), item["uid"]), reverse=True)
         total = len(items)
         return {"items": items[(page - 1) * page_size:page * page_size], "total": total, "page": page, "page_size": page_size}
@@ -259,34 +265,22 @@ def create_intake(payload, files, form):
 
 def list_intakes(payload, status=None, page=1, page_size=20, packing_list_uid=None, mark=None):
     require_role(payload)
-    if status and status not in {"pending", "confirmed"}:
-        raise IntakeError("回传状态无效")
+    if not packing_list_uid:
+        raise IntakeError("待核对纸质单功能已移除，请在上传完成前自行核对", 410)
+    packing_list_uid = _text(packing_list_uid, "装箱单ID", 32)
     with database.SessionFactory() as session:
-        query = session.query(IntakeTable)
-        if not set(get_payload_roles(payload)).intersection(REVIEW_ROLES):
-            query = query.filter_by(submitted_by=payload["user_id"])
-        if status:
-            query = query.filter_by(status=status)
-        if packing_list_uid:
-            query = query.filter_by(packing_list_uid=packing_list_uid)
-        if mark:
-            mark = _text(mark, "查询唛头", 64)
-            pattern = "%" + mark.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
-            # JSON_EXTRACT is supported by both the SQLite preview and MySQL.
-            query = query.filter(or_(
-                IntakeTable.mark_hint.ilike(pattern, escape="\\"),
-                func.json_extract(IntakeTable.draft_json, "$.mark").ilike(pattern, escape="\\"),
-                func.json_extract(IntakeTable.recognition_result_json, "$.mark").ilike(pattern, escape="\\"),
-            ))
-        total = query.count()
-        items = query.order_by(IntakeTable.created_at.desc(), IntakeTable.uid.desc()).offset((page - 1) * page_size).limit(page_size).all()
-        if any([_expire_recognition(item) for item in items]):
-            session.commit()
-        return {"items": [serialize(item) for item in items], "total": total, "page": page, "page_size": page_size}
+        packing_list = session.query(PackingListTable).filter_by(uid=packing_list_uid, archive=False).first()
+        if packing_list is None:
+            raise IntakeError("装箱单不存在", 404)
+        if not set(get_payload_roles(payload)).intersection(STAFF_READ_ROLES) and packing_list.creator_id != payload["user_id"]:
+            raise IntakeError("只能查看自己创建的装箱单", 403)
+        # This lookup is only for the source photos on a completed formal list.
+        records = session.query(IntakeTable).filter_by(packing_list_uid=packing_list_uid, status="confirmed").all()
+        return {"items": [serialize(record) for record in records], "total": len(records), "page": 1, "page_size": 20}
 
 
 def _expire_recognition(record):
-    # In-process jobs cannot survive a restart. Lists also make retry possible.
+    # In-process jobs cannot survive a restart. Opening a submission enables retry.
     if record.recognition_status == "running" and record.recognition_started_at and datetime.fromisoformat(record.recognition_started_at) < datetime.now() - timedelta(minutes=5):
         record.recognition_status = "failed"
         record.recognition_error = "识别任务超时或服务已重启，请重试"
@@ -368,12 +362,12 @@ def normalize_draft(draft, complete=False):
 
 
 def save_draft(payload, uid, version, draft):
-    require_role(payload, review=True)
-    normalized = normalize_draft(draft)
+    require_role(payload)
     try:
         with database.SessionFactory() as session:
-            record = load_record(session, uid, payload, lock=True)
+            record = load_record(session, uid, payload, lock=True, owner_only=True)
             _check_edit(record, version)
+            normalized = normalize_draft(draft)
             _validate_worker_ids(session, normalized["worker_ids"])
             record.draft_json = json.dumps(normalized, ensure_ascii=False, allow_nan=False)
             # Saving identical contents must still advance the version.
@@ -389,14 +383,18 @@ def _new_box(packing_uid, mark, row, timestamp):
     return CargoTable(uid=uid, origin_id=f"BOX-{uid}", tag=BoxModel()._build_box_tag(mark, row["box_number"]), transfer_id="", waybill_id="", target_order_uid=None, count=row["count"], piece_count=row["count"], item_name=row["item_name"], real_en_name=row["item_name"], item_details=json.dumps([{"item_name": row["item_name"], "piece_count": row["count"], "customs_code": ""}], ensure_ascii=False), box_number=row["box_number"], weight=row["weight"], price=0.0, status=0, box_status="pending", archive=False, packing_list_uid=packing_uid, create_date=timestamp)
 
 
-def confirm_intake(payload, uid, version):
-    require_role(payload, review=True)
+def confirm_intake(payload, uid, version, reviewed=False):
+    require_role(payload)
     try:
         with database.SessionFactory() as session:
-            record = load_record(session, uid, payload, lock=True)
+            record = load_record(session, uid, payload, lock=True, owner_only=True)
+            if reviewed is not True:
+                raise IntakeError("请先对照纸质单检查并确认识别结果")
             if record.status == "confirmed":
                 return serialize(record)
             _check_edit(record, version)
+            if record.recognition_status == "running":
+                raise IntakeError("识别尚未完成，请等待后检查识别结果再完成上传", 409)
             draft = normalize_draft(json.loads(record.draft_json), complete=True)
             _validate_worker_ids(session, draft["worker_ids"], complete=True)
             # Match the existing canonical mark, while refusing its auto-rename policy.
@@ -481,17 +479,17 @@ def _launch_recognition(job_args):
             record = session.query(IntakeTable).filter_by(uid=job_args[0]).with_for_update().first()
             if record and record.recognition_job_uid == job_args[1] and record.recognition_status == "running":
                 record.recognition_status = "failed"
-                record.recognition_error = "照片已回传，自动识别暂时无法启动，请核对人员重试"
+                record.recognition_error = "照片已暂存，自动识别暂时无法启动，请重试或手动填写核对"
                 record.recognition_job_uid = None
                 session.commit()
         return False
 
 
 def start_recognition(payload, uid, version):
-    require_role(payload, review=True)
+    require_role(payload)
     try:
         with database.SessionFactory() as session:
-            record = load_record(session, uid, payload, lock=True)
+            record = load_record(session, uid, payload, lock=True, owner_only=True)
             _check_edit(record, version)
             if record.recognition_status == "running":
                 return serialize(record)

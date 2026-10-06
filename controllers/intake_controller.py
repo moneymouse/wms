@@ -1,4 +1,4 @@
-"""Authenticated paper uploads and reviewer operations."""
+"""Authenticated paper uploads checked by their uploader before completion."""
 from functools import wraps
 from io import BytesIO
 from pathlib import Path
@@ -45,19 +45,14 @@ def submit():
     if request.content_length and request.content_length > 25 * 1024 * 1024:
         raise service.IntakeError("照片合计不能超过24MB，请压缩或拆分回传", 413)
     record = service.create_intake(payload(), request.files.getlist("photos"), request.form)
-    return jsonify({"code": 200, "data": record, "msg": "已回传，待核对"}), 201
+    return jsonify({"code": 200, "data": record, "msg": "照片已暂存，请检查识别结果后完成上传"}), 201
 
 
 @intake_bp.get("")
 @verify
 @handled
 def list_records():
-    try:
-        page = max(1, int(request.args.get("page", 1)))
-        page_size = min(100, max(1, int(request.args.get("page_size", 20))))
-    except ValueError:
-        raise service.IntakeError("分页参数须为整数")
-    return jsonify({"code": 200, "data": service.list_intakes(payload(), request.args.get("status"), page, page_size, request.args.get("packing_list_uid"), request.args.get("mark"))})
+    return jsonify({"code": 200, "data": service.list_intakes(payload(), packing_list_uid=request.args.get("packing_list_uid"))})
 
 
 @intake_bp.get("/<uid>")
@@ -96,7 +91,7 @@ def my_packing_lists():
         page_size = min(100, max(1, int(request.args.get("page_size", 20))))
     except ValueError:
         raise service.IntakeError("分页参数须为整数")
-    return jsonify({"code": 200, "data": service.my_packing_lists(payload(), page, page_size, request.args.get("mark"))})
+    return jsonify({"code": 200, "data": service.my_packing_lists(payload(), page, page_size, request.args.get("mark"), request.args.get("status"))})
 
 
 @intake_bp.get("/<uid>/photos/<photo_uid>")
@@ -123,7 +118,7 @@ def draft(uid):
 @handled
 def confirm(uid):
     data = body()
-    return jsonify({"code": 200, "data": service.confirm_intake(payload(), uid, data.get("version"))})
+    return jsonify({"code": 200, "data": service.confirm_intake(payload(), uid, data.get("version"), reviewed=data.get("reviewed"))})
 
 
 @intake_bp.post("/<uid>/recognize")

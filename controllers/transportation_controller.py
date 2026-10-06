@@ -117,8 +117,6 @@ def create_transportation_mode():
         session.add(mode)
         session.flush()
         version = _add_cost_version(session, mode, "create", remark)
-        session.commit()
-        session.refresh(mode)
         record_audit(
             event_type="transportation_cost",
             target_type="transportation_mode",
@@ -126,7 +124,9 @@ def create_transportation_mode():
             action="create",
             after_data={**_mode_dict(mode), "version_no": version.version_no},
             remark=remark,
+            session=session,
         )
+        session.commit()
         return jsonify({
             "code": 200,
             "msg": "创建成功",
@@ -150,6 +150,8 @@ def update_transportation_mode(mode_id):
         mode = (
             session.query(TransportationModeTable)
             .filter(TransportationModeTable.id == mode_id)
+            .populate_existing()
+            .with_for_update()
             .first()
         )
         if mode is None:
@@ -182,7 +184,6 @@ def update_transportation_mode(mode_id):
 
         mode.update_date = time.strftime("%Y-%m-%d %H:%M")
         version = _add_cost_version(session, mode, "update", remark)
-        session.commit()
         record_audit(
             event_type="transportation_cost",
             target_type="transportation_mode",
@@ -191,7 +192,9 @@ def update_transportation_mode(mode_id):
             before_data=before_data,
             after_data={**_mode_dict(mode), "version_no": version.version_no},
             remark=remark,
+            session=session,
         )
+        session.commit()
         return jsonify({
             "code": 200,
             "msg": "更新成功",
@@ -208,6 +211,8 @@ def delete_transportation_mode(mode_id):
         mode = (
             session.query(TransportationModeTable)
             .filter(TransportationModeTable.id == mode_id)
+            .populate_existing()
+            .with_for_update()
             .first()
         )
         if mode is None:
@@ -217,7 +222,6 @@ def delete_transportation_mode(mode_id):
         mode.archive = True
         mode.update_date = time.strftime("%Y-%m-%d %H:%M")
         version = _add_cost_version(session, mode, "archive")
-        session.commit()
         record_audit(
             event_type="transportation_cost",
             target_type="transportation_mode",
@@ -225,7 +229,9 @@ def delete_transportation_mode(mode_id):
             action="archive",
             before_data=before_data,
             after_data={**_mode_dict(mode), "version_no": version.version_no},
+            session=session,
         )
+        session.commit()
         return jsonify({"code": 200, "msg": "删除成功"})
 
 

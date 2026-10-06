@@ -17,7 +17,7 @@ from data.DB import (
 from data.order_version import (
     new_correlation_id, normalize_operator, record_mutation, snapshot_order,
 )
-from services.order_edit_policy import OrderEditConflictError, cargo_is_outbound_or_later
+from services.order_edit_policy import OrderEditConflictError, cargo_is_outbound_or_later, cargo_currently_outbound
 
 OUTBOUND_ROLES = {"admin", "store_manager", "salesperson", "clerk"}
 
@@ -219,6 +219,47 @@ def confirm_outbound(uids, *, occurred_at=None, source="explicit", operator=None
             _versions(session, before, action="cargo_outbound", operator=operator)
             session.commit()
             return {"confirmed": confirmed, "unchanged": [row.uid for row in rows if row.uid not in confirmed]}
+        except Exception:
+            session.rollback()
+            raise
+
+
+def undo_outbound(uid, *, operator=None):
+    """Return cargo/boxes to stock, retaining shipment, financial and version facts."""
+    from data import DB
+    actor = normalize_operator(operator)
+    if (operator is not None or has_request_context()) and not set(actor["roles"]).intersection({"admin", "store_manager"}):
+        raise PermissionError("只有管理员或店长可以撤销出库")
+    with DB.SessionFactory() as session:
+        try:
+            rows, order_uids = _lock_cargos(session, [uid])
+            cargo = rows[0]
+            if not cargo_currently_outbound(cargo):
+                raise ValueError("包裹当前未出库，无需撤销")
+            before = {order_uid: snapshot_order(session, order_uid) for order_uid in order_uids}
+            old_status = cargo.status
+            now = time.strftime("%Y-%m-%d %H:%M")
+            changed = session.query(CargoTable).filter(
+                CargoTable.uid == uid,
+                CargoTable.status == old_status if old_status is not None else CargoTable.status.is_(None),
+                CargoTable.target_order_uid == cargo.target_order_uid,
+                CargoTable.archive == False,  # noqa: E712
+            ).update({"status": 0, "date": None, "waybill_id": "", "update_date": now}, synchronize_session=False)
+            if changed != 1:
+                raise OrderEditConflictError("包裹出库状态已变化，请刷新后重试")
+            cargo.status, cargo.date, cargo.waybill_id, cargo.update_date = 0, None, "", now
+            session.query(BoxCostRecordTable).filter(
+                BoxCostRecordTable.box_uid == uid, BoxCostRecordTable.archive == False,  # noqa: E712
+            ).update({"archive": True}, synchronize_session=False)
+            session.flush()
+            correlation_id = new_correlation_id()
+            for order_uid in order_uids:
+                record_mutation(session, order_uid, before=before[order_uid], after=snapshot_order(session, order_uid),
+                                action="box_shipment_undone" if cargo.packing_list_uid else "cargo_shipment_undone",
+                                summary="撤销箱子出库" if cargo.packing_list_uid else "撤销包裹出库",
+                                operator_payload=operator, correlation_id=correlation_id)
+            session.commit()
+            return {"uid": uid, "status": 0, "date": None, "waybill_id": ""}
         except Exception:
             session.rollback()
             raise

@@ -42,6 +42,10 @@ services:
     container_name: wms_backend_dev
     restart: unless-stopped
     environment:
+      OAUTH_ISSUER_URL: ${OAUTH_ISSUER_URL:-}
+      MCP_PUBLIC_URL: ${MCP_PUBLIC_URL:-}
+      OAUTH_SESSION_SECRET: ${OAUTH_SESSION_SECRET:-}
+      OAUTH_ALLOW_LOCAL_HTTP: ${OAUTH_ALLOW_LOCAL_HTTP:-false}
       DATABASE_URL: >-
         mysql+pymysql://wms_user:wms_password_change_me@mysql:3306/wms_db?charset=utf8mb4
       # Initial admin user credentials (created on first startup)
@@ -78,6 +82,37 @@ services:
         cd /app && python -m scripts.init_admin &&
         echo 'Starting Flask development server with hot reload...' &&
         flask run --host=0.0.0.0 --port=5000 --reload --debugger
+
+  # Optional remote MCP service; backend alone owns migrations and admin setup.
+  mcp:
+    profiles: ["mcp"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    entrypoint: []
+    command: ["uvicorn", "mcp_server:app", "--host", "0.0.0.0", "--port", "8000", "--no-proxy-headers"]
+    environment:
+      DATABASE_URL: mysql+pymysql://wms_user:wms_password_change_me@mysql:3306/wms_db?charset=utf8mb4
+      TZ: Asia/Shanghai
+      OAUTH_ISSUER_URL: ${OAUTH_ISSUER_URL:-}
+      MCP_PUBLIC_URL: ${MCP_PUBLIC_URL:-}
+      OAUTH_SESSION_SECRET: ${OAUTH_SESSION_SECRET:-}
+      OAUTH_ALLOW_LOCAL_HTTP: ${OAUTH_ALLOW_LOCAL_HTTP:-false}
+      MCP_ALLOWED_HOSTS: ${MCP_ALLOWED_HOSTS:-}
+      MCP_ALLOWED_ORIGINS: ${MCP_ALLOWED_ORIGINS:-}
+    depends_on:
+      mysql:
+        condition: service_healthy
+    networks:
+      - wms_network_dev
+    expose:
+      - "8000"
+    volumes:
+      - .:/app
+    ports:
+      - "127.0.0.1:8000:8000"
+
 
 volumes:
   mysql_data_dev:

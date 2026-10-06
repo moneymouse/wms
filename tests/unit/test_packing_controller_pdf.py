@@ -40,7 +40,7 @@ class TestPackingControllerPdf:
             response = client.post(
                 "/api/packing-lists/pdf",
                 json=payload,
-                headers={"Authorization": f"Bearer {admin_token}"},
+                headers={"x-token": admin_token},
             )
 
         assert response.status_code == 200
@@ -56,7 +56,7 @@ class TestPackingControllerPdf:
         response = client.post(
             "/api/packing-lists/pdf",
             json={},
-            headers={"Authorization": f"Bearer {admin_token}"},
+            headers={"x-token": admin_token},
         )
 
         assert response.status_code == 400

@@ -100,19 +100,19 @@ def test_formal_app_exposes_intake_routes_with_existing_jwt_authentication(forma
     assert client.get("/api/intakes").status_code == 401
     assert client.get("/api/intakes", headers={"x-token": "invalid-token"}).status_code == 401
     worker = login(client, 17)
-    assert client.get("/api/intakes", headers=worker).status_code == 200
-    assert client.get("/api/intakes/workers", headers=worker).status_code == 403
+    assert client.get("/api/intakes", headers=worker).status_code == 410
+    assert client.get("/api/intakes/workers", headers=worker).status_code == 200
     template = client.get("/api/intakes/template", headers=worker)
     assert template.status_code == 200 and template.mimetype == "application/pdf"
     assert template.data.startswith(b"%PDF-")
     assert client.get("/api/intakes/template").status_code == 401
-    assert not any("preview" in route for route in routes)
+    assert not any(route.startswith("/api/preview/") for route in routes)
     preview = client.get("/api/preview/health")
     assert preview.status_code == 404 and preview.json["code"] == 404
     assert client.post("/api/auth/login", json={"phone": "18800000017", "password": "wrong-password"}).status_code == 401
 
 
-def test_real_formal_login_upload_review_and_ownership_flow(formal_app):
+def test_real_formal_login_uploader_check_and_ownership_flow(formal_app):
     client, factory, _, _, _ = formal_app
     worker, other_worker, clerk, finance = [login(client, uid) for uid in (17, 18, 19, 20)]
     assert client.post("/api/intakes", headers=finance, data={"photos": (photo(), "拒绝.png")}).status_code == 403
@@ -122,20 +122,25 @@ def test_real_formal_login_upload_review_and_ownership_flow(formal_app):
     assert record["submitted_by"] == 17 and record["submitted_by_name"] == "正式工人A"
     assert record["status"] == "pending"
     assert client.get(record["photos"][0]["url"], headers=other_worker).status_code == 403
-    assert client.post(f"/api/intakes/{record['uid']}/confirm", headers=worker, json={"version": record["version"]}).status_code == 403
-    workers = client.get("/api/intakes/workers", headers=clerk).json["data"]
+    assert client.post(f"/api/intakes/{record['uid']}/confirm", headers=worker, json={"version": record["version"]}).status_code == 400
+    assert client.get(f"/api/intakes/{record['uid']}", headers=clerk).status_code == 403
+    workers = client.get("/api/intakes/workers", headers=worker).json["data"]
     assert {item["id"] for item in workers} == {17, 18}
-    saved = client.put(f"/api/intakes/{record['uid']}/draft", headers=clerk, json={
+    saved = client.put(f"/api/intakes/{record['uid']}/draft", headers=worker, json={
         "version": record["version"],
         "draft": {"mark": "FORMAL-PAPER", "operator_name": "正式工人A", "worker_ids": [17], "boxes": [{"box_number": 12, "item_name": "衣服", "count": 7, "weight": 2.5}]},
     })
     assert saved.status_code == 200, saved.json
-    confirmed = client.post(f"/api/intakes/{record['uid']}/confirm", headers=clerk, json={"version": saved.json["data"]["version"]})
+    with factory() as session:
+        session.query(IntakeTable).filter_by(uid=record["uid"]).one().recognition_status = "succeeded"
+        session.commit()
+    ready = client.get(f"/api/intakes/{record['uid']}", headers=worker).json["data"]
+    confirmed = client.post(f"/api/intakes/{record['uid']}/confirm", headers=worker, json={"version": ready["version"], "reviewed": True})
     assert confirmed.status_code == 200, confirmed.json
     packing_uid = confirmed.json["data"]["packing_list_uid"]
     with factory() as session:
         assert session.query(PackingListTable).filter_by(uid=packing_uid).one().creator_id == 17
-        assert session.query(IntakeTable).one().confirmed_by == 19
+        assert session.query(IntakeTable).one().confirmed_by == 17
         assert session.query(BoxWorkerTable).one().worker_id == 17
     my_lists = client.get("/api/intakes/my-packing-lists", headers=worker).json["data"]
     assert my_lists["total"] == 1
@@ -143,17 +148,22 @@ def test_real_formal_login_upload_review_and_ownership_flow(formal_app):
     assert my_lists["items"][0]["packing_list_uid"] == packing_uid
     assert client.get(f"/api/packing-list/{packing_uid}", headers=worker).status_code == 200
     assert client.get(f"/api/packing-list/{packing_uid}", headers=other_worker).status_code == 403
+    assert client.get(record["photos"][0]["url"], headers=clerk).status_code == 200
+    assert client.put(f"/api/intakes/{record['uid']}/draft", headers=clerk, json={"version": ready["version"], "draft": ready["draft"]}).status_code == 403
 
 
-def create_paper_record(client, confirmed):
+def create_paper_record(client, factory, confirmed):
     worker = login(client, 17)
     record = client.post("/api/intakes", headers=worker, data={"photos": (photo(), "删除保护.png")}).json["data"]
     if confirmed:
-        clerk = login(client, 19)
-        record = client.put(f"/api/intakes/{record['uid']}/draft", headers=clerk, json={
+        record = client.put(f"/api/intakes/{record['uid']}/draft", headers=worker, json={
             "version": record["version"], "draft": {"mark": "PROTECTED-PAPER", "worker_ids": [17], "boxes": [{"box_number": 1, "item_name": "衣服", "count": 3, "weight": 2}]},
         }).json["data"]
-        response = client.post(f"/api/intakes/{record['uid']}/confirm", headers=clerk, json={"version": record["version"]})
+        with factory() as session:
+            session.query(IntakeTable).filter_by(uid=record["uid"]).one().recognition_status = "succeeded"
+            session.commit()
+        record = client.get(f"/api/intakes/{record['uid']}", headers=worker).json["data"]
+        response = client.post(f"/api/intakes/{record['uid']}/confirm", headers=worker, json={"version": record["version"], "reviewed": True})
         assert response.status_code == 200, response.json
         record = response.json["data"]
     return record
@@ -162,7 +172,12 @@ def create_paper_record(client, confirmed):
 @pytest.mark.parametrize("confirmed,user_id", [(False, 17), (True, 17), (True, 19), (True, 18)])
 def test_formal_hard_delete_keeps_paper_upload_review_and_source_creator_identities(formal_app, confirmed, user_id):
     client, factory, _, _, _ = formal_app
-    record = create_paper_record(client, confirmed)
+    record = create_paper_record(client, factory, confirmed)
+    if user_id == 19:
+        # Historical records keep the former reviewer's identity protected.
+        with factory() as session:
+            session.query(IntakeTable).filter_by(uid=record["uid"]).one().confirmed_by = 19
+            session.commit()
     if user_id == 18:
         # A pre-existing source list may have a creator different from the uploader.
         with factory() as session:
@@ -182,7 +197,7 @@ def test_formal_hard_delete_keeps_paper_upload_review_and_source_creator_identit
 
 def test_formal_source_packing_list_hard_delete_returns_conflict_and_archive_preserves_paper(formal_app):
     client, factory, _, _, _ = formal_app
-    record = create_paper_record(client, confirmed=True)
+    record = create_paper_record(client, factory, confirmed=True)
     uid = record["packing_list_uid"]
     admin = login(client, 22)
     response = client.delete(f"/api/packing-list/{uid}", headers=admin)
@@ -228,9 +243,9 @@ def test_formal_alembic_upgrade_creates_intake_schema_and_preserves_existing_dat
     config = migration_config()
     script = ScriptDirectory.from_config(config)
     assert script.get_revision("df4a5b6c7d8e").down_revision == "ce3f4a5b6c7d"
-    assert script.get_heads() == ["df4a5b6c7d8e"]
+    assert script.get_revision("df4a5b6c7d8e") is not None
     command.stamp(config, "ce3f4a5b6c7d")
-    command.upgrade(config, "head")
+    command.upgrade(config, "df4a5b6c7d8e")
     schema = inspect(engine)
     assert {"paper_intakes", "paper_intake_photos"}.issubset(schema.get_table_names())
     assert {column["name"] for column in schema.get_columns("paper_intakes")} == set(IntakeTable.__table__.columns.keys())

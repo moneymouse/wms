@@ -1,0 +1,22 @@
+{% extends "oauth/base.html" %}
+{% block title %}登录 · 迅达货运 MCP 授权{% endblock %}
+{% block content %}
+  <h1>登录迅达货运</h1>
+  <p class="page-description">使用您的 WMS 账号，继续连接 MCP 客户端。</p>
+  <section class="card" aria-label="账号登录">
+    {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+    <form method="post">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <div class="field">
+        <label for="phone">手机号</label>
+        <input id="phone" name="phone" type="text" autocomplete="username" inputmode="tel" required maxlength="32" autofocus>
+      </div>
+      <div class="field">
+        <label for="password">密码</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" required>
+      </div>
+      <button class="full-width" type="submit">登录并继续</button>
+    </form>
+  </section>
+  <p class="account-note">登录后，您可以查看客户端信息，<br>并选择允许它执行的操作。</p>
+{% endblock %}

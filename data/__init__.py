@@ -39,3 +39,7 @@ from .order_version import (  # noqa: F401
 from .finance import bonus_rate_model  # noqa: F401  registers bonus_rates table
 from .finance import bonus_item_model  # noqa: F401  registers bonus_items table
 from .intake import IntakeTable, IntakePhotoTable  # noqa: F401
+from . import oauth, mcp  # noqa: F401  registers OAuth credentials and MCP receipts
+from .finance import ledger, legacy, order_settlement  # noqa: F401
+from .packing.shipping_confirmation import ShippingConfirmationDraftTable  # noqa: F401
+from . import supplier_reconciliation  # noqa: F401

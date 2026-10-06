@@ -20,9 +20,15 @@ from services.cargo_service import (
 from utils.log import log
 from utils.audit import record_audit
 from services import receivable_service
+from services.number_generation_service import (
+    GENERATION_ROLES,
+    NumberGenerationError,
+    generate_original_number,
+    generation_options,
+)
 from services.order_edit_policy import OrderEditConflictError
 from services.outbound_service import (
-    confirm_outbound, parse_confirm_outbound, update_cargo_details,
+    confirm_outbound, parse_confirm_outbound, update_cargo_details, undo_outbound,
 )
 
 cargo_bp = Blueprint("cargo", __name__, url_prefix="/api")
@@ -164,6 +170,21 @@ def get_cargo_list(uid):
     return jsonify({"code": 200, "data": cargo_list})
 
 
+@cargo_bp.post("/orders/<string:uid>/cargo/<string:cargo_uid>/generate-original-number")
+@verify
+@allow(role=GENERATION_ROLES)
+@log(desc="Generate original number.", is_json=True)
+def generate_original_number_route(uid, cargo_uid):
+    try:
+        options = generation_options(request.get_json(silent=True) if request.data else {})
+        result = generate_original_number(uid, cargo_uid, get_token_payload() or {}, **options)
+        return jsonify({"code": 200, "msg": "原单号已生成", "data": result})
+    except NumberGenerationError as exc:
+        return jsonify({"code": exc.code, "msg": str(exc)}), exc.code
+    except OrderEditConflictError as exc:
+        return jsonify({"code": 409, "msg": str(exc)}), 409
+
+
 # 获取所有货物的转运号 / 运单号（用于查询）
 @cargo_bp.get("/cargo")
 @verify
@@ -293,6 +314,24 @@ def update_cargo(uid):
     if result["waybill_changed"] and result["new_waybill_id"]:
         background_register(uid, result["new_waybill_id"])
     return jsonify({"code": 200, "msg": "success"})
+
+
+@cargo_bp.post("/cargo/<string:uid>/undo-outbound")
+@verify
+@allow(role=["admin", "store_manager"])
+@log(desc="Undo cargo outbound.")
+def undo_cargo_outbound(uid):
+    try:
+        result = undo_outbound(uid, operator=get_token_payload() or {})
+        return jsonify({"code": 200, "msg": "已撤销出库，原出库和成本历史保留", "data": result})
+    except PermissionError as exc:
+        return jsonify({"code": 403, "msg": str(exc)}), 403
+    except LookupError as exc:
+        return jsonify({"code": 404, "msg": str(exc)}), 404
+    except OrderEditConflictError as exc:
+        return jsonify({"code": 409, "msg": str(exc)}), 409
+    except ValueError as exc:
+        return jsonify({"code": 400, "msg": str(exc)}), 400
 
 
 @cargo_bp.put("/cargo/<string:uid>/outbound")

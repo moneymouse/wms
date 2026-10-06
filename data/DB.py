@@ -15,6 +15,7 @@ from sqlalchemy import (
     Text,
 )
 from sqlalchemy.orm import relationship
+from sqlalchemy.dialects import mysql
 
 from .database import Base, SessionFactory
 
@@ -353,15 +354,16 @@ class OrderModel(MySQLModel):
         "tag_all",
     }
 
-    def create(self, record: dict) -> str:
-        """Create an order and its complete V1 in one transaction."""
+    def create(self, record: dict, *, session=None, operator_payload=None) -> str:
+        """Create order + V1; a supplied session belongs to the caller."""
         uid = str(int(time.time() * 1000000)) + str(random.randint(10, 99))
         db_dict = {k: v for k, v in record.items() if k in self._columns}
         db_dict["uid"] = uid
         db_dict["create_date"] = time.strftime("%Y-%m-%d %H:%M")
         customer_id = record.get("customer_id")
 
-        s = SessionFactory()
+        owns_session = session is None
+        s = SessionFactory() if owns_session else session
         try:
             db_record = OrderTable(**db_dict)
             if customer_id not in (None, "", 0, "0"):
@@ -379,14 +381,19 @@ class OrderModel(MySQLModel):
             s.flush()
             from data.order_version import create_order_version, snapshot_order
 
-            create_order_version(s, uid, snapshot_order(s, uid))
-            s.commit()
+            create_order_version(
+                s, uid, snapshot_order(s, uid), operator_payload=operator_payload
+            )
+            if owns_session:
+                s.commit()
             return uid
         except Exception:
-            s.rollback()
+            if owns_session:
+                s.rollback()
             raise
         finally:
-            s.close()
+            if owns_session:
+                s.close()
 
     def update(self, uid: str, record: dict):
         """Update an order under a database row lock and append one delta."""
@@ -524,6 +531,8 @@ class OrderModel(MySQLModel):
 
             before = snapshot_order(s, uid)
             retain_history = order_requires_archival(s, uid)
+            if not retain_history:
+                self._check_hard_delete_cargos(s, uid)
             if retain_history:
                 now = time.strftime("%Y-%m-%d %H:%M")
                 order.archive = True
@@ -545,6 +554,16 @@ class OrderModel(MySQLModel):
             raise
         finally:
             s.close()
+
+    def _check_hard_delete_cargos(self, session, order_uid):
+        # A hard order delete would otherwise detach its cargos via the ORM.
+        from services.order_edit_policy import ensure_cargo_removable
+
+        cargos = session.query(CargoTable).filter_by(target_order_uid=order_uid).order_by(
+            CargoTable.uid.asc()
+        ).populate_existing().with_for_update().all()
+        for cargo in cargos:
+            ensure_cargo_removable(cargo)
 
     def archive_many(self, uids: list[str]) -> list[str]:
         """Atomically archive orders in UID lock order with one correlation id."""
@@ -625,6 +644,8 @@ class OrderModel(MySQLModel):
             deleted_uids = [order.uid for order in orders]
             for order in orders:
                 retain_history = order_requires_archival(s, order.uid)
+                if not retain_history:
+                    self._check_hard_delete_cargos(s, order.uid)
                 if retain_history:
                     now = time.strftime("%Y-%m-%d %H:%M")
                     order.archive = True
@@ -905,6 +926,23 @@ class CargoModel(MySQLModel):
     def _to_dict(self, record, _fields=None, except_fields=None) -> dict:
         result = super()._to_dict(record, _fields, except_fields)
         if (
+            "original_number_editable" not in (except_fields or [])
+            and (not _fields or "original_number_editable" in _fields)
+        ):
+            from services.order_edit_policy import cargo_original_number_editable
+
+            result["original_number_editable"] = cargo_original_number_editable(record)
+        if not _fields or {"removal_allowed", "removal_blocked_reason"}.intersection(_fields):
+            from services.order_edit_policy import cargo_currently_outbound, CARGO_REMOVAL_OUTBOUND_MESSAGE
+
+            allowed = not cargo_currently_outbound(record)
+            for name, value in {
+                "removal_allowed": allowed,
+                "removal_blocked_reason": None if allowed else CARGO_REMOVAL_OUTBOUND_MESSAGE,
+            }.items():
+                if name not in (except_fields or []) and (not _fields or name in _fields):
+                    result[name] = value
+        if (
             record.packing_list_uid
             and "identity_editable" not in (except_fields or [])
             and (not _fields or "identity_editable" in _fields)
@@ -1002,6 +1040,9 @@ class CargoModel(MySQLModel):
             db_record = self._lock_after_order(s, uid)
             if db_record is None:
                 return False
+            from services.order_edit_policy import ensure_cargo_removable
+
+            ensure_cargo_removable(db_record)
 
             if db_record.target_order_uid:
                 from data.order_version import record_mutation, snapshot_order
@@ -1219,6 +1260,9 @@ class CargoModel(MySQLModel):
             record = self._lock_after_order(s, uid)
             if record is None:
                 return
+            from services.order_edit_policy import ensure_cargo_removable
+
+            ensure_cargo_removable(record)
             if record.target_order_uid:
                 from data.order_version import record_mutation, snapshot_order
 
@@ -1257,6 +1301,9 @@ class CargoModel(MySQLModel):
             record = self._lock_after_order(s, uid)
             if record is None:
                 return
+            from services.order_edit_policy import ensure_cargo_removable
+
+            ensure_cargo_removable(record)
             if record.target_order_uid:
                 from data.order_version import record_mutation, snapshot_order
 
@@ -1331,13 +1378,17 @@ class CargoModel(MySQLModel):
                 s.query(CargoTable)
                 .filter(CargoTable.uid.in_(normalized))
                 .order_by(CargoTable.uid.asc())
+                .populate_existing()
                 .with_for_update()
                 .all()
             )
             record_map = {record.uid: record for record in records}
+            from services.order_edit_policy import ensure_cargo_removable
+
             for record in records:
                 if record.target_order_uid != candidate_map.get(record.uid):
                     raise ValueError("货物归属已变化，请刷新后重试")
+                ensure_cargo_removable(record)
 
             from data.order_version import (
                 new_correlation_id,
@@ -1747,8 +1798,8 @@ class AuditLogTable(Base):
     operator_id = Column(Integer, nullable=True)
     operator_name = Column(String(128), nullable=True)
     operator_role = Column(String(128), nullable=True)
-    before_data = Column(Text, nullable=True)
-    after_data = Column(Text, nullable=True)
+    before_data = Column(Text().with_variant(mysql.LONGTEXT(), "mysql"), nullable=True)
+    after_data = Column(Text().with_variant(mysql.LONGTEXT(), "mysql"), nullable=True)
     remark = Column(String(512), nullable=True)
     ip = Column(String(64), nullable=True)
     create_date = Column(String(32))

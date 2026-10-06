@@ -7,7 +7,7 @@ from flask import Blueprint, jsonify, request
 
 from Auth import allow, get_token_payload, verify
 from services import receivable_service
-from utils.audit import record_audit
+from utils.audit import load_audit_logs
 from utils.receipt_pdf import build_receipt_pdf
 
 
@@ -95,21 +95,7 @@ def get_receivable_adjustment(adjustment_id):
 @verify
 @allow(role=RECEIPT_ROLES)
 def create_receipt():
-    try:
-        result = receivable_service.create_receipt(
-            request.get_json() or {}, get_token_payload() or {}
-        )
-        record_audit(
-            event_type="payment_receipt",
-            target_type="receipt",
-            target_id=result["id"],
-            action="receipt_create",
-            after_data=result,
-            remark=result.get("remark"),
-        )
-        return jsonify({"code": 200, "msg": "收款单已提交审核", "data": result})
-    except (ValueError, PermissionError) as exc:
-        return _error_response(exc)
+    return jsonify({"code": 410, "msg": "旧订单收款登记已停用，请在收付款页面登记；参考订单仅作备注，由财务核销"}), 410
 
 
 @receivable_bp.get("/receipts")
@@ -158,27 +144,35 @@ def get_receipt_pdf(receipt_id):
         return _error_response(exc)
 
 
+@receivable_bp.get("/receipts/<int:receipt_id>/history")
+@verify
+@allow(role=RECEIPT_VIEW_ROLES)
+def get_receipt_history(receipt_id):
+    try:
+        receivable_service.get_receipt_detail(receipt_id, get_token_payload() or {})
+        filters = {"event_type": "payment_receipt", "target_type": "receipt", "target_id": receipt_id}
+        result = load_audit_logs(page=request.args.get("p", 1, type=int),
+                                 page_size=request.args.get("s", 20, type=int), **filters)
+        first = load_audit_logs(page=1, page_size=1, sort_desc=False, **filters)["items"]
+        complete = bool(first and first[0]["action"] == "receipt_create" and not first[0]["legacy"])
+        result.update(history_complete=complete, notice=None if complete else
+                      "该收款单在新版审计启用前已存在，旧记录可能不完整；仅展示实际保存的历史，不推测过去的修改。")
+        return jsonify({"code": 200, "data": result})
+    except (LookupError, PermissionError) as exc:
+        return _error_response(exc)
+
+
 @receivable_bp.put("/finance/receipts/<int:receipt_id>/review")
 @verify
 @allow(role=FINANCE_ROLES)
 def review_receipt(receipt_id):
     body = request.get_json() or {}
     try:
-        before = receivable_service.get_receipt_detail(receipt_id, get_token_payload() or {})
         result = receivable_service.review_receipt(
             receipt_id=receipt_id,
             action=body.get("action"),
             review_remark=body.get("review_remark"),
             operator_payload=get_token_payload() or {},
-        )
-        record_audit(
-            event_type="payment_receipt",
-            target_type="receipt",
-            target_id=receipt_id,
-            action=f"receipt_{body.get('action')}",
-            before_data=before,
-            after_data=result,
-            remark=body.get("review_remark"),
         )
         return jsonify({"code": 200, "msg": "审核完成", "data": result})
     except (ValueError, LookupError, PermissionError) as exc:
@@ -222,14 +216,6 @@ def create_sales_bonus_rate():
     try:
         result = receivable_service.create_sales_bonus_rate(
             request.get_json() or {}, get_token_payload() or {}
-        )
-        record_audit(
-            event_type="sales_bonus_rate",
-            target_type="rate",
-            target_id=result["id"],
-            action="create",
-            after_data=result,
-            remark=result.get("remark"),
         )
         return jsonify({"code": 200, "msg": "跟单奖金费率已创建", "data": result})
     except ValueError as exc:

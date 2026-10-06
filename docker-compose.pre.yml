@@ -68,6 +68,28 @@ services:
     depends_on:
       - backend
 
+  # Optional remote MCP service; backend alone owns migrations and admin setup.
+  mcp:
+    profiles: ["mcp"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    entrypoint: []
+    command: ["uvicorn", "mcp_server:app", "--host", "0.0.0.0", "--port", "8000", "--no-proxy-headers"]
+    env_file:
+      - ${PRE_BK_ENV_FILE:-PRE_BK.env}
+    environment:
+      TZ: Asia/Shanghai
+    depends_on:
+      mysql:
+        condition: service_healthy
+    networks:
+      - wms_network
+    expose:
+      - "8000"
+
+
 volumes:
   mysql_data:
 

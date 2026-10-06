@@ -532,6 +532,10 @@ def assign_bonus_for_packing_list(
             order_uid: snapshot_order(session, order_uid)
             for order_uid in sorted(guarded_order_uids)
         }
+        bonus_before = {box.uid: {"bonus_item_id": box.bonus_item_id,
+                                  "bonus_assigned": box.bonus_assigned,
+                                  "worker_ids": sorted(link.worker_id for link in box.workers)}
+                        for _, box in assignment_rows}
 
         active_item_ids = {
             item.id
@@ -605,6 +609,16 @@ def assign_bonus_for_packing_list(
 
         session.flush()
         correlation_id = new_correlation_id()
+        from utils.audit import record_audit
+        record_audit("bonus_allocation", "packing_list", packing_list_uid,
+                     action="update", before_data=bonus_before,
+                     after_data={box.uid: {"bonus_item_id": box.bonus_item_id,
+                                          "bonus_assigned": box.bonus_assigned,
+                                          "worker_ids": sorted({int(value) for value in (row.get("worker_ids") if row.get("worker_ids") is not None else bonus_before[box.uid]["worker_ids"])})}
+                                 for row, box in assignment_rows},
+                     session=session, operator_payload=operator_payload or {"user_id": operator_id},
+                     correlation_id=correlation_id,
+                     metadata={"order_uids": sorted(guarded_order_uids)})
         for order_uid in sorted(guarded_order_uids):
             record_mutation(
                 session,

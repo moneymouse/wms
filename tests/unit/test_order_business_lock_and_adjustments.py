@@ -169,7 +169,7 @@ def test_cascade_archive_rolls_back_all_records_on_failure(setup_test_database):
     )
 
 
-def test_outbound_order_without_snapshots_can_be_deleted_in_batch(
+def test_outbound_order_without_snapshots_cannot_detach_cargo_by_deletion(
     client, setup_test_database, salesperson_token
 ):
     session = setup_test_database
@@ -212,10 +212,12 @@ def test_outbound_order_without_snapshots_can_be_deleted_in_batch(
         headers=_headers(salesperson_token),
         json={"uid_list": [order.uid]},
     )
-    assert response.status_code == 200
+    assert response.status_code == 409
+    assert "先撤销出库" in response.get_json()["msg"]
 
     session.expire_all()
-    assert session.query(OrderTable).filter_by(uid=order.uid).first() is None
+    assert session.get(OrderTable, "locked-delete-order").archive is False
+    assert session.get(CargoTable, "locked-delete-box").target_order_uid == "locked-delete-order"
 
 
 @pytest.mark.parametrize("batch", [False, True])

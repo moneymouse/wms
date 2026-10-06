@@ -49,7 +49,12 @@ def get_logs():
 @allow(role="admin")
 def get_audit_logs():
     try:
-        result = load_audit_logs(**_get_log_query_args("create_date"))
+        filters = {key: request.args[key].strip() for key in
+                   ("event_type", "target_type", "target_id", "action", "operator_name", "date_from", "date_to")
+                   if request.args.get(key)}
+        if request.args.get("q"):
+            filters["query_text"] = request.args["q"].strip()
+        result = load_audit_logs(**_get_log_query_args("create_date"), **filters)
         return _jsonify_paginated(result)
     except Exception as e:
         return jsonify({"code": 500, "msg": f"加载审计日志失败: {str(e)}"}), 500

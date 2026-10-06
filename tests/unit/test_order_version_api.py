@@ -22,7 +22,7 @@ from data.order_version import (
 )
 from data.packing.PackingList import PackingListTable
 from data.user.User import UserTable
-from services.order_edit_policy import BOX_IDENTITY_IMMUTABLE_MESSAGE
+from services.order_edit_policy import ORIGINAL_NUMBER_IMMUTABLE_MESSAGE
 
 
 NOW = "2026-09-16 10:00:00"
@@ -326,10 +326,10 @@ def test_outbound_box_identity_is_fixed_while_waybill_can_be_corrected(
         )
         assert response.status_code == expected_status
         if expected_status == 409:
-            assert response.get_json()["msg"] == BOX_IDENTITY_IMMUTABLE_MESSAGE
+            assert response.get_json()["msg"] == ORIGINAL_NUMBER_IMMUTABLE_MESSAGE
 
 
-def test_receipt_history_allows_order_weight_and_membership_edits(
+def test_receipt_history_allows_order_edits_but_outbound_blocks_removal(
     client, setup_test_database, admin_token
 ):
     world = _seed_outbound_box_world(setup_test_database)
@@ -360,7 +360,7 @@ def test_receipt_history_allows_order_weight_and_membership_edits(
         ),
     ]
 
-    assert [response.status_code for response in responses] == [200, 409, 200, 200]
+    assert [response.status_code for response in responses] == [200, 409, 409, 200]
 
 
 def test_outbound_waybill_can_change_without_cost_rewrite(

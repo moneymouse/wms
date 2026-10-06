@@ -12,6 +12,16 @@ from sqlalchemy import Boolean, Column, Float, ForeignKey, Integer, String
 from sqlalchemy.orm import relationship
 
 from data.database import Base, SessionFactory
+from utils.audit import record_audit
+
+
+def _audit_actor(session, operator_id):
+    if operator_id is None:
+        return None
+    from data.user.User import UserTable
+    user = session.get(UserTable, operator_id)
+    return {"user_id": operator_id, "name": user.name if user else str(operator_id),
+            "roles": [role.name for role in user.roles] if user else []}
 
 
 class BonusItemTable(Base):
@@ -102,9 +112,13 @@ class BonusItemModel:
                 update_date=now,
             )
             session.add(record)
+            session.flush()
+            result = self._to_dict(record)
+            record_audit("bonus_item", "bonus_item", record.id, action="create",
+                         after_data=result, session=session,
+                         operator_payload=_audit_actor(session, operator_id))
             session.commit()
-            session.refresh(record)
-            return self._to_dict(record)
+            return result
 
     def update_item(
         self,
@@ -115,9 +129,10 @@ class BonusItemModel:
         now = time.strftime("%Y-%m-%d %H:%M")
 
         with SessionFactory() as session:
-            record = session.query(BonusItemTable).filter_by(id=item_id).first()
+            record = session.query(BonusItemTable).filter_by(id=item_id).populate_existing().with_for_update().first()
             if record is None:
                 return None
+            before = self._to_dict(record)
 
             next_label = (data.get("label") or record.label or "").strip()
             if next_label != record.label:
@@ -146,9 +161,15 @@ class BonusItemModel:
             record.updated_by = operator_id
             record.update_date = now
 
+            session.flush()
+            session.expire(record, ["updater"])
+            result = self._to_dict(record)
+            record_audit("bonus_item", "bonus_item", record.id,
+                         action="update" if record.is_active else "archive",
+                         before_data=before, after_data=result, session=session,
+                         operator_payload=_audit_actor(session, operator_id))
             session.commit()
-            session.refresh(record)
-            return self._to_dict(record)
+            return result
 
 
 bonus_item_model = BonusItemModel()

@@ -6,13 +6,20 @@ Packing List Controller - 装箱单和箱子 API 接口
 
 import json
 
-from flask import Blueprint, jsonify, request, send_file
+from flask import Blueprint, current_app, jsonify, request, send_file
 
 from Auth import verify, allow, get_payload_roles, get_token_payload
 from services import packing_list_service
 from data.database import SessionFactory
 from services.order_edit_policy import OrderEditConflictError, build_edit_policy
+from services.number_generation_service import (
+    GENERATION_ROLES, NumberGenerationError, generate_packing_original_numbers,
+    packing_generation_options,
+)
+from services import shipping_confirmation_draft_service as shipping_drafts
+from services.shipping_confirmation_service import ShippingConfirmationError
 from utils.packing_list_pdf import build_packing_list_pdf, build_packing_lists_pdf
+from utils.shipping_confirmation_pdf import build_shipping_confirmation_pdf
 from utils.log import log
 
 packing_bp = Blueprint("packing", __name__, url_prefix="/api")
@@ -25,6 +32,110 @@ PACKING_EDIT_ROLES = ["admin", "store_manager", "salesperson"]
 BOX_ASSIGN_ROLES = ["admin", "store_manager", "salesperson", "clerk"]
 # 允许出货的角色
 BOX_SHIP_ROLES = ["admin", "store_manager", "salesperson", "clerk", "worker"]
+
+
+def _shipping_result(operation, *, pdf=False):
+    try:
+        result = operation()
+        if not pdf:
+            return jsonify({"code": 200, "data": result})
+        response = send_file(
+            build_shipping_confirmation_pdf(result), mimetype="application/pdf",
+            as_attachment=True, download_name="shipping-confirmation.pdf", max_age=0,
+        )
+        response.headers["Cache-Control"] = "private, no-store"
+        return response
+    except ShippingConfirmationError as exc:
+        return jsonify({"code": exc.status, "msg": str(exc)}), exc.status
+    except ValueError as exc:
+        return jsonify({"code": 400, "msg": str(exc)}), 400
+    except Exception:
+        current_app.logger.exception("Shipping confirmation operation failed")
+        return jsonify({"code": 500, "msg": "出货单操作失败，请稍后重试"}), 500
+
+
+@packing_bp.post("/packing-lists/shipping-confirmation/boxes")
+@verify
+@allow(role=shipping_drafts.DRAFT_ROLES)
+def shipping_confirmation_boxes():
+    data = request.get_json(silent=True)
+    return _shipping_result(lambda: shipping_drafts.hydrate_shipping_boxes(
+        data.get("cargo_uids") if isinstance(data, dict) else None
+    ))
+
+
+@packing_bp.post("/packing-lists/shipping-confirmation/pdf")
+@verify
+@allow(role=shipping_drafts.DRAFT_ROLES)
+def packing_shipping_confirmation_pdf():
+    return _shipping_result(lambda: shipping_drafts.load_packing_shipping_details(
+        request.get_json(silent=True)
+    ), pdf=True)
+
+
+@packing_bp.get("/shipping-confirmation-drafts")
+@verify
+@allow(role=shipping_drafts.DRAFT_ROLES)
+def list_shipping_confirmation_drafts():
+    return _shipping_result(lambda: shipping_drafts.list_shipping_drafts(get_token_payload() or {}))
+
+
+@packing_bp.post("/shipping-confirmation-drafts")
+@verify
+@allow(role=shipping_drafts.DRAFT_ROLES)
+def create_shipping_confirmation_draft():
+    return _shipping_result(lambda: shipping_drafts.save_shipping_draft(
+        request.get_json(silent=True), get_token_payload() or {}
+    ))
+
+
+@packing_bp.get("/shipping-confirmation-drafts/<string:uid>")
+@verify
+@allow(role=shipping_drafts.DRAFT_ROLES)
+def read_shipping_confirmation_draft(uid):
+    return _shipping_result(lambda: shipping_drafts.get_shipping_draft(uid, get_token_payload() or {}))
+
+
+@packing_bp.put("/shipping-confirmation-drafts/<string:uid>")
+@verify
+@allow(role=shipping_drafts.DRAFT_ROLES)
+def update_shipping_confirmation_draft(uid):
+    return _shipping_result(lambda: shipping_drafts.save_shipping_draft(
+        request.get_json(silent=True), get_token_payload() or {}, uid
+    ))
+
+
+@packing_bp.delete("/shipping-confirmation-drafts/<string:uid>")
+@verify
+@allow(role=shipping_drafts.DRAFT_ROLES)
+def delete_shipping_confirmation_draft(uid):
+    return _shipping_result(lambda: shipping_drafts.delete_shipping_draft(
+        uid, request.get_json(silent=True), get_token_payload() or {}
+    ))
+
+
+@packing_bp.post("/shipping-confirmation-drafts/<string:uid>/pdf")
+@verify
+@allow(role=shipping_drafts.DRAFT_ROLES)
+def print_shipping_confirmation_draft(uid):
+    return _shipping_result(lambda: shipping_drafts.load_draft_shipping_details(
+        uid, request.get_json(silent=True), get_token_payload() or {}
+    ), pdf=True)
+
+
+@packing_bp.post("/packing-lists/<string:uid>/boxes/generate-original-numbers")
+@verify
+@allow(role=GENERATION_ROLES)
+@log(desc="Generate packing box original numbers.", is_json=True)
+def generate_packing_original_numbers_route(uid):
+    try:
+        options = packing_generation_options(request.get_json(silent=True) if request.data else {})
+        result = generate_packing_original_numbers(uid, operator_payload=get_token_payload() or {}, **options)
+        return jsonify({"code": 200, "msg": "原单号已生成", "data": result})
+    except NumberGenerationError as exc:
+        return jsonify({"code": exc.code, "msg": str(exc)}), exc.code
+    except OrderEditConflictError as exc:
+        return jsonify({"code": 409, "msg": str(exc)}), 409
 
 
 def _worker_creator_scope():

@@ -136,11 +136,14 @@ class PackingListModel:
         mark: str,
         customer_id: Optional[int] = None,
         photos: str = "[]",
+        *,
+        session=None,
     ) -> dict:
         """创建装箱单"""
         uid = str(int(time.time() * 1000000)) + str(random.randint(10, 99))
 
-        s = SessionFactory()
+        owns_session = session is None
+        s = SessionFactory() if owns_session else session
         try:
             customer_name = None
             if customer_id is not None:
@@ -163,7 +166,9 @@ class PackingListModel:
                 create_date=time.strftime("%Y-%m-%d %H:%M"),
             )
             s.add(record)
-            s.commit()
+            s.flush()
+            if owns_session:
+                s.commit()
 
             return {
                 "uid": uid,
@@ -173,10 +178,12 @@ class PackingListModel:
                 "customer_name": customer_name,
             }
         except Exception:
-            s.rollback()
+            if owns_session:
+                s.rollback()
             raise
         finally:
-            s.close()
+            if owns_session:
+                s.close()
 
     def read(self, uid: str = None) -> Optional[dict] | List[dict]:
         """读取装箱单"""
@@ -500,6 +507,10 @@ class PackingListModel:
                 from services.order_edit_policy import OrderEditConflictError
 
                 raise OrderEditConflictError("箱子归属已变化，请刷新后重试")
+            from services.order_edit_policy import ensure_cargo_removable
+
+            for box in locked_boxes:
+                ensure_cargo_removable(box)
             record = (
                 s.query(PackingListTable)
                 .filter(PackingListTable.uid == uid)
@@ -578,11 +589,15 @@ class PackingListModel:
     def _box_to_dict(self, box: "BoxTable") -> dict:
         """箱子简要信息"""
         from sqlalchemy.orm import object_session
-        from services.order_edit_policy import box_identity_editable
+        from services.order_edit_policy import (
+            box_identity_editable,
+            cargo_original_number_editable,
+        )
 
         return {
             "uid": box.uid,
             "identity_editable": box_identity_editable(object_session(box), box),
+            "original_number_editable": cargo_original_number_editable(box),
             "box_number": box.box_number,
             "item_name": box.item_name,
             "item_details": json.loads(box.item_details) if box.item_details else [],
@@ -1130,6 +1145,9 @@ class BoxModel:
                 return False
             if record.packing_list_uid is None:
                 return False
+            from services.order_edit_policy import ensure_cargo_removable
+
+            ensure_cargo_removable(record)
             if record.target_order_uid:
                 from data.order_version import record_mutation, snapshot_order
 
@@ -1171,6 +1189,9 @@ class BoxModel:
                 return False
             if record.packing_list_uid is None:
                 return False
+            from services.order_edit_policy import ensure_cargo_removable
+
+            ensure_cargo_removable(record)
             if record.target_order_uid:
                 from data.order_version import record_mutation, snapshot_order
 
@@ -1350,8 +1371,6 @@ class BoxModel:
             if box.packing_list_uid is None:
                 return False
 
-            if int(box.status or 0) == CARGO_STATUS_OUTBOUND:
-                raise ValueError(f"Box {box_uid} is already outbound")
             if box.target_order_uid:
                 raise ValueError(f"Box {box_uid} is already assigned")
 
@@ -1374,6 +1393,9 @@ class BoxModel:
             )
             if box is None or box.target_order_uid:
                 raise ValueError(f"Box {box_uid} is already assigned")
+            from services.order_edit_policy import ensure_cargo_removable
+
+            ensure_cargo_removable(box)
             before = snapshot_order(s, order_uid)
 
             box.target_order_uid = order_uid
@@ -1421,6 +1443,7 @@ class BoxModel:
                 s.query(BoxTable)
                 .filter(BoxTable.uid.in_(box_uids))
                 .order_by(BoxTable.uid.asc())
+                .populate_existing()
                 .with_for_update()
                 .all()
             )
@@ -1431,7 +1454,9 @@ class BoxModel:
                 if box is None or box.packing_list_uid is None:
                     results["failed"].append({"uid": box_uid, "error": "Box not found"})
                     continue
-                if int(box.status or 0) == CARGO_STATUS_OUTBOUND:
+                from services.order_edit_policy import cargo_currently_outbound
+
+                if cargo_currently_outbound(box):
                     results["failed"].append({"uid": box_uid, "error": "Box is already outbound"})
                     continue
                 if box.target_order_uid:
@@ -1693,11 +1718,15 @@ class BoxModel:
     def _to_dict(self, record: BoxTable) -> dict:
         """转换为字典"""
         from sqlalchemy.orm import object_session
-        from services.order_edit_policy import box_identity_editable
+        from services.order_edit_policy import (
+            box_identity_editable,
+            cargo_original_number_editable,
+        )
 
         return {
             "uid": record.uid,
             "identity_editable": box_identity_editable(object_session(record), record),
+            "original_number_editable": cargo_original_number_editable(record),
             "packing_list_uid": record.packing_list_uid,
             "list_number": (
                 record.packing_list.list_number if record.packing_list else None

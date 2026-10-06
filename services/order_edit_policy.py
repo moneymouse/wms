@@ -15,7 +15,9 @@ from data.DB import (
 OUTBOUND_WEIGHT_IMMUTABLE_MESSAGE = (
     "货物已出库，重量不可修改；如需调整重量，请使用新的原单号创建包裹"
 )
-BOX_IDENTITY_IMMUTABLE_MESSAGE = "箱子已出库，箱号和原单号不可修改"
+BOX_IDENTITY_IMMUTABLE_MESSAGE = "箱子已有出库历史，箱号不可修改"
+ORIGINAL_NUMBER_IMMUTABLE_MESSAGE = "箱子当前已出库，原单号不可修改；请先撤销出库"
+CARGO_REMOVAL_OUTBOUND_MESSAGE = "包裹已出库，不能移除、删除或归档；请先撤销出库"
 
 
 class OrderEditConflictError(ValueError):
@@ -44,8 +46,19 @@ def cargo_is_outbound_or_later(status) -> bool:
         return normalized not in PENDING_CARGO_STATUSES
 
 
+def cargo_currently_outbound(cargo) -> bool:
+    """Current shipment state only; reentry clears status/date but keeps history."""
+    return cargo_is_outbound_or_later(cargo.status) or bool(str(cargo.date or "").strip())
+
+
+def ensure_cargo_removable(cargo) -> None:
+    """Call after locking and refreshing the actual cargo row in this transaction."""
+    if cargo_currently_outbound(cargo):
+        raise OrderEditConflictError(f"{CARGO_REMOVAL_OUTBOUND_MESSAGE}（{cargo.transfer_id or cargo.uid}）")
+
+
 def box_identity_editable(session, box, *, for_update=False) -> bool:
-    """Keep a shipped box's identifiers fixed, including after reentry.
+    """Keep a shipped box's number fixed, including after reentry.
 
     Historical costs include archived rows, so legacy shipments without a
     dedicated outbound record remain protected after they return to stock.
@@ -74,24 +87,31 @@ def box_identity_editable(session, box, *, for_update=False) -> bool:
     )
 
 
+def cargo_original_number_editable(cargo) -> bool:
+    """Reentry restores a box's original number editing without erasing history."""
+    return not cargo.packing_list_uid or not cargo_currently_outbound(cargo)
+
+
 def ensure_box_identity_editable(session, box, changes) -> None:
     """Reject real identifier changes before any part of an update is saved."""
     if not box.packing_list_uid:
         return
-    changed = False
-    if "transfer_id" in changes:
-        changed = str(box.transfer_id or "").strip() != str(
-            changes["transfer_id"] or ""
-        ).strip()
+    number_changed = False
     if "box_number" in changes:
         current_number, next_number = box.box_number, changes["box_number"]
         try:
             current_number, next_number = int(current_number), int(next_number)
         except (TypeError, ValueError):
             pass
-        changed = changed or current_number != next_number
-    if changed and not box_identity_editable(session, box, for_update=True):
+        number_changed = current_number != next_number
+    if number_changed and not box_identity_editable(session, box, for_update=True):
         raise OrderEditConflictError(BOX_IDENTITY_IMMUTABLE_MESSAGE)
+    if (
+        "transfer_id" in changes
+        and str(box.transfer_id or "").strip() != str(changes["transfer_id"] or "").strip()
+        and not cargo_original_number_editable(box)
+    ):
+        raise OrderEditConflictError(ORIGINAL_NUMBER_IMMUTABLE_MESSAGE)
 
 
 def ensure_outbound_weight_editable(

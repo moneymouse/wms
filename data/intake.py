@@ -1,4 +1,4 @@
-"""Paper intake stays outside inventory until a reviewer confirms it."""
+"""Paper intake stays outside inventory until its uploader checks and completes it."""
 from sqlalchemy import Column, ForeignKey, Integer, LargeBinary, String, Text
 from sqlalchemy.orm import deferred, relationship
 

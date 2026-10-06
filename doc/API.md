@@ -2,7 +2,19 @@
 
 **Base URL:** `http://localhost:5001`
 
-**版本:** 1.18
+**版本:** 1.30
+
+财务账簿与审计新增接口见 [API v1.20 财务](API-v1.20-finance.md)。原订单接口保持兼容。
+
+统一客户收付款见 [API v1.22](API-v1.22-customer-payments.md)，订单应收与财务核销见 [API v1.23](API-v1.23-order-settlement.md)，出库后移除限制与撤销出库见 [API v1.21](API-v1.21-outbound-removal.md)。旧 `POST /api/receipts` 已返回410；既有收款的查询、打印、历史和待审核清理保留。
+
+客户管理与订单客户联系方式权限见 [API v1.23](API-v1.23-customer-permissions.md)。
+
+订单号与原单号随机生成见 [API v1.25](API-v1.25-auto-numbers.md)，撤销出库后恢复原单号编辑与生成见 [API v1.26](API-v1.26-original-number-editing.md)。
+
+装箱单出货确认单与服务器草稿见 [API v1.27](API-v1.27-packing-shipping-drafts.md)，收据备注箱子和按所属订单核销见 [API v1.28](API-v1.28-receipt-packing-boxes.md)，装箱单批量生成原单号及 `XD8xxxxxxxxL` 格式见 [API v1.29](API-v1.29-packing-original-numbers.md)。
+
+纸质单改为上传者检查后完成上传，待核对页面移除，出货确认单草稿改为独立页面，见 [API v1.30](API-v1.30-uploader-check-and-shipping-drafts-page.md)。
 
 ---
 
@@ -1224,6 +1236,8 @@ x-token: <JWT_TOKEN>
 
 获取所有客户的详细信息，包括phone和wechat等敏感字段。
 
+业务员只返回本人创建的客户；管理员、店长仍可查看全部。创建人、单笔读写限制与订单联系方式接口见 [API v1.23](API-v1.23-customer-permissions.md)。
+
 - **URL:** `GET /api/customers_detail`
 - **认证:** 需要
 - **权限:** `admin`（管理员）、`store_manager`（店长）、`salesperson`（业务员）
@@ -1268,6 +1282,8 @@ x-token: <JWT_TOKEN>
 ### 4.9 获取单个客户详细信息（含敏感字段）
 
 获取单个客户的详细信息，包括phone和wechat等敏感字段。
+
+业务员仅可读取本人创建的客户，超出范围返回 `403`。订单详情改用 `GET /api/orders/<uid>/customer-contact`，按订单当前业务员校验，详见 [API v1.23](API-v1.23-customer-permissions.md)。
 
 - **URL:** `GET /api/customer_detail/<customer_id>`
 - **认证:** 需要
@@ -1575,7 +1591,7 @@ x-token: <JWT_TOKEN>
 ### 7.2 可收款订单与收款单
 
 - **可收款订单:** `GET /api/receivables/orders?customer_id=<id>&q=<订单号>&p=1&s=20`，权限为 `salesperson`、`admin`。`customer_id` 可选；无论是否传入，都只返回 `实时应收 > 已审核 + 待审核` 且不存在待审核或已批准结清收据的当前可收款订单
-- **创建收款单:** `POST /api/receipts`，权限为 `salesperson`、`admin`
+- **旧创建接口已停用:** `POST /api/receipts` 返回410。新收付款使用 v1.22 的 `/api/finance/v2/payments`；以下订单选款及结清规则仅供解释历史记录。
 - **收款单列表:** `GET /api/receipts?p=1&s=20&status=pending&q=<单号或客户>`
 - **收款单详情:** `GET /api/receipts/<id>`
 - **双语 PDF:** `GET /api/receipts/<id>/pdf`
@@ -1733,4 +1749,8 @@ Docker 部署时通过环境变量配置初始管理员：
 
 ---
 
-*文档更新时间: 2026-09-16*
+## 按需生成订单号和原单号
+
+`POST /api/orders/<order_uid>/generate-order-number` 与 `POST /api/orders/<order_uid>/cargo/<cargo_uid>/generate-original-number` 允许管理员、店长、业务员和文员在订单详情中为指定目标生成并保存号码。自动号码为首位 `8` 的 9 位数字，跨订单号和原单号查重（含归档），并串行处理并发生成，不修改数据库唯一约束；手动输入沿用原接口且不新增查重限制。请求可传 `{ "expected_value": "页面已保存值" }` 防止覆盖已被他人修改的号码。箱子出库后的标识保护继续生效，生成不会触发出库。完整契约见 [API v1.25](API-v1.25-auto-numbers.md)。
+
+*文档更新时间: 2026-10-06*

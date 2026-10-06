@@ -30,6 +30,9 @@ class CustomerTable(Base):
     name = Column(String(256), unique=True, nullable=False)
     phone = Column(String(64))  # 客户联系电话（敏感字段）
     wechat = Column(String(128))  # 客户微信号（敏感字段）
+    created_by_id = Column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
 
     receivers = relationship(
         "ReceiverTable",
@@ -74,7 +77,7 @@ class ReceiverTable(Base):
 # ---------------------------------------------------------------------------
 
 
-def add_customer_record(record: dict) -> int | None:
+def add_customer_record(record: dict, *, session=None) -> int | None:
     """Add a receiver under an existing customer, deduplicating by name + address.
 
     Note: This function does NOT create customers. Use POST /api/customer to create
@@ -98,7 +101,8 @@ def add_customer_record(record: dict) -> int | None:
     if not customer_id and not customer_name:
         return None
 
-    s = SessionFactory()
+    owns_session = session is None
+    s = SessionFactory() if owns_session else session
     try:
         # Find existing customer (do NOT create)
         if customer_id:
@@ -130,13 +134,17 @@ def add_customer_record(record: dict) -> int | None:
             **{k: str(record.get(k, "")).strip() for k in fields},
         )
         s.add(new_receiver)
-        s.commit()
+        s.flush()
+        if owns_session:
+            s.commit()
         return customer_id
     except Exception:
-        s.rollback()
+        if owns_session:
+            s.rollback()
         raise
     finally:
-        s.close()
+        if owns_session:
+            s.close()
 
 
 def get_customer_record(customer_id: int = 0, receiver_id: str = ""):
@@ -226,7 +234,7 @@ def del_receiver_record(customer_id: int = 0, receiver_id: str = ""):
         s.close()
 
 
-def del_customer_record(customer_id: int = 0):
+def del_customer_record(customer_id: int = 0, *, created_by_id: int | None = None):
     """Delete a customer and all of their receiver records."""
     if not customer_id:
         return
@@ -237,6 +245,8 @@ def del_customer_record(customer_id: int = 0):
         if customer is None:
             s.commit()
             return
+        if created_by_id is not None and customer.created_by_id != created_by_id:
+            raise CustomerAccessDenied("Permission denied")
         from data.DB import OrderTable, PaymentReceiptTable, order_customers
         from data.order_version import (
             new_correlation_id,
@@ -285,6 +295,8 @@ def del_customer_record(customer_id: int = 0):
         )
         if customer is None:
             return
+        if created_by_id is not None and customer.created_by_id != created_by_id:
+            raise CustomerAccessDenied("Permission denied")
         before = {order_uid: snapshot_order(s, order_uid) for order_uid in order_uids}
         for order in list(customer.orders):
             order.customers.remove(customer)
@@ -334,6 +346,10 @@ SENSITIVE_FIELDS = ["phone", "wechat"]
 ALLOWED_ROLES = ["admin", "store_manager", "salesperson"]
 
 
+class CustomerAccessDenied(PermissionError):
+    """A customer falls outside the authenticated user's management scope."""
+
+
 def filter_sensitive_fields(customer_data: dict, user_role: str = None) -> dict:
     """根据用户角色过滤客户数据中的敏感字段。
 
@@ -355,7 +371,12 @@ def filter_sensitive_fields(customer_data: dict, user_role: str = None) -> dict:
     return filtered_data
 
 
-def get_customer_detail(customer_id: int = 0, include_sensitive: bool = False) -> dict:
+def get_customer_detail(
+    customer_id: int = 0,
+    include_sensitive: bool = False,
+    *,
+    created_by_id: int | None = None,
+) -> dict:
     """获取客户的详细信息，包括phone和wechat。
 
     Args:
@@ -373,6 +394,8 @@ def get_customer_detail(customer_id: int = 0, include_sensitive: bool = False) -
         customer = s.query(CustomerTable).filter_by(id=customer_id).first()
         if customer is None:
             return {}
+        if created_by_id is not None and customer.created_by_id != created_by_id:
+            raise CustomerAccessDenied("Permission denied")
 
         result = {
             "id": customer.id,
@@ -388,7 +411,9 @@ def get_customer_detail(customer_id: int = 0, include_sensitive: bool = False) -
         s.close()
 
 
-def get_all_customers_detail(include_sensitive: bool = False) -> list:
+def get_all_customers_detail(
+    include_sensitive: bool = False, *, created_by_id: int | None = None
+) -> list:
     """获取所有客户的详细信息列表。
 
     Args:
@@ -399,7 +424,10 @@ def get_all_customers_detail(include_sensitive: bool = False) -> list:
     """
     s = SessionFactory()
     try:
-        customers = s.query(CustomerTable).all()
+        query = s.query(CustomerTable)
+        if created_by_id is not None:
+            query = query.filter(CustomerTable.created_by_id == created_by_id)
+        customers = query.all()
         result = []
         for customer in customers:
             customer_data = {

@@ -238,6 +238,15 @@ class TestLogController(BaseControllerTest, APITestMixin):
 @pytest.mark.unit
 @pytest.mark.log
 class TestLogReaders:
+    @pytest.fixture(autouse=True)
+    def _use_test_database_for_readers(self, setup_test_database):
+        # Both modules bind SessionFactory on import. Keep the readers on the
+        # same isolated database used by this test's inserted rows.
+        with patch("utils.log.SessionFactory", return_value=setup_test_database), patch(
+            "utils.audit.SessionFactory", return_value=setup_test_database
+        ):
+            yield
+
     """日志读取函数测试"""
 
     def test_load_log_uses_sql_pagination(self, setup_test_database):

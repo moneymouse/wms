@@ -26,40 +26,47 @@ def register_user(phone: str, name: str, password: str):
     return user, None
 
 
-def login_user(phone: str, password: str):
-    """
-    验证用户凭据，通过后签发 JWT。
-    返回 (token, safe_user_dict, error_msg)，成功时 error_msg 为 None。
-    """
+def authenticate_user(phone: str, password: str):
+    """Validate existing WMS credentials without issuing a transport-specific token."""
     if not phone or not password:
-        return None, None, "手机号和密码不能为空"
+        return None, "手机号和密码不能为空"
 
     user = user_model.get_by_phone(phone, include_password=True)
     if user is None or not check_password(password, user["password"]):
-        return None, None, "手机号或密码错误"
+        return None, "手机号或密码错误"
 
     if user["status"] == "pending":
-        return None, None, "账号尚未通过审核"
+        return None, "账号尚未通过审核"
     if user["status"] == "rejected":
         remark = user.get("remark") or ""
-        return None, None, f"账号审核未通过：{remark}"
+        return None, f"账号审核未通过：{remark}"
+    if user["status"] != STATUS_APPROVED:
+        return None, "账号不可用"
 
     roles = normalize_roles(user.get("roles")) or normalize_roles(user.get("role"))
     primary_role = _primary_role(roles)
 
+    safe_user = {k: user[k] for k in ("id", "phone", "name")}
+    safe_user["role"] = primary_role
+    safe_user["roles"] = roles
+    return safe_user, None
+
+
+def login_user(phone: str, password: str):
+    """Validate WMS credentials and preserve the existing REST JWT response."""
+    user, err = authenticate_user(phone, password)
+    if err:
+        return None, None, err
     token = create_jwt(
         {
             "user_id": user["id"],
             "phone": user["phone"],
             "name": user["name"],
-            "role": primary_role,
-            "roles": roles,
+            "role": user["role"],
+            "roles": user["roles"],
         }
     )
-    safe_user = {k: user[k] for k in ("id", "phone", "name")}
-    safe_user["role"] = primary_role
-    safe_user["roles"] = roles
-    return token, safe_user, None
+    return token, user, None
 
 
 def approve_user(user_id: int, role, operator_roles):

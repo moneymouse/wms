@@ -19,6 +19,7 @@ from data.order_version import OrderVersionTable
 from data.packing import box_model, packing_list_model
 from data.packing.PackingList import BoxWorkerTable, PackingListTable
 from services.outbound_service import confirm_outbound, update_cargo_details
+from services.order_edit_policy import OrderEditConflictError
 
 
 ADMIN = {"user_id": 1, "name": "管理员", "role": "admin"}
@@ -174,7 +175,7 @@ def test_reentry_accepts_legacy_post_outbound_status(world, headers, status):
 
 @pytest.mark.parametrize("status", [2, 3])
 @pytest.mark.parametrize("batch", [False, True])
-def test_unbind_with_receipt_keeps_outbound_status_until_reentry(world, status, batch):
+def test_unbind_with_receipt_requires_reentry_and_preserves_history(world, status, batch):
     original_cost = _ship_box(world)
     _seed_financial_history(world)
     tables = [PaymentReceiptTable, PaymentReceiptItemTable, OrderQuoteVersionTable,
@@ -184,18 +185,20 @@ def test_unbind_with_receipt_keeps_outbound_status_until_reentry(world, status, 
         session.get(CargoTable, "box").status = status
         session.commit()
 
-    if batch:
-        assert cargo_model.mutate_many(["box"], "unbind") == {"success": ["box"], "failed": []}
-    else:
-        assert cargo_model.unbind_from_order("box")
+    with pytest.raises(OrderEditConflictError, match="先撤销出库"):
+        cargo_model.mutate_many(["box"], "unbind") if batch else cargo_model.unbind_from_order("box")
     with world["factory"]() as session:
         box = session.get(CargoTable, "box")
         assert (box.status, box.target_order_uid, box.date, box.waybill_id) == (
-            status, None, original_cost["create_date"], "WB-OLD",
+            status, "order", original_cost["create_date"], "WB-OLD",
         )
         assert _rows(session, BoxCostRecordTable) == [original_cost]
 
     assert box_model.undo_ship("box", operator=ADMIN)
+    if batch:
+        assert cargo_model.mutate_many(["box"], "unbind") == {"success": ["box"], "failed": []}
+    else:
+        assert cargo_model.unbind_from_order("box")
 
     with world["factory"]() as session:
         box = session.get(CargoTable, "box")

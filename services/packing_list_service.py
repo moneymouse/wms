@@ -69,6 +69,8 @@ def create_packing_list(
     mark: str,
     customer_id: Optional[int] = None,
     photos: List[str] = None,
+    *,
+    session=None,
 ) -> dict:
     """创建装箱单
 
@@ -82,11 +84,13 @@ def create_packing_list(
         创建的装箱单信息
     """
     photos_json = json.dumps(photos or [])
+    kwargs = {} if session is None else {"session": session}
     return packing_list_model.create(
         creator_id=creator_id,
         mark=mark,
         customer_id=customer_id,
         photos=photos_json,
+        **kwargs,
     )
 
 

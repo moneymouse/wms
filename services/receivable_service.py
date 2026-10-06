@@ -23,6 +23,7 @@ from data.DB import (
     order_has_receipt_history,
 )
 from data.customer.Customer import CustomerTable
+from utils.audit import record_audit
 
 
 MONEY = Decimal("0.01")
@@ -491,6 +492,11 @@ def _create_price_adjustment(
     now: str,
 ) -> Optional[OrderPriceAdjustmentTable]:
     """Create exactly one pending debit/credit task for an effective re-quote."""
+    from data.finance.order_settlement import FinanceOrderSettlement
+    if session.get(FinanceOrderSettlement, order_uid) is not None:
+        # Unified finance derives adjustments from the live quote. Keeping a
+        # second collection task here would count the same price change twice.
+        return None
     if previous_quote is None or not order_has_receipt_history(session, order_uid):
         return None
     existing = (
@@ -528,8 +534,12 @@ def create_order_quote(
     body: dict,
     operator_payload: dict,
     allow_on_behalf: bool = False,
+    *,
+    session=None,
 ) -> dict:
-    """Create one quote version and attribute it to the order's salesman."""
+    """Create one quote; a supplied session keeps all writes caller-owned."""
+    from contextlib import nullcontext
+
     normalized = normalize_quote_payload(body)
     quote_unit_price = normalized["unit_price"]
     surcharge = normalized["surcharge"]
@@ -537,7 +547,8 @@ def create_order_quote(
     operator = _operator(operator_payload)
     now = time.strftime("%Y-%m-%d %H:%M:%S")
 
-    with SessionFactory() as session:
+    owns_session = session is None
+    with (SessionFactory() if owns_session else nullcontext(session)) as session:
         order = (
             session.query(OrderTable)
             .filter(
@@ -656,11 +667,17 @@ def create_order_quote(
             summary="报价流程更新订单运输方式",
             operator_payload=operator_payload,
         )
-        session.commit()
-        session.refresh(quote)
+        session.flush()
         result = quote_to_dict(session, quote)
         if is_final:
             result["order_transportation"] = order.transportation
+        record_audit("order_quote", "order", order_uid,
+                     action="quote_adopt" if is_final else "quote_submit",
+                     after_data=result, remark=quote_remark,
+                     session=session, operator_payload=operator_payload,
+                     metadata={"quote_id": quote.id, "order_uid": order_uid})
+        if owns_session:
+            session.commit()
         return result
 
 
@@ -1176,8 +1193,16 @@ def create_receipt(body: dict, operator_payload: dict) -> dict:
                 amount=amount,
                 remaining_after=money(available - amount),
             ))
+        session.flush()
+        result = get_receipt_detail(receipt.id, operator_payload, session=session)
+        record_audit("payment_receipt", "receipt", receipt.id,
+                     action="receipt_create", after_data=result,
+                     remark=receipt.remark, session=session,
+                     operator_payload=operator_payload,
+                     metadata={"receipt_no": receipt.receipt_no,
+                               "order_uids": [item[0].uid for item in prepared]})
         session.commit()
-        return get_receipt_detail(receipt.id, operator_payload, session=session)
+        return result
 
 
 def _receipt_items(session, receipt: PaymentReceiptTable) -> list:
@@ -1354,6 +1379,7 @@ def review_receipt(receipt_id: int, action: str, review_remark: str, operator_pa
             raise PermissionError("创建人不能审核自己的收款单")
         if receipt.status != "pending":
             raise ValueError("该收款单已经审核")
+        before = _receipt_dict(session, receipt, include_items=True)
         if action == "approve":
             receivables = {}
             items = (
@@ -1453,8 +1479,15 @@ def review_receipt(receipt_id: int, action: str, review_remark: str, operator_pa
                             and adjustment.direction == "collect"
                         ):
                             adjustment.status = "resolved"
+        session.flush()
+        result = _receipt_dict(session, receipt, include_items=True)
+        record_audit("payment_receipt", "receipt", receipt.id,
+                     action=f"receipt_{action}", before_data=before,
+                     after_data=result, remark=receipt.review_remark,
+                     session=session, operator_payload=operator_payload,
+                     metadata={"receipt_no": receipt.receipt_no, "order_uids": order_uids})
         session.commit()
-        return _receipt_dict(session, receipt, include_items=True)
+        return result
 
 
 def accounts_receivable_ledger(
@@ -1658,9 +1691,8 @@ def create_sales_bonus_rate(body: dict, operator_payload: dict) -> dict:
             create_date=now,
         )
         session.add(row)
-        session.commit()
-        session.refresh(row)
-        return {
+        session.flush()
+        result = {
             "id": row.id,
             "rate_per_kg": decimal_json(row.rate_per_kg, UNIT_PRICE),
             "effective_from": row.effective_from,
@@ -1669,6 +1701,11 @@ def create_sales_bonus_rate(body: dict, operator_payload: dict) -> dict:
             "creator_name": row.creator_name,
             "create_date": row.create_date,
         }
+        record_audit("sales_bonus_rate", "rate", row.id, action="create",
+                     after_data=result, remark=row.remark, session=session,
+                     operator_payload=operator_payload)
+        session.commit()
+        return result
 
 
 def _rate_for_date(rates: Iterable[SalesFollowupBonusRateTable], effective_date: str):

@@ -4,7 +4,7 @@ from flask import Blueprint, jsonify, request, send_file
 from openpyxl import load_workbook
 import json
 
-from Auth import verify, allow, get_token_payload
+from Auth import verify, allow, get_payload_roles, get_token_payload
 from data import (
     order_model,
     get_customer_record,
@@ -19,7 +19,9 @@ from data.customer.Customer import (
     get_all_customers_detail,
     update_customer_info,
     ALLOWED_ROLES,
+    CustomerAccessDenied,
 )
+from services.customer_access import current_user_id, customer_creator_scope
 from services.order_edit_policy import OrderEditConflictError
 from utils.audit_log import (
     log_sensitive_access,
@@ -88,8 +90,8 @@ def del_customer(customer_id):
 
     # 记录审计日志
     log_sensitive_access(
-        user_id=payload.get("id"),
-        user_role=payload.get("role"),
+        user_id=current_user_id(payload),
+        user_role=get_payload_roles(payload),
         user_name=payload.get("name"),
         action=ACTION_DELETE,
         customer_name=f"ID:{customer_id}",
@@ -97,7 +99,11 @@ def del_customer(customer_id):
     )
 
     try:
-        del_customer_record(customer_id=customer_id)
+        scope = customer_creator_scope(payload)
+        kwargs = {} if scope is None else {"created_by_id": scope}
+        del_customer_record(customer_id=customer_id, **kwargs)
+    except CustomerAccessDenied as exc:
+        return jsonify({"code": 403, "msg": str(exc)}), 403
     except OrderEditConflictError as exc:
         return jsonify({"code": 409, "msg": str(exc)}), 409
     return jsonify({"code": 200, "msg": "success"})
@@ -124,6 +130,9 @@ def create_customer():
     from data.database import SessionFactory
 
     payload = get_token_payload()
+    creator_id = current_user_id(payload)
+    if creator_id is None:
+        return jsonify({"code": 403, "msg": "Permission denied"}), 403
     record = json.loads(request.data)
     name = record.get("name", "").strip()
 
@@ -135,8 +144,8 @@ def create_customer():
 
     # 记录审计日志
     log_sensitive_access(
-        user_id=payload.get("id"),
-        user_role=payload.get("role"),
+        user_id=current_user_id(payload),
+        user_role=get_payload_roles(payload),
         user_name=payload.get("name"),
         action=ACTION_CREATE,
         customer_name=name,
@@ -159,7 +168,9 @@ def create_customer():
                 400,
             )
 
-        customer = CustomerTable(name=name, phone=phone, wechat=wechat)
+        customer = CustomerTable(
+            name=name, phone=phone, wechat=wechat, created_by_id=creator_id
+        )
         s.add(customer)
         s.commit()
         customer_id = customer.id
@@ -212,14 +223,16 @@ def get_customers_detail_list():
 
     # 记录审计日志
     log_sensitive_access(
-        user_id=payload.get("id"),
-        user_role=payload.get("role"),
+        user_id=current_user_id(payload),
+        user_role=get_payload_roles(payload),
         user_name=payload.get("name"),
         action=ACTION_VIEW_ALL,
         ip_address=request.remote_addr,
     )
 
-    customers = get_all_customers_detail(include_sensitive=True)
+    scope = customer_creator_scope(payload)
+    kwargs = {} if scope is None else {"created_by_id": scope}
+    customers = get_all_customers_detail(include_sensitive=True, **kwargs)
     return jsonify({"code": 200, "data": customers})
 
 
@@ -233,15 +246,22 @@ def get_customer_detail_info(customer_id):
 
     # 记录审计日志
     log_sensitive_access(
-        user_id=payload.get("id"),
-        user_role=payload.get("role"),
+        user_id=current_user_id(payload),
+        user_role=get_payload_roles(payload),
         user_name=payload.get("name"),
         action=ACTION_VIEW_SINGLE,
         customer_name=f"ID:{customer_id}",
         ip_address=request.remote_addr,
     )
 
-    customer = get_customer_detail(customer_id=customer_id, include_sensitive=True)
+    scope = customer_creator_scope(payload)
+    kwargs = {} if scope is None else {"created_by_id": scope}
+    try:
+        customer = get_customer_detail(
+            customer_id=customer_id, include_sensitive=True, **kwargs
+        )
+    except CustomerAccessDenied as exc:
+        return jsonify({"code": 403, "msg": str(exc)}), 403
     if not customer:
         return jsonify({"code": 404, "msg": "Customer not found"}), 404
     return jsonify({"code": 200, "data": customer})
@@ -269,8 +289,8 @@ def update_customer(customer_id):
 
     # 记录审计日志
     log_sensitive_access(
-        user_id=payload.get("id"),
-        user_role=payload.get("role"),
+        user_id=current_user_id(payload),
+        user_role=get_payload_roles(payload),
         user_name=payload.get("name"),
         action=ACTION_UPDATE,
         customer_name=f"ID:{customer_id}",
@@ -282,6 +302,9 @@ def update_customer(customer_id):
         customer = s.query(CustomerTable).filter_by(id=customer_id).first()
         if customer is None:
             return jsonify({"code": 404, "msg": "Customer not found"}), 404
+        scope = customer_creator_scope(payload)
+        if scope is not None and customer.created_by_id != scope:
+            return jsonify({"code": 403, "msg": "Permission denied"}), 403
 
         # 更新字段
         if "name" in record:

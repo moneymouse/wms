@@ -18,7 +18,14 @@ from controllers.excel_template_controller import excel_template_bp
 from controllers.transportation_controller import transportation_bp
 from controllers.receivable_controller import receivable_bp
 from controllers.intake_controller import intake_bp
+from controllers.finance_ledger_controller import finance_ledger_bp
+from controllers.finance_order_controller import finance_order_bp
+from controllers.finance_legacy_controller import finance_legacy_bp
+from controllers.finance_accounting_controller import finance_accounting_bp
+from controllers.finance_revenue_controller import finance_revenue_bp
+from controllers.supplier_reconciliation_controller import supplier_reconciliation_bp
 from services.auth_service import init_admin_user
+from controllers.oauth_controller import init_oauth
 
 # ---------------------------------------------------------------------------
 # App initialisation
@@ -55,6 +62,13 @@ app.register_blueprint(excel_template_bp)
 app.register_blueprint(transportation_bp)
 app.register_blueprint(receivable_bp)
 app.register_blueprint(intake_bp)
+app.register_blueprint(finance_ledger_bp)
+app.register_blueprint(finance_order_bp)
+app.register_blueprint(finance_legacy_bp)
+app.register_blueprint(finance_accounting_bp)
+app.register_blueprint(finance_revenue_bp)
+app.register_blueprint(supplier_reconciliation_bp)
+init_oauth(app)
 
 
 # ---------------------------------------------------------------------------

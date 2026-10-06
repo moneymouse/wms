@@ -15,6 +15,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Import all models to register them with Base.metadata
 from data.database import Base
+from data import mcp  # noqa: F401
+from data import oauth  # noqa: F401
+from data.finance import accounting  # noqa: F401
 from data.intake import IntakeTable, IntakePhotoTable  # noqa: F401
 from data.DB import OrderTable, CargoTable  # noqa: F401
 from data.user.User import UserTable  # noqa: F401
@@ -28,6 +31,11 @@ from data.packing.PackingList import (  # noqa: F401
 )
 from data.finance.BonusRate import BonusRateTable  # noqa: F401
 from data.finance.BonusItem import BonusItemTable  # noqa: F401
+from data.finance import ledger  # noqa: F401
+from data.finance import legacy  # noqa: F401
+from data.finance import order_settlement  # noqa: F401
+from data.packing.shipping_confirmation import ShippingConfirmationDraftTable  # noqa: F401
+from data import supplier_reconciliation  # noqa: F401
 from data.DB import CustomsCodeTable, GoodsNameTable, ExcelTemplateTable  # noqa: F401
 from data.order_version import (  # noqa: F401
     OrderVersionTable,

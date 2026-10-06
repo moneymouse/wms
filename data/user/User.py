@@ -181,6 +181,7 @@ class UserModel:
             from data.user.PasswordResetRequest import PasswordResetRequestTable
             from data.finance.BonusItem import BonusItemTable
             from data.finance.BonusRate import BonusRateTable
+            from data.customer.Customer import CustomerTable
 
             if (
                 session.query(IntakeTable.uid)
@@ -314,6 +315,9 @@ class UserModel:
             session.query(OrderTable).filter(OrderTable.salesman_id == user_id).update(
                 {"salesman_id": None}, synchronize_session=False
             )
+            session.query(CustomerTable).filter(
+                CustomerTable.created_by_id == user_id
+            ).update({"created_by_id": None}, synchronize_session=False)
             session.query(CargoTable).filter(
                 CargoTable.bonus_assigned_by == user_id
             ).update({"bonus_assigned_by": None}, synchronize_session=False)
