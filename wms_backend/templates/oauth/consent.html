@@ -1,0 +1,37 @@
+{% extends "oauth/base.html" %}
+{% block title %}授权客户端 · 迅达货运 MCP{% endblock %}
+{% block page_class %}consent{% endblock %}
+{% block content %}
+  <h1>授权 MCP 客户端</h1>
+  <p class="page-description">选择这个客户端可以使用的 WMS 权限。</p>
+  <section class="card" aria-label="客户端授权">
+    {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+    <div class="client-heading">
+      <h2>{{ client_name }}</h2>
+      <p>希望访问迅达货运仓储管理系统</p>
+    </div>
+    <dl class="metadata">
+      <dt>客户端来源</dt><dd>{{ client_source }}</dd>
+      <dt>回调地址所在网站</dt><dd>{{ callback_host }}</dd>
+      <dt>当前账号</dt><dd class="account-name">{{ user_name }}</dd>
+    </dl>
+    <form method="post">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <p class="section-label">允许以下操作</p>
+      <div class="permissions">
+        {% for scope, label in scopes %}
+          <label class="permission">
+            <input type="checkbox" name="approved_scope" value="{{ scope }}" {% if selected_scopes is not defined or scope in selected_scopes %}checked{% endif %} {% if scope == 'mcp' %}required{% endif %}>
+            <span class="permission-copy"><span class="permission-title">{{ label }}</span><span class="permission-code">{{ scope }}</span></span>
+            {% if scope == 'mcp' %}<span class="required-label">必需</span>{% endif %}
+          </label>
+        {% endfor %}
+      </div>
+      <p class="scope-note">可取消勾选不需要的操作。客户端执行操作时，仍须遵守您当前的系统角色权限。</p>
+      <div class="actions">
+        <button class="secondary" type="submit" name="decision" value="deny" formnovalidate>拒绝</button>
+        <button type="submit" name="decision" value="approve">允许所选权限</button>
+      </div>
+    </form>
+  </section>
+{% endblock %}

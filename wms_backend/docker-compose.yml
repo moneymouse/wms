@@ -1,0 +1,105 @@
+services:
+  # ---------------------------------------------------------------------------
+  # MySQL lts
+  # ---------------------------------------------------------------------------
+  mysql:
+    image: mysql:lts
+    container_name: wms_mysql
+    restart: unless-stopped
+    env_file:
+      - DB.env
+    volumes:
+      - mysql_data:/var/lib/mysql
+      # Note: schema.sql removed - Alembic manages database schema
+    ports:
+      # Only expose MySQL to the server itself. Containers use the internal network.
+      - "127.0.0.1:3306:3306"
+    networks:
+      - wms_network
+    healthcheck:
+      test: [ "CMD-SHELL", "mysqladmin ping -h localhost -u root -p$${MYSQL_ROOT_PASSWORD} --silent" ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # ---------------------------------------------------------------------------
+  # Python / Flask backend (gunicorn)
+  # ---------------------------------------------------------------------------
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      network: host
+    container_name: wms_backend
+    restart: unless-stopped
+    env_file:
+      - BK.env
+    environment:
+      RUN_MIGRATIONS: ${RUN_MIGRATIONS:-false}
+      TZ: Asia/Shanghai
+    depends_on:
+      mysql:
+        condition: service_healthy
+    volumes:
+      - ./env.toml:/app/env.toml:ro
+      - ./log:/app/log
+      - ./excels:/app/excels
+      - ./data/history:/app/data/history
+      - ./uploads:/app/uploads
+    networks:
+      - wms_network
+    expose:
+      - "5000"
+
+  # ---------------------------------------------------------------------------
+  # Nginx reverse proxy
+  # ---------------------------------------------------------------------------
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: wms_nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ../wms_frontend/build:/home/frontend:ro
+      # Shared IP certificate; keep live -> archive links outside the deploy tree.
+      - ${PROD_TLS_DIR:-../../wms_pre_tls}/letsencrypt:/etc/letsencrypt:ro
+    networks:
+      - wms_network
+    depends_on:
+      - backend
+
+  # Optional remote MCP service; backend alone owns migrations and admin setup.
+  mcp:
+    profiles: ["mcp"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    entrypoint: []
+    command: ["uvicorn", "mcp_server:app", "--host", "0.0.0.0", "--port", "8000", "--no-proxy-headers"]
+    env_file:
+      - BK.env
+    environment:
+      TZ: Asia/Shanghai
+    volumes:
+      - ./env.toml:/app/env.toml:ro
+    depends_on:
+      mysql:
+        condition: service_healthy
+    networks:
+      - wms_network
+    expose:
+      - "8000"
+
+
+volumes:
+  mysql_data:
+
+
+networks:
+  wms_network:
+    driver: bridge

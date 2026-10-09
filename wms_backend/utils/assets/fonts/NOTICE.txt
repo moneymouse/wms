@@ -1,0 +1,6 @@
+Droid Sans Fallback
+
+Digitized font data copyright Google Corporation.
+Licensed under the Apache License, Version 2.0.
+The complete license text is included in APACHE-2.0.txt.
+

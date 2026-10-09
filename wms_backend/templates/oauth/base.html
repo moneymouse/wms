@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}迅达货运 · MCP 授权{% endblock %}</title>
+  <style>
+    :root { color-scheme: light; --border: #d1d9e0; --text: #1f2328; --muted: #59636e; --primary: #1677ff; --primary-hover: #4096ff; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #f6f8fa; color: var(--text); font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", "Helvetica Neue", Arial, sans-serif; }
+    .page { min-height: 100vh; padding: 48px 20px 32px; }
+    .brand { display: flex; align-items: center; justify-content: center; min-height: 36px; margin: 0 auto 24px; font-size: 17px; font-weight: 600; }
+    main { width: 100%; max-width: 360px; margin: 0 auto; }
+    main.consent { max-width: 480px; }
+    h1 { margin: 0 0 8px; text-align: center; font-size: 24px; font-weight: 400; line-height: 1.4; letter-spacing: -0.4px; }
+    h2 { margin: 0 0 4px; font-size: 16px; font-weight: 600; overflow-wrap: anywhere; }
+    p { margin: 0; }
+    .page-description { margin-bottom: 24px; color: var(--muted); text-align: center; line-height: 1.7; }
+    .card { padding: 24px; border: 1px solid var(--border); border-radius: 8px; background: #fff; box-shadow: 0 1px 0 rgba(31, 35, 40, 0.04); }
+    .field { margin-bottom: 18px; }
+    .field label { display: block; margin-bottom: 7px; font-weight: 500; }
+    input[type=text], input[type=password] { width: 100%; min-height: 38px; padding: 7px 10px; border: 1px solid var(--border); border-radius: 6px; background: #fff; color: var(--text); font: inherit; box-shadow: inset 0 1px 0 rgba(31, 35, 40, 0.04); }
+    input:focus-visible, button:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+    button { display: inline-flex; align-items: center; justify-content: center; min-height: 38px; padding: 7px 16px; border: 1px solid rgba(31, 35, 40, 0.15); border-radius: 6px; background: var(--primary); color: #fff; font: inherit; font-weight: 600; line-height: 1.4; cursor: pointer; box-shadow: 0 1px 0 rgba(31, 35, 40, 0.1); }
+    button:hover { background: var(--primary-hover); }
+    .full-width { width: 100%; }
+    .secondary { background: #f6f8fa; color: var(--text); border-color: var(--border); }
+    .secondary:hover { background: #eef1f4; }
+    .error { margin: 0 0 20px; padding: 12px; border: 1px solid #ff8182; border-radius: 6px; background: #ffebe9; color: #82071e; overflow-wrap: anywhere; }
+    .muted { color: var(--muted); }
+    .account-note { margin-top: 16px; padding: 15px 18px; border: 1px solid var(--border); border-radius: 8px; text-align: center; color: var(--muted); font-size: 13px; line-height: 1.7; }
+    .client-heading { padding-bottom: 20px; border-bottom: 1px solid #d8dee4; }
+    .client-heading p { color: var(--muted); }
+    .metadata { display: grid; grid-template-columns: 98px minmax(0, 1fr); gap: 9px 12px; margin: 20px 0; font-size: 13px; }
+    .metadata dt { color: var(--muted); }
+    .metadata dd { margin: 0; overflow-wrap: anywhere; }
+    .account-name { font-weight: 600; }
+    .section-label { margin: 20px 0 10px; font-weight: 600; }
+    .permissions { border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+    .permission { display: flex; align-items: flex-start; gap: 10px; margin: 0; padding: 13px 14px; cursor: pointer; }
+    .permission + .permission { border-top: 1px solid #d8dee4; }
+    .permission input { flex: 0 0 auto; width: 16px; height: 16px; margin: 3px 0 0; accent-color: var(--primary); }
+    .permission-copy { flex: 1; min-width: 0; }
+    .permission-title { display: block; font-weight: 500; }
+    .permission-code { display: block; margin-top: 2px; color: var(--muted); font: 11px/1.6 ui-monospace, SFMono-Regular, Consolas, monospace; overflow-wrap: anywhere; }
+    .required-label { flex: 0 0 auto; margin-top: 1px; padding: 1px 6px; border: 1px solid var(--border); border-radius: 12px; color: var(--muted); font-size: 11px; }
+    .scope-note { margin-top: 12px; color: var(--muted); font-size: 12px; line-height: 1.7; }
+    .actions { display: grid; grid-template-columns: 1fr 1.6fr; gap: 12px; margin-top: 22px; }
+    footer { max-width: 480px; margin: 28px auto 0; text-align: center; color: var(--muted); font-size: 12px; line-height: 1.8; overflow-wrap: anywhere; }
+    footer span { display: block; }
+    @media (max-width: 420px) { .page { padding: 28px 16px; } .card { padding: 20px; } .metadata { grid-template-columns: 1fr; gap: 3px; } .metadata dd + dt { margin-top: 9px; } .actions { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <header class="brand"><span>迅达货运 WMS</span></header>
+    <main class="{% block page_class %}{% endblock %}">{% block content %}{% endblock %}</main>
+    <footer><span>迅达货运仓储管理系统 · MCP 授权</span><span>当前站点：{{ request.host }}</span></footer>
+  </div>
+</body>
+</html>

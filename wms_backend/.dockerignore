@@ -1,0 +1,16 @@
+.git
+.gitignore
+*.env
+env.toml
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Runtime data is mounted by Compose and should not be baked into images.
+log/
+log_*/
+excels_pre/
+uploads_pre/
+uploads/
+uploads_*/
+data/history_pre/

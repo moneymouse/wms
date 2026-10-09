@@ -1,0 +1,124 @@
+# =============================================================================
+# WMS Development Docker Compose
+# Usage: docker-compose -f docker-compose.dev.yml up
+# Hot reload: Code changes auto-reload without container restart
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # MySQL lts
+  # ---------------------------------------------------------------------------
+  mysql:
+    image: mysql:lts
+    container_name: wms_mysql_dev
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root_password_change_me
+      MYSQL_DATABASE: wms_db
+      MYSQL_USER: wms_user
+      MYSQL_PASSWORD: wms_password_change_me
+    volumes:
+      - mysql_data_dev:/var/lib/mysql
+      # Note: schema.sql removed - Alembic manages database schema
+    ports:
+      - "3306:3306"
+    networks:
+      - wms_network_dev
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root",
+            "-proot_password_change_me"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # ---------------------------------------------------------------------------
+  # Python / Flask backend - Development mode with hot reload
+  # ---------------------------------------------------------------------------
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: wms_backend_dev
+    restart: unless-stopped
+    environment:
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-}
+      OAUTH_ISSUER_URL: ${OAUTH_ISSUER_URL:-}
+      MCP_PUBLIC_URL: ${MCP_PUBLIC_URL:-}
+      OAUTH_SESSION_SECRET: ${OAUTH_SESSION_SECRET:-}
+      OAUTH_ALLOW_LOCAL_HTTP: ${OAUTH_ALLOW_LOCAL_HTTP:-false}
+      DATABASE_URL: >-
+        mysql+pymysql://wms_user:wms_password_change_me@mysql:3306/wms_db?charset=utf8mb4
+      # Initial admin user credentials (created on first startup)
+      ADMIN_PHONE: "admin"
+      ADMIN_PASSWORD: "admin123"
+      ADMIN_NAME: "Administrator"
+      # Enable Flask development mode for hot reload
+      FLASK_ENV: development
+      FLASK_DEBUG: "1"
+    depends_on:
+      mysql:
+        condition: service_healthy
+    volumes:
+      - ./log:/app/log
+      - ./excels:/app/excels
+      - ./data/history:/app/data/history
+      # Mount source code for hot reload
+      - .:/app
+    ports:
+      - "5001:5000"
+    networks:
+      - wms_network_dev
+    # Override entrypoint to use Flask dev server with hot reload
+    entrypoint: []
+    command:
+      - sh
+      - -c
+      - |
+        echo '=== WMS Backend Starting (Development Mode) ===' &&
+        echo 'Waiting for MySQL...' &&
+        sleep 5 &&
+        echo 'Running migrations...' &&
+        alembic upgrade head &&
+        cd /app && python -m scripts.init_admin &&
+        echo 'Starting Flask development server with hot reload...' &&
+        flask run --host=0.0.0.0 --port=5000 --reload --debugger
+
+  # Optional remote MCP service; backend alone owns migrations and admin setup.
+  mcp:
+    profiles: ["mcp"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    entrypoint: []
+    command: ["uvicorn", "mcp_server:app", "--host", "0.0.0.0", "--port", "8000", "--no-proxy-headers"]
+    environment:
+      DATABASE_URL: mysql+pymysql://wms_user:wms_password_change_me@mysql:3306/wms_db?charset=utf8mb4
+      TZ: Asia/Shanghai
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-}
+      OAUTH_ISSUER_URL: ${OAUTH_ISSUER_URL:-}
+      MCP_PUBLIC_URL: ${MCP_PUBLIC_URL:-}
+      OAUTH_SESSION_SECRET: ${OAUTH_SESSION_SECRET:-}
+      OAUTH_ALLOW_LOCAL_HTTP: ${OAUTH_ALLOW_LOCAL_HTTP:-false}
+      MCP_ALLOWED_HOSTS: ${MCP_ALLOWED_HOSTS:-}
+      MCP_ALLOWED_ORIGINS: ${MCP_ALLOWED_ORIGINS:-}
+    depends_on:
+      mysql:
+        condition: service_healthy
+    networks:
+      - wms_network_dev
+    expose:
+      - "8000"
+    volumes:
+      - .:/app
+    ports:
+      - "127.0.0.1:8000:8000"
+
+
+volumes:
+  mysql_data_dev:
+
+networks:
+  wms_network_dev:
+    driver: bridge

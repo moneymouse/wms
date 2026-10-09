@@ -1,0 +1,100 @@
+name: wms_pre
+
+services:
+  # ---------------------------------------------------------------------------
+  # MySQL (Pre-production)
+  # ---------------------------------------------------------------------------
+  mysql:
+    image: mysql:lts
+    restart: unless-stopped
+    env_file:
+      - ${PRE_DB_ENV_FILE:-PRE_DB.env}
+    volumes:
+      - mysql_data:/var/lib/mysql
+    ports:
+      - "127.0.0.1:3307:3306"
+    networks:
+      - wms_network
+    healthcheck:
+      test: [ "CMD-SHELL", "mysqladmin ping -h localhost -u root -p$${MYSQL_ROOT_PASSWORD} --silent" ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # ---------------------------------------------------------------------------
+  # Python / Flask backend (Pre-production)
+  # ---------------------------------------------------------------------------
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      network: host
+    restart: unless-stopped
+    env_file:
+      - ${PRE_BK_ENV_FILE:-PRE_BK.env}
+    environment:
+      RUN_MIGRATIONS: ${RUN_MIGRATIONS:-false}
+      FLASK_ENV: production
+      WMS_ENV: preproduction
+      TZ: Asia/Shanghai
+    depends_on:
+      mysql:
+        condition: service_healthy
+    volumes:
+      - ./env.toml:/app/env.toml:ro
+      - ./log_pre:/app/log
+      - ./excels_pre:/app/excels
+      - ./data/history_pre:/app/data/history
+      - ./uploads_pre:/app/uploads
+    networks:
+      - wms_network
+    expose:
+      - "5000"
+
+  # ---------------------------------------------------------------------------
+  # Nginx reverse proxy (Pre-production entry)
+  # ---------------------------------------------------------------------------
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports:
+      - "0.0.0.0:8081:80"
+    volumes:
+      - ./nginx.pre.conf:/etc/nginx/conf.d/default.conf:ro
+      - ../wms_frontend/build:/home/frontend:ro
+    networks:
+      - wms_network
+    depends_on:
+      - backend
+
+  # Optional remote MCP service; backend alone owns migrations and admin setup.
+  mcp:
+    profiles: ["mcp"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    entrypoint: []
+    command: ["uvicorn", "mcp_server:app", "--host", "0.0.0.0", "--port", "8000", "--no-proxy-headers"]
+    env_file:
+      - ${PRE_BK_ENV_FILE:-PRE_BK.env}
+    environment:
+      TZ: Asia/Shanghai
+    depends_on:
+      mysql:
+        condition: service_healthy
+    networks:
+      - wms_network
+    expose:
+      - "8000"
+    volumes:
+      - ./env.toml:/app/env.toml:ro
+
+
+volumes:
+  mysql_data:
+
+networks:
+  wms_network:
+    driver: bridge

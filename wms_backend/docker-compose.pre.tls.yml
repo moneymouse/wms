@@ -1,0 +1,10 @@
+# Enable with: docker compose -f docker-compose.pre.yml -f docker-compose.pre.tls.yml --profile mcp up -d
+# Keep certificates outside the deploy tree so rsync --delete cannot remove them.
+services:
+  nginx:
+    # Replace the HTTP mapping on the original port; do not add a second entry.
+    ports: !override
+      - "0.0.0.0:8081:443"
+    volumes:
+      - ./nginx.pre.tls.conf:/etc/nginx/conf.d/default.conf:ro
+      - ${PRE_TLS_DIR:-../../wms_pre_tls}/letsencrypt:/etc/letsencrypt:ro
