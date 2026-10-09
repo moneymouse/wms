@@ -1,6 +1,0 @@
-[submodule "wms_frontend"]
-	path = wms_frontend
-	url = https://github.com/moneymouse/frontend.git
-[submodule "wms_backend"]
-	path = wms_backend
-	url = https://github.com/moneymouse/backend.git
