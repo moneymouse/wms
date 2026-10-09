@@ -35,6 +35,7 @@ services:
     container_name: wms_backend_test
     restart: unless-stopped
     environment:
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-}
       OAUTH_ISSUER_URL: ${OAUTH_ISSUER_URL:-}
       MCP_PUBLIC_URL: ${MCP_PUBLIC_URL:-}
       OAUTH_SESSION_SECRET: ${OAUTH_SESSION_SECRET:-}
@@ -87,9 +88,12 @@ services:
     restart: unless-stopped
     entrypoint: []
     command: ["uvicorn", "mcp_server:app", "--host", "0.0.0.0", "--port", "8000", "--no-proxy-headers"]
+    volumes:
+      - ./env.toml:/app/env.toml:ro
     environment:
       DATABASE_URL: mysql+pymysql://wms_user_test:wms_password_test_only@mysql_test:3306/wms_db_test?charset=utf8mb4
       TZ: Asia/Shanghai
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-}
       OAUTH_ISSUER_URL: ${OAUTH_ISSUER_URL:-}
       MCP_PUBLIC_URL: ${MCP_PUBLIC_URL:-}
       OAUTH_SESSION_SECRET: ${OAUTH_SESSION_SECRET:-}

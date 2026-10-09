@@ -6,9 +6,7 @@ import toml
 
 env = toml.load("./env.toml")
 endpoint = "https://api.17track.net/track/v2.2"
-token = env.get(
-    "17track_token", "SAFE_HISTORY_VALUE"
-)  # SAFE_HISTORY_VALUE
+token = env.get("17track_token", "")
 logger = logging.getLogger(__name__)
 
 headers = {

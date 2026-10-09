@@ -17,6 +17,7 @@ if parent_dir not in sys.path:
 # 测试环境变量设置 - 必须在导入任何模块之前设置
 os.environ["TESTING"] = "1"
 os.environ["DATABASE_URL"] = "sqlite:///:memory:"
+os.environ["JWT_SECRET_KEY"] = "wms-tests-only-jwt-key-not-for-deployment"
 
 # 创建SQLAlchemy测试配置
 from sqlalchemy import create_engine

@@ -5,10 +5,34 @@ import json
 import os
 import time
 from functools import wraps
+from pathlib import Path
+
+import toml
 
 from flask import request, jsonify
 
-secret_key = "SAFE_HISTORY_VALUE"
+def _load_secret_key():
+    configured = os.environ.get("JWT_SECRET_KEY")
+    if configured is not None and configured.strip():
+        return configured
+
+    config_path = Path(__file__).resolve().with_name("env.toml")
+    try:
+        config = toml.load(config_path)
+    except FileNotFoundError:
+        config = {}
+    except (OSError, ValueError):
+        raise RuntimeError("Cannot read JWT configuration from env.toml") from None
+
+    configured = config.get("jwt_secret_key")
+    if not isinstance(configured, str) or not configured.strip():
+        raise RuntimeError(
+            "JWT signing key is not configured; set JWT_SECRET_KEY or jwt_secret_key in env.toml"
+        )
+    return configured
+
+
+secret_key = _load_secret_key()
 
 # Token valid duration in seconds (7 days)
 TOKEN_EXPIRE_SECONDS = 7 * 24 * 3600

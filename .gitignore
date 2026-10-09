@@ -7,3 +7,52 @@ env.toml
 .DS_Store
 uploads/
 uploads_*/
+
+# Local editor, agent, and Python environment files
+/.idea/
+/.claude/
+/CLAUDE.local.md
+__pycache__/
+*.pyo
+/.pytest_cache/
+/.mypy_cache/
+/.venv/
+/venv/
+/pyvenv.cfg
+/include/site/
+
+# Credentials, certificates, and local databases
+.env
+*.pem
+*.key
+*.db
+*.sqlite
+*.sqlite3
+
+# Runtime logs, exports, uploaded files, and generated QR images
+*.log
+/excels/
+/static/uploads/
+/buffer
+/buffer[0-9]*.png
+/test.xlsx
+
+# Private serialized business datasets and local backup markers
+/data/backupRecord
+/data/backupRecord.txt
+/data/cargo_dat_1
+/data/cargo_dat_archive
+/data/order_dat_1
+/data/order_dat_archive
+/data/customer/customer_dat
+/data/data/cargo_dat
+/data/data/order_dat
+
+# Populated workbooks kept locally for existing workflows
+/static/template.xlsx
+/static/xinghang_template.xlsx
+/static/my_template.xlsx
+/static/temporal_transfer_id_2_waybill_id_table.xlsx
+/static/xinghang_a.xlsx
+/static/yaxuan_template.xlsx
+/static/template.xls
