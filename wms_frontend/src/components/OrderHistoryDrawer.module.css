@@ -1,0 +1,146 @@
+.deletedIndex {
+    box-sizing: border-box;
+    height: 100%;
+    overflow: auto;
+    padding: 24px;
+}
+
+.masterDetail {
+    display: grid;
+    grid-template-columns: minmax(320px, 34%) minmax(0, 1fr);
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
+}
+
+.versionPane,
+.detailPane {
+    box-sizing: border-box;
+    min-height: 0;
+    min-width: 0;
+    overflow-y: auto;
+}
+
+.versionPane {
+    background: #fafafa;
+    border-right: 1px solid #f0f0f0;
+    padding: 20px 16px;
+}
+
+.detailPane {
+    background: #fff;
+    outline: none;
+    padding: 24px;
+}
+
+.detailPane:focus-visible {
+    box-shadow: inset 0 0 0 2px #1677ff;
+}
+
+.backButton {
+    margin-bottom: 12px;
+    padding-left: 0;
+}
+
+.paneHeading,
+.detailHeading {
+    align-items: center;
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.paneTitle,
+.detailTitle {
+    margin: 0 !important;
+}
+
+.paneHint {
+    display: block;
+    margin-top: 6px;
+}
+
+.versionList {
+    margin-top: 14px;
+}
+
+.versionItem {
+    align-items: flex-start !important;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    flex-direction: column;
+    margin-bottom: 8px;
+    padding: 12px !important;
+    transition: background-color 0.2s ease, border-color 0.2s ease;
+}
+
+.versionItem :global(.ant-list-item-meta) {
+    width: 100%;
+}
+
+.versionItem :global(.ant-list-item-action) {
+    margin-inline-start: 0;
+    margin-top: 8px;
+}
+
+.versionItem :global(.ant-list-item-action > li:first-child) {
+    padding-inline-start: 0;
+}
+
+.selectedVersionItem {
+    background: #e6f4ff;
+    border-color: #91caff;
+}
+
+.pagination {
+    margin-top: 12px;
+    text-align: right;
+}
+
+.detailHeading {
+    background: #fff;
+    border-bottom: 1px solid #f0f0f0;
+    margin: -24px -24px 20px;
+    padding: 20px 24px 14px;
+    position: sticky;
+    top: -24px;
+    z-index: 2;
+}
+
+.detailEmpty {
+    align-items: center;
+    display: flex;
+    justify-content: center;
+    min-height: 360px;
+}
+
+@media (max-width: 767px) {
+    .deletedIndex {
+        padding: 16px;
+    }
+
+    .masterDetail {
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-rows: minmax(200px, 42%) minmax(0, 58%);
+    }
+
+    .versionPane {
+        border-bottom: 1px solid #f0f0f0;
+        border-right: 0;
+        padding: 14px 12px;
+    }
+
+    .detailPane {
+        padding: 16px;
+    }
+
+    .detailHeading {
+        margin: -16px -16px 16px;
+        padding: 14px 16px 12px;
+        top: -16px;
+    }
+
+    .detailEmpty {
+        min-height: 180px;
+    }
+}

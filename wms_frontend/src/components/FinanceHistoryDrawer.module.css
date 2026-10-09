@@ -1,0 +1,28 @@
+.summary { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
+.notice { margin-bottom: 16px; }
+.noticeText { display: block; margin-bottom: 16px; }
+.records { min-height: 64px; }
+.empty { padding: 24px 0; }
+.dateGroup { margin-bottom: 20px; }
+.dateHeading { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+.dateDivider { margin: 10px 0 14px !important; }
+.event + .event { margin-top: 14px; }
+.eventHeader { display: grid; grid-template-columns: 80px minmax(0, 1fr); gap: 12px; align-items: baseline; }
+.time { overflow-wrap: anywhere; }
+.eventMeta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; min-width: 0; }
+.eventBody { min-width: 0; }
+.reason { display: flex; align-items: baseline; gap: 10px; margin: 6px 0 10px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.reasonLabel { flex: none; }
+.changes { margin-top: 10px; overflow-wrap: anywhere; }
+.value { display: block; white-space: pre-wrap; overflow-wrap: anywhere; }
+.numericValue { text-align: right; }
+.rawDisclosure { margin-top: 4px; }
+.raw { max-height: 280px; overflow: auto; margin: 0; white-space: pre; }
+.correlation { display: block; margin-top: 4px; overflow-wrap: anywhere; }
+.eventDivider { margin: 14px 0 0 !important; }
+.pagination { display: flex; justify-content: flex-end; }
+@media (max-width: 560px) {
+    .drawer :global(.ant-drawer-body) { padding: 16px; }
+    .eventHeader { grid-template-columns: 72px minmax(0, 1fr); gap: 8px; }
+    .reason { margin-top: 10px; }
+}

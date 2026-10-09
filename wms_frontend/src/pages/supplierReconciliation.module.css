@@ -1,0 +1,20 @@
+.workspace { display: flex; flex-direction: column; gap: 16px; }
+.help { margin: 0 0 16px; color: rgba(0, 0, 0, .65); line-height: 1.8; }
+.uploadFields { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 16px; }
+.field { display: flex; flex-direction: column; gap: 8px; width: 220px; }
+.fileField { flex: 1; min-width: 240px; }
+.fileName { overflow-wrap: anywhere; }
+.actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 16px; }
+.toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
+.summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin: 16px 0; }
+.summaryItem { padding: 14px 16px; background: #f7f9fc; border-radius: 6px; }
+.summaryLabel { display: block; color: rgba(0, 0, 0, .65); margin-bottom: 4px; }
+.summaryValue { display: block; font-size: 22px; font-weight: 600; }
+.summaryNote { display: block; color: rgba(0, 0, 0, .65); margin-top: 4px; }
+.issues { margin: 0; padding-left: 18px; color: #b42318; }
+.notice { margin-bottom: 16px; }
+@media (max-width: 640px) {
+    .field { width: 100%; }
+    .fileField { min-width: 0; }
+    .summary { grid-template-columns: 1fr; gap: 8px; }
+}

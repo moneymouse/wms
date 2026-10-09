@@ -1,0 +1,10 @@
+.createPage { max-width: 1520px; margin: 0 auto; padding: 24px; }
+.heading, .listHeading { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 20px; }
+.heading h3 { margin: 0 0 6px; }
+.subtitle { color: #738194; font-size: 14px; }
+.entryModes { display: inline-flex; gap: 6px; padding: 5px; margin-bottom: 20px; border: 1px solid #e4eaf1; border-radius: 10px; background: #f3f6fa; }
+.entryModes button { border: 0; border-radius: 7px; }
+.manualPanel { display: flex; flex-direction: column; gap: 4px; }
+.manualPanel :global(.ant-card) { border-radius: 12px; border-color: #e5e9ef; }
+.manualPanel[hidden], .paperPanel[hidden] { display: none; }
+@media (max-width: 600px) { .createPage { padding: 14px 10px; } .heading { align-items: flex-start; } .entryModes { display: flex; } .entryModes button { flex: 1; height: 40px; } }

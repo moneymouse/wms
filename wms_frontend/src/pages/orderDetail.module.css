@@ -1,0 +1,38 @@
+.editable-cell-value-wrap {
+    min-width: 0;
+    padding: 4px 11px;
+    border: 1px solid transparent;
+    border-radius: 2px;
+    cursor: pointer;
+}
+
+.editable-cell-value-wrap:hover {
+    border-color: #d9d9d9;
+}
+
+.cargoText {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+    max-width: 100%;
+}
+
+.cargoTextValue {
+    min-width: 0;
+    overflow-wrap: anywhere;
+    white-space: normal;
+}
+
+.cargoTextEllipsis {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.cargoText :global(.ant-typography-copy) {
+    flex: none;
+}
+
+.my-text-button:hover {
+    background-color: transparent !important;
+}

@@ -1,0 +1,9 @@
+.page { padding: 4px 0; }
+.header { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 16px; }
+.notice { margin: 16px 0; }
+.filters { margin-bottom: 16px; }
+.link { padding: 0; height: auto; }
+.pagination { display: flex; justify-content: flex-end; margin-top: 16px; }
+.summary { margin-top: 16px; }
+.detailActions { margin: 16px 0; flex-wrap: wrap; }
+@media (max-width: 640px) { .header { align-items: flex-start; } }
