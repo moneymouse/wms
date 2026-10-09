@@ -3,34 +3,28 @@ import {InboxOutlined} from '@ant-design/icons';
 import {message, Tabs, Typography, Upload} from 'antd';
 import {endpoint} from "../config.js";
 import getSafeHeader from "../common/safeHeader";
+import SupplierReconciliation from '../pages/supplierReconciliation';
+import { decodeJwtPayload } from './featureTourState';
+import { getUserRoles, hasPermission } from './roleConfig';
+import { getWaybillUploadResult } from './waybillUploadResult';
 
-function downloadArrayAsText(array, filename='上传结果记录') {
-    // 纯文本，每行一项
-    const text = array.join('\n');
-
-    // 创建 Blob
-    const blob = new Blob([text], {type: 'text/plain;charset=utf-8'});
-
-    // 创建下载链接
-    const link = document.createElement('a');
-    link.href = URL.createObjectURL(blob);
-    link.download = filename + '.txt';
-
-    // 触发点击
-    // link.click();
-    return link;
-
-    // 释放 URL 对象
-    // URL.revokeObjectURL(link.href);
+function downloadArrayAsText(array) {
+    const blob = new Blob([array.join('\n')], {type: 'text/plain;charset=utf-8'});
+    return URL.createObjectURL(blob);
 }
 
 const {Dragger} = Upload;
 const FileComponent = ({mode}) => {
     const [fileList, setFileList] = React.useState([]);
+    const completedFiles = React.useRef(new Map());
+    React.useEffect(() => () => {
+        completedFiles.current.forEach(file => URL.revokeObjectURL(file.url));
+        completedFiles.current.clear();
+    }, []);
     const parseResponseBody = (file) => {
-        if (file.response) return file.response;
-        const raw = file.xhr?.response;
-        if (!raw) return {};
+        const raw = file.response || file.xhr?.response;
+        if (!raw) return {code: file.xhr?.status || 500, msg: `${file.name} 上传失败！`};
+        if (typeof raw === 'object') return raw;
         try {
             return JSON.parse(raw);
         } catch (e) {
@@ -41,43 +35,36 @@ const FileComponent = ({mode}) => {
     const props = (mode) => ({
         name: 'file',
         multiple: true,
+        fileList,
         headers: getSafeHeader(),
         action: `${endpoint}/order/upload/${mode}`,
-        async onChange(info) {
-            const newFileList = [];
-            for (const file of info.fileList) {
+        onChange(info) {
+            const nextFileList = info.fileList.filter(file => file.status !== 'removed').map(file => {
                 const status = file.status;
-                if ((status === 'done' || status === 'error') && (file.xhr || file.response)) {
+                if (status === 'done' || status === 'error') {
+                    if (completedFiles.current.has(file.uid)) return completedFiles.current.get(file.uid);
                     const responseBody = parseResponseBody(file);
-                    if (responseBody.code !== 200) {
-                        await message.error(responseBody.msg || `${file.name} 上传失败！`);
-                    }
-                    const successful_list = (responseBody['success_list'] || []).map(item => item[1]);
-                    const cargo_list = Object.values(responseBody['cargo_list'] || {});
-                    const successSet = new Set(successful_list);
-                    // 因为格式问题或者是未在系统中存储原单号导致录入系统失败的转单号列表
-                    const fail_list = cargo_list.filter(item => !successSet.has(item))
-                        .map(item => item === false ? "转单号未填" : item);
-                    // 订单跟踪失败的列表
-                    const rejected_list = responseBody['code'] === 502 ? (responseBody['rejected'] || [])
-                        .map(item => item['number'] || item) : [];
-                    const error_lines = responseBody.code !== 200 ? [`失败原因: ${responseBody.msg || '上传失败'}`] : [];
-
-                    const result_link = downloadArrayAsText([`上传成功订单数: ${Number(responseBody.cargo_count || 0)}单`,
-                            ...error_lines, '上传失败订单:', ...fail_list, '\n跟踪失败订单:', ...rejected_list],
-                        `${file.name}上传结果记录`);
-
-                    file.status = responseBody.code === 200 && fail_list.length === 0
-                        && rejected_list.length === 0 ? 'done' : 'error';
-                    file.url = result_link;
-                    newFileList.push(file);
-                } else if (status === 'error') {
-                    await message.error(`${file.name} 上传失败！`);
+                    const result = getWaybillUploadResult(responseBody, file.name);
+                    message[result.toast.type](result.toast.message);
+                    const completedFile = {
+                        ...file,
+                        status: result.status,
+                        url: downloadArrayAsText(result.reportLines),
+                        linkProps: { download: `${file.name}上传结果记录.txt` },
+                    };
+                    completedFiles.current.set(file.uid, completedFile);
+                    return completedFile;
                 }
-            }
-            // if (total > 0) await message.success(`共${total}单上传。`)
-            setFileList([...fileList, ...newFileList]);
-
+                return file;
+            });
+            const activeUids = new Set(nextFileList.map(file => file.uid));
+            completedFiles.current.forEach((file, uid) => {
+                if (!activeUids.has(uid)) {
+                    URL.revokeObjectURL(file.url);
+                    completedFiles.current.delete(uid);
+                }
+            });
+            setFileList(nextFileList);
         },
         onDrop(e) {
             console.log('Dropped files', e.dataTransfer.files);
@@ -96,19 +83,26 @@ const FileComponent = ({mode}) => {
         </p>
     </Dragger>)
 }
-const UploadOrder = () => (<>
+const UploadOrder = () => {
+    const roles = getUserRoles(decodeJwtPayload(localStorage.getItem('jwt')) || {});
+    const canUploadReconciliation = hasPermission(roles, ['admin', 'clerk']);
+    return <>
     <Typography.Title level={4} style={{marginBottom: '2rem'}}>上传文件</Typography.Title>
-    <Typography.Text style={{marginBottom: '2rem'}}>原单号-转单号表中，请将原单号列名改为`<Typography.Text
-        style={{color: "#1677ff"}}>transfer_id</Typography.Text>`, 转单号（运单号）列名改为`<Typography.Text
-        style={{color: "#1677ff"}}>waybill_id</Typography.Text>`</Typography.Text>
     <Tabs style={{marginTop: '1rem'}} items={[{
-        key: 'transfer_table', label: '原单号-转单号表', children: <FileComponent mode={'transfer_table'}/>
-    }, // {
+        key: 'transfer_table', label: '原单号-转单号表', children: <>
+            <Typography.Text style={{marginBottom: '2rem'}}>原单号-转单号表中，请将原单号列名改为`<Typography.Text
+                style={{color: "#1677ff"}}>transfer_id</Typography.Text>`, 转单号（运单号）列名改为`<Typography.Text
+                style={{color: "#1677ff"}}>waybill_id</Typography.Text>`</Typography.Text>
+            <FileComponent mode={'transfer_table'}/>
+        </>
+    },
+        ...(canUploadReconciliation ? [{ key: 'supplier_reconciliation', label: '上传对账明细', children: <SupplierReconciliation /> }] : []), // {
         //     key: 'customer_table',
         //     label: '客户收件人信息',
         //     children: <FileComponent mode={'customer_table'}/>
         // }
     ]}/>
 
-</>);
+</>;
+};
 export default UploadOrder;

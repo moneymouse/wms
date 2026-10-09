@@ -40,7 +40,7 @@ export function buildGoodsNameGroups(records) {
 const fallbackGroups = [{ label: '常用品名', options: fallbackGoodsNames.map(toOption) }];
 
 const GoodName = forwardRef(function GoodName(
-    { onChange, onBlur, onEnter, defaultValue },
+    { onChange, onBlur, onEnter, defaultValue, style },
     ref,
 ) {
     const [groups, setGroups] = useState(fallbackGroups);
@@ -88,7 +88,7 @@ const GoodName = forwardRef(function GoodName(
             onBlur={onBlur}
             onKeyUp={event => event.code === 'Enter' && onEnter?.()}
             onChange={onChange}
-            style={{ width: '100%' }}
+            style={{ width: '100%', ...style }}
         />
     );
 });

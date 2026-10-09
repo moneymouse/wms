@@ -19,11 +19,13 @@ import {
     DollarOutlined,
     AuditOutlined,
     TransactionOutlined,
+    DatabaseOutlined,
     QuestionCircleOutlined
 } from '@ant-design/icons';
 import { Avatar, Button, Layout, Menu, theme, Tooltip, Drawer, Grid, Modal, Popover, Space, Tour } from 'antd';
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import { LogIcon } from "./pages/logs";
+import MessageInbox from './components/MessageInbox';
 import { menuPermissions, routePermissions, hasPermission, getUserRoles, getLandingPage, ROLE_LABEL_MAP } from "./common/roleConfig";
 import {
     COST_QUOTE_RECEIPT_TOUR,
@@ -261,6 +263,11 @@ function App() {
             icon: <ToolOutlined />,
         },
         {
+            key: 'storage-management',
+            label: '存储管理',
+            icon: <DatabaseOutlined />,
+        },
+        {
             key: 'settings',
             label: '设置',
             icon: <SettingOutlined />,
@@ -402,6 +409,7 @@ function App() {
 
     return (
         <Layout>
+            <MessageInbox />
             <Modal
                 open={featurePromptOpen}
                 title={`发现新功能：${COST_QUOTE_RECEIPT_TOUR.name}`}

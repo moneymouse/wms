@@ -10,6 +10,7 @@ import Logs from "./pages/logs";
 import Scanner from "./pages/scanner";
 import Login from "./pages/login";
 import AdminPage from "./pages/admin";
+import StorageManagement from "./pages/storageManagement";
 import CustomerManagement from "./pages/customerManagement";
 import PackingListCreate from "./pages/packingListCreate";
 import PackingListList from "./pages/packingListList";
@@ -40,6 +41,8 @@ const router = createBrowserRouter([{
         path: 'logs', element: <Logs />
     }, {
         path: 'admin', element: <AdminPage />
+    }, {
+        path: 'storage-management', element: <StorageManagement />
     }, {
         path: 'customers', element: <CustomerManagement />
     }, {

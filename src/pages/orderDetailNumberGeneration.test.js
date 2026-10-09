@@ -39,10 +39,10 @@ function setup({ roles = ['salesperson'], orderOverrides = {}, cargos = [cargo, 
         if (url.includes('/generate-')) {
             if (onGenerate) return onGenerate(url, options);
             if (url.endsWith('/generate-order-number')) {
-                currentOrder = { ...currentOrder, order_id: '812345678' };
+                currentOrder = { ...currentOrder, order_id: 'D812345678L' };
                 return response({ order_id: currentOrder.order_id });
             }
-            return response({ transfer_id: '823456789' });
+            return response({ transfer_id: 'D823456789L' });
         }
         if (options.method === 'PUT') {
             const data = JSON.parse(options.body);
@@ -106,9 +106,9 @@ test('opening and editing never generate numbers; each click saves only the sele
     editOrderNumber();
     expect(generationCalls()).toHaveLength(0);
     fireEvent.click(screen.getByRole('button', { name: '生成订单号' }));
-    expect(await screen.findByDisplayValue('812345678')).toBeInTheDocument();
+    expect(await screen.findByDisplayValue('D812345678L')).toBeInTheDocument();
     finishOrderNumberEdit();
-    expect(screen.getByText('812345678')).toBeInTheDocument();
+    expect(screen.getByText('D812345678L')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '生成订单号' })).not.toBeInTheDocument();
     expect(generationCalls()).toHaveLength(1);
     expect(generationCalls()[0][0]).toMatch(/\/orders\/order-uid\/generate-order-number$/);
@@ -116,7 +116,7 @@ test('opening and editing never generate numbers; each click saves only the sele
     const boxRow = screen.getByText(box.transfer_id).closest('tr');
     fireEvent.click(within(boxRow).getByRole('button', { name: /编\s*辑/ }));
     fireEvent.click(within(boxRow).getByRole('button', { name: '生成原单号' }));
-    expect(await within(boxRow).findByDisplayValue('823456789')).toBeInTheDocument();
+    expect(await within(boxRow).findByDisplayValue('D823456789L')).toBeInTheDocument();
     fireEvent.click(within(boxRow).getByRole('button', { name: /取\s*消/ }));
     expect(generationCalls()).toHaveLength(2);
     expect(generationCalls()[1][0]).toMatch(/\/orders\/order-uid\/cargo\/box-1\/generate-original-number$/);
@@ -135,7 +135,7 @@ test('generation uses the saved original number and preserves other unsaved row 
     const button = within(row).getByRole('button', { name: '生成原单号' });
     fireEvent.mouseDown(button);
     fireEvent.click(button);
-    expect(await within(row).findByDisplayValue('823456789')).toBeInTheDocument();
+    expect(await within(row).findByDisplayValue('D823456789L')).toBeInTheDocument();
     expect(within(row).getByDisplayValue('UNSAVED-TAG')).toBeInTheDocument();
     expect(JSON.parse(generationCalls()[0][1].body)).toEqual({ expected_value: cargo.transfer_id });
     expect(global.fetch.mock.calls.filter(([, options]) => options?.method === 'PUT')).toHaveLength(0);
@@ -144,7 +144,7 @@ test('generation uses the saved original number and preserves other unsaved row 
         const put = global.fetch.mock.calls.find(([url, options]) => String(url).endsWith('/cargo/cargo-1') && options?.method === 'PUT');
         expect(JSON.parse(put[1].body)).toEqual({ tag: 'UNSAVED-TAG' });
     });
-    expect(within(row).getByText('823456789')).toBeInTheDocument();
+    expect(within(row).getByText('D823456789L')).toBeInTheDocument();
 });
 
 test('generation icons explain that they randomly generate and save the number', async () => {
@@ -184,10 +184,10 @@ test('order generation replaces the draft and blocks repeated clicks and stale m
     expect(generationCalls()).toHaveLength(1);
     expect(JSON.parse(generationCalls()[0][1].body)).toEqual({ expected_value: order.order_id });
     expect(global.fetch.mock.calls.filter(([, options]) => options?.method === 'PUT')).toHaveLength(0);
-    await act(async () => { resolve(await response({ order_id: '812345678' })); });
-    expect(await screen.findByDisplayValue('812345678')).not.toHaveAttribute('readonly');
+    await act(async () => { resolve(await response({ order_id: 'D812345678L' })); });
+    expect(await screen.findByDisplayValue('D812345678L')).not.toHaveAttribute('readonly');
     fireEvent.keyDown(input, { key: 'Enter', keyCode: 13, code: 'Enter' });
-    expect(await screen.findByText('812345678')).toBeInTheDocument();
+    expect(await screen.findByText('D812345678L')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '生成订单号' })).not.toBeInTheDocument();
     expect(global.fetch.mock.calls.filter(([, options]) => options?.method === 'PUT')).toHaveLength(0);
 });
@@ -202,8 +202,8 @@ test('canceling order editing during generation keeps the completed number saved
     finishOrderNumberEdit();
     expect(screen.queryByRole('textbox', { name: '订单号' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '生成订单号' })).not.toBeInTheDocument();
-    await act(async () => { resolve(await response({ order_id: '812345678' })); });
-    expect(await screen.findByText('812345678')).toBeInTheDocument();
+    await act(async () => { resolve(await response({ order_id: 'D812345678L' })); });
+    expect(await screen.findByText('D812345678L')).toBeInTheDocument();
     expect(screen.queryByRole('textbox', { name: '订单号' })).not.toBeInTheDocument();
     expect(global.fetch.mock.calls.filter(([, options]) => options?.method === 'PUT')).toHaveLength(0);
 });
@@ -225,8 +225,8 @@ test('a pending request prevents repeated generation and stale manual saves for 
     fireEvent.keyDown(within(row).getByDisplayValue('UNSAVED-TAG'), { key: 'Enter', keyCode: 13, code: 'Enter' });
     expect(within(row).getByDisplayValue('UNSAVED-TAG')).toBeInTheDocument();
     expect(screen.getByText(box.transfer_id)).toBeInTheDocument();
-    await act(async () => { resolve(await response({ transfer_id: '823456789' })); });
-    expect(await within(row).findByDisplayValue('823456789')).not.toBeDisabled();
+    await act(async () => { resolve(await response({ transfer_id: 'D823456789L' })); });
+    expect(await within(row).findByDisplayValue('D823456789L')).not.toBeDisabled();
     expect(within(row).getByDisplayValue('UNSAVED-TAG')).toBeInTheDocument();
     expect(within(row).getByRole('button', { name: /保\s*存/ })).not.toBeDisabled();
 });
@@ -244,9 +244,9 @@ test('saving another row cannot replace a generated number with an old row snaps
     const boxRow = screen.getByText(box.transfer_id).closest('tr');
     fireEvent.click(within(boxRow).getByRole('button', { name: /编\s*辑/ }));
     fireEvent.click(within(boxRow).getByRole('button', { name: '生成原单号' }));
-    await within(boxRow).findByDisplayValue('823456789');
+    await within(boxRow).findByDisplayValue('D823456789L');
     await act(async () => { resolveSave(await response({})); });
-    expect(within(boxRow).getByText('823456789')).toBeInTheDocument();
+    expect(within(boxRow).getByText('D823456789L')).toBeInTheDocument();
     expect(within(row).getByText('SAVED-TAG')).toBeInTheDocument();
 });
 
@@ -269,10 +269,10 @@ test('a late order refresh cannot restore the old order number after generation 
     await waitFor(() => expect(resolveRead).toBeDefined());
     editOrderNumber();
     fireEvent.click(screen.getByRole('button', { name: '生成订单号' }));
-    await screen.findByDisplayValue('812345678');
+    await screen.findByDisplayValue('D812345678L');
     finishOrderNumberEdit();
     await act(async () => { resolveRead(await response(order)); });
-    expect(screen.getByText('812345678')).toBeInTheDocument();
+    expect(screen.getByText('D812345678L')).toBeInTheDocument();
     expect(screen.queryByText(order.order_id)).not.toBeInTheDocument();
 });
 
@@ -358,7 +358,7 @@ test('a late generation response cannot overwrite the next order after navigatio
     fireEvent.click(screen.getByRole('button', { name: '生成订单号' }));
     fireEvent.click(screen.getByRole('button', { name: '切换订单' }));
     await screen.findByText('NEXT-ORDER');
-    await act(async () => { resolve(await response({ order_id: '812345678' })); });
+    await act(async () => { resolve(await response({ order_id: 'D812345678L' })); });
     expect(screen.getByText('NEXT-ORDER')).toBeInTheDocument();
-    expect(screen.queryByText('812345678')).not.toBeInTheDocument();
+    expect(screen.queryByText('D812345678L')).not.toBeInTheDocument();
 });

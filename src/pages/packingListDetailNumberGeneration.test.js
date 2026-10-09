@@ -26,7 +26,7 @@ function setup({ roles = ['clerk'], onGenerate, overrides = {} } = {}) {
             if (onGenerate) return onGenerate(url, options);
             const body = JSON.parse(options.body);
             return response({ generated_count: body.box_uids.length, boxes: body.box_uids.map((uid, index) => ({
-                uid, transfer_id: `XD80000000${index + 1}L`,
+                uid, transfer_id: `D80000000${index + 1}L`,
             })) });
         }
         if (url.endsWith('/packing-list/pl-1')) return response(detail);
@@ -65,7 +65,7 @@ test('only an explicit click generates selected unassigned boxes and preserves o
     expect(generationCalls()).toHaveLength(0);
     fireEvent.click(screen.getByRole('checkbox', { name: '箱子 1' }));
     fireEvent.click(button);
-    expect(await screen.findByText('XD800000001L')).toBeInTheDocument();
+    expect(await screen.findByText('D800000001L')).toBeInTheDocument();
     expect(screen.getByText('OLD-2')).toBeInTheDocument();
     expect(screen.getByText('OUTBOUND-3')).toBeInTheDocument();
     expect(generationCalls()).toHaveLength(1);
@@ -84,7 +84,7 @@ test('existing original numbers require replacement confirmation and include all
     expect(await screen.findByText(/其中 1 箱已有的原单号将被替换/)).toBeInTheDocument();
     expect(generationCalls()).toHaveLength(0);
     fireEvent.click(screen.getByRole('button', { name: '生成并替换' }));
-    await screen.findByText('XD800000002L');
+    await screen.findByText('D800000002L');
     expect(JSON.parse(generationCalls()[0][1].body)).toEqual({
         box_uids: ['box-1', 'box-2'], expected_values: { 'box-1': null, 'box-2': 'OLD-2' },
     });
@@ -120,7 +120,7 @@ test('pending requests block repeat generation and conflicts preserve saved orig
     await act(async () => { resolve(await response(null, 409, '号码已被修改，请刷新后重试')); });
     expect(await screen.findByText('号码已被修改，请刷新后重试')).toBeInTheDocument();
     expect(screen.getByText('OLD-2')).toBeInTheDocument();
-    expect(screen.queryByText('XD800000001L')).not.toBeInTheDocument();
+    expect(screen.queryByText('D800000001L')).not.toBeInTheDocument();
     expect(button).not.toBeDisabled();
 });
 
@@ -141,7 +141,7 @@ test('a late batch response cannot write originals into the next packing list', 
     fireEvent.click(screen.getByRole('button', { name: '生成原单号' }));
     fireEvent.click(screen.getByRole('button', { name: '切换装箱单' }));
     await screen.findByText('MARK-2');
-    await act(async () => { resolve(await response({ boxes: [{ uid: 'box-1', transfer_id: 'XD800000001L' }] })); });
+    await act(async () => { resolve(await response({ boxes: [{ uid: 'box-1', transfer_id: 'D800000001L' }] })); });
     expect(screen.getByText('MARK-2')).toBeInTheDocument();
-    expect(screen.queryByText('XD800000001L')).not.toBeInTheDocument();
+    expect(screen.queryByText('D800000001L')).not.toBeInTheDocument();
 });

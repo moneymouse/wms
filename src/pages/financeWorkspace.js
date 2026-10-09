@@ -210,7 +210,7 @@ export function PaymentEditor({ open, payment, direction = 'incoming', business 
             : context.customerId && context.orderUid ? [context.orderUid] : [];
         const boxUids = payment
             ? payment.reference_box_uids || (payment.reference_packing_boxes || []).map(row => row.box_uid)
-            : [];
+            : context.referenceBoxUids || (context.referencePackingBoxes || []).map(row => row.box_uid);
         setRemarksTab(boxUids.length || !orderUids.length ? 'packing' : 'orders');
         setError(''); keyRef.current = mutationKey(); workingPayment.current = payment || null; form.resetFields();
         form.setFieldsValue(payment ? {
@@ -247,6 +247,13 @@ export function PaymentEditor({ open, payment, direction = 'incoming', business 
     const selectedPartnerOptions = [{ value: payment?.partner_id || Number(initialContext?.customerId), label: payment?.partner_name || initialContext?.customerName }].filter(row => row.value && row.label);
     const selectedOrders = payment?.reference_orders
         || (initialContext?.orderUid ? [{ order_uid: initialContext.orderUid, order_number: initialContext.orderNumber || initialContext.orderUid }] : []);
+    const selectedBoxes = payment?.reference_packing_boxes || initialContext?.referencePackingBoxes || [];
+    const changeCustomer = nextCustomerId => {
+        const eligibleContextBoxes = initialContext?.packingListUid && nextCustomerId
+            ? referenceBoxUids.filter(uid => selectedBoxes.some(box => String(box.box_uid) === String(uid)
+                && (box.customer_id == null || String(box.customer_id) === String(nextCustomerId)))) : [];
+        form.setFieldsValue({ reference_order_uids: [], reference_box_uids: eligibleContextBoxes });
+    };
     const close = () => { if (!saving) { if (workingPayment.current && workingPayment.current !== payment) onSaved(workingPayment.current); onClose(); } };
     const actions = <Space>
         {modal && <Button autoInsertSpace={false} disabled={saving} onClick={close}>取消</Button>}
@@ -256,6 +263,7 @@ export function PaymentEditor({ open, payment, direction = 'incoming', business 
     const content = <>
         <ErrorNotice error={error || accounts.error} retry={accounts.error ? accounts.reload : undefined} />
         <Typography.Paragraph type="secondary">按实际收付款登记，可备注装箱单的箱子。暂未分配订单也可登记；分配后财务可依据箱子所属订单核销。</Typography.Paragraph>
+        {initialContext?.referenceNote && <Alert type="info" showIcon message={initialContext.referenceNote} style={{ marginBottom: 16 }} />}
         <Form form={form} layout="vertical" disabled={saving} preserve={false}>
             <Row gutter={16}>
                 <Col xs={24} sm={12}><Form.Item name="direction" label="资金方向" rules={required('资金方向')}><Select onChange={() => form.setFieldsValue({ is_opening: false })} options={[{ value: 'incoming', label: '收款' }, { value: 'outgoing', label: '付款' }]} /></Form.Item></Col>
@@ -264,7 +272,7 @@ export function PaymentEditor({ open, payment, direction = 'incoming', business 
                     if (value === 'vendor') setRemarksTab('packing');
                 }} /></Form.Item></Col>}
                 <Col xs={24} sm={12}><Form.Item name="partner_id" label={partnerLabel} rules={required(partnerLabel)}>
-                    {business ? <PaymentLookup path="/payment-options/customers" ariaLabel="收付款客户" placeholder="搜索客户" selectedOptions={selectedPartnerOptions} onChange={() => form.setFieldsValue({ reference_order_uids: [], reference_box_uids: [] })} />
+                    {business ? <PaymentLookup path="/payment-options/customers" ariaLabel="收付款客户" placeholder="搜索客户" selectedOptions={selectedPartnerOptions} onChange={changeCustomer} />
                         : <PartnerSelect partnerType={partnerType} onChange={() => form.setFieldsValue({ reference_order_uids: [], reference_box_uids: [] })} />}
                 </Form.Item></Col>
                 <Col xs={24} sm={12}><Form.Item name="account_id" label="收付款账户" rules={required('收付款账户')}><Select showSearch filterOption={false} onSearch={setAccountQuery} loading={accounts.loading} placeholder="选择银行或现金账户" options={(accounts.data?.items || accounts.data || []).filter(row => row.active !== false).map(row => ({ value: row.id, label: row.name }))} /></Form.Item></Col>
@@ -280,8 +288,9 @@ export function PaymentEditor({ open, payment, direction = 'incoming', business 
                     {
                         key: 'packing', label: `装箱单备注${referenceBoxUids.length ? `（${referenceBoxUids.length} 箱）` : ''}`,
                         disabled: partnerType === 'vendor' || saving, forceRender: true,
-                        children: <Form.Item name="reference_box_uids" label="选择装箱单并展开勾选箱子（可不选）" preserve extra="未分配到订单的箱子也可备注。">
-                            <PaymentPackingBoxPicker customerId={partnerId} disabled={!partnerId || saving || partnerType === 'vendor' || remarksTab !== 'packing'} selectedBoxes={payment?.reference_packing_boxes || []} />
+                        children: <Form.Item name="reference_box_uids" label="选择装箱单并展开勾选箱子（可不选）" preserve extra="未分配到订单的箱子也可备注。" rules={[{ validator: (_, value) => (value || []).length <= 500 ? Promise.resolve() : Promise.reject(new Error('每笔收付款最多备注 500 箱，请减少选择')) }]}>
+                            <PaymentPackingBoxPicker customerId={partnerId} disabled={!partnerId || saving || partnerType === 'vendor' || remarksTab !== 'packing'} selectedBoxes={selectedBoxes}
+                                packingListUid={initialContext?.packingListUid} retainEligibleOnCustomerChange={Boolean(initialContext?.packingListUid)} />
                         </Form.Item>,
                     },
                     {
@@ -553,7 +562,7 @@ export function FinanceDocuments({ initialFilter = {}, filterRevision = 0, onCha
     </>;
 }
 
-export function FinancePayments({ onChanged, initialFilter = {}, filterRevision = 0, business = false, initialContext, navigationToken }) {
+export function FinancePayments({ onChanged, initialFilter = {}, filterRevision = 0, business = false, initialContext, navigationToken, initialPaymentId, onDetailClose }) {
     const [filters, setFilters] = useState(initialFilter);
     const [page, setPage] = useState(1);
     const [revision, setRevision] = useState(0);
@@ -564,11 +573,33 @@ export function FinancePayments({ onChanged, initialFilter = {}, filterRevision 
     useEffect(() => { if (filterRevision) { setFilters(initialRef.current); setPage(1); } }, [filterRevision]);
     const contextRef = useRef(initialContext);
     contextRef.current = initialContext;
-    useEffect(() => { if (business && contextRef.current) setCreating('incoming'); }, [business, navigationToken]);
+    const previousPaymentLink = useRef(null);
+    const closingPaymentLink = useRef(false);
+    useEffect(() => {
+        const previouslyLinked = previousPaymentLink.current;
+        previousPaymentLink.current = initialPaymentId;
+        if (initialPaymentId) {
+            closingPaymentLink.current = false;
+            setCreating(null);
+            setDetailId(initialPaymentId);
+            return;
+        }
+        if (previouslyLinked) setDetailId(null);
+        // Removing the consumed deep link preserves navigation state without reopening its old creation context.
+        if (closingPaymentLink.current) { closingPaymentLink.current = false; return; }
+        if (business && contextRef.current) setCreating('incoming');
+    }, [business, navigationToken, initialPaymentId]);
     const result = useFinanceData('/payments', { ...filters, ...(business ? { partner_type: 'customer' } : {}), p: page, s: 20 }, revision);
     const data = result.data || emptyList;
     const refresh = () => { setRevision(value => value + 1); onChanged?.(); };
     const change = patch => { setFilters(prev => ({ ...prev, ...patch })); setPage(1); };
+    const closeDetail = () => {
+        setDetailId(null);
+        if (initialPaymentId && onDetailClose) {
+            closingPaymentLink.current = true;
+            onDetailClose();
+        }
+    };
     return <>
         <div className={styles.toolbar}><div className={styles.toolbarFilters}>
             <Input.Search key={filterRevision} className={styles.search} placeholder="收付款单号 / 往来单位" allowClear onSearch={q => change({ q })} />
@@ -591,7 +622,7 @@ export function FinancePayments({ onChanged, initialFilter = {}, filterRevision 
         ]} pagination={{ current: page, pageSize: 20, total: data.total, showSizeChanger: false, showTotal: total => `共 ${total} 笔收付款`, onChange: setPage }} /></Panel>
         <p className={styles.footnote}>{business ? '参考订单仅作备注。草稿提交财务确认后，由财务独立核销；预收可不关联订单。' : '业务提交与财务办理使用同一收付款记录。确认资金后，可按账单或重新选择订单进行部分、多笔核销。'}</p>
         {creating && <PaymentEditor open direction={creating} business={business} initialContext={initialContext} onClose={() => setCreating(null)} onSaved={saved => { refresh(); setDetailId(saved.id); }} />}
-        {detailId && <RecordDetail key={detailId} entity="payments" recordId={detailId} business={business} onClose={() => setDetailId(null)} onChanged={refresh} />}
+        {detailId && <RecordDetail key={`${detailId}:${navigationToken || ''}`} entity="payments" recordId={detailId} business={business} onClose={closeDetail} onChanged={refresh} />}
     </>;
 }
 

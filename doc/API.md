@@ -2,15 +2,37 @@
 
 **Base URL:** `http://localhost:5001`
 
-**版本:** 1.30
+**版本:** 1.43
+
+拍照上传的纸单检查页新增每箱备注列与“批量修改备注”，仅修改勾选的箱子，留空可清空备注；备注最长 512 字，随检查进度保存，并在核对上传后写入正式箱子，见 [API v1.43](../../wms_backend/doc/API-v1.43-intake-box-remarks.md)。
+
+纸单检查的品名框显示“品名 x 数量”摘要，点击后在下拉面板添加、修改多项品名与独立件数，品名自动完成使用现有中文品名库及常用商品；识别提示词同步加入系统品名参考，见 [API v1.42](../../wms_backend/doc/API-v1.42-intake-goods-recognition.md)。
+
+财务“退回修改”会通过站内消息通知收据原登记员工；处理链接 `/receipts?payment_id=<id>` 直接打开对应详情，展示退回原因并沿用编辑、重新提交操作，见 [API v1.41](../../wms_backend/doc/API-v1.41-finance-return-messages.md)。
+
+右下角收件箱采用邮件式列表和详情，支持未读角标、未读筛选、全部已读及站内处理页面跳转。登录后立即获取未读数量，每三分钟刷新；打开收件箱、窗口回到前台时立即刷新，页面隐藏时暂停轮询。消息发送和接收接口见 [API v1.40](../../wms_backend/doc/API-v1.40-in-app-messages.md)。
+
+纸单照片改存持久化文件目录；存储管理展示全部照片来源、磁盘占用和装箱单跳转，可直接预览并删除照片，未达到建议保留期限时提示确认，详见 [API v1.36](../../wms_backend/doc/API-v1.36-photo-storage-management.md)。
+
+纸单识别与确认复用手动创建的唛头重名规则，自动追加日期和序号，见 [API v1.39](../../wms_backend/doc/API-v1.39-intake-mark-deduplication.md)。手动创建连续加箱时保留已填品名与所选操作员。
 
 财务新接口与迁移说明见 [API v1.20 财务](../../wms_backend/doc/API-v1.20-finance.md)。
 
 统一业务收付款见 [API v1.22](../../wms_backend/doc/API-v1.22-customer-payments.md)，订单应收和核销见 [API v1.23](../../wms_backend/doc/API-v1.23-order-settlement.md)，包裹撤销出库及移除保护见 [API v1.21](../../wms_backend/doc/API-v1.21-outbound-removal.md)。旧 `POST /api/receipts` 已停用，历史只读及剩余审核保留。
 
-装箱单出货确认单与草稿见 [API v1.27](../../wms_backend/doc/API-v1.27-packing-shipping-drafts.md)，收据备注装箱单箱子与订单核销见 [API v1.28](../../wms_backend/doc/API-v1.28-receipt-packing-boxes.md)，批量生成原单号及 `XD8xxxxxxxxL` 格式见 [API v1.29](../../wms_backend/doc/API-v1.29-packing-original-numbers.md)。
+装箱单出货确认单与草稿见 [API v1.27](../../wms_backend/doc/API-v1.27-packing-shipping-drafts.md)，收据备注装箱单箱子与订单核销见 [API v1.28](../../wms_backend/doc/API-v1.28-receipt-packing-boxes.md)，批量生成原单号见 [API v1.29](../../wms_backend/doc/API-v1.29-packing-original-numbers.md)。随机订单号与原单号统一为 `D8xxxxxxxxL`，出货确认单改为每行一单并增大字号，见 [API v1.32](../../wms_backend/doc/API-v1.32-shipping-layout-and-number-format.md)。
 
 纸质单上传前检查、本人未完成上传及出货确认单草稿独立页面见 [API v1.30](../../wms_backend/doc/API-v1.30-uploader-check-and-shipping-drafts-page.md)。
+
+装箱单识别检查页支持选择箱子批量修改品名，每箱独立设置实际操作人员，批量修改人员仅应用所选箱子；所有修改仍需由上传者核对后完成上传。旧整单人员仅兼容填入尚未配置人员的箱子，详见 [API v1.34](../../wms_backend/doc/API-v1.34-intake-per-box-workers.md)。
+
+统一 Excel 供应商对账、异常重核、应付草稿及订单实际成本见 [API v1.31](../../wms_backend/doc/API-v1.31-supplier-reconciliation.md)。
+
+原单号未匹配货物时支持精确匹配订单号并按订单总实重对账，订单级上传重量须小于实重且最多少 5 kg，见 [API v1.33](../../wms_backend/doc/API-v1.33-order-level-supplier-reconciliation.md)。
+
+有上传照片或纸单来源的装箱单允许删除；删除同时清理对应照片，仍沿用原有出库、权限和成本历史保护，见 [API v1.35](../../wms_backend/doc/API-v1.35-packing-photo-deletion.md)。
+
+装箱单详情提供“登记收付款”入口，沿用统一财务收付款接口。管理员、财务、业务员可登记，默认带入客户及已选箱子；未选箱子且总数不超过 500 箱时带入当前装箱单全部箱子，超过上限时提示在登记表单中选择子集。未绑定客户时由用户选择实际收付款客户，金额及账户手动填写，不自动核销订单。
 
 ---
 
@@ -974,7 +996,7 @@ x-token: <JWT_TOKEN>
 
 ### 3.10 上传转运单
 
-上传转运单文件，批量更新运单号并发货。
+上传原单号与转单号映射，按所属订单保存转单号，并为未出库货物补登记出库。每个订单独立提交；某个订单失败时只回滚该订单，本文件中其他订单正常保存。
 
 - **URL:** `POST /api/order/upload/transfer_table`
 - **认证:** 需要
@@ -982,22 +1004,36 @@ x-token: <JWT_TOKEN>
 
 **请求参数:**
 
-| 参数     | 类型   | 必填 | 说明       |
-| -------- | ------ | ---- | ---------- |
-| file     | File   | 是   | 转运单文件 |
-| filename | string | 是   | 文件名     |
+| 参数             | 类型    | 必填 | 说明 |
+| ---------------- | ------- | ---- | ---- |
+| file             | File    | 是   | 含 `transfer_id`、`waybill_id` 列的映射文件 |
+| filename         | string  | 是   | 文件名 |
+| confirm_outbound | boolean | 否   | 默认 `true`，补登记出库；`false` 只保存号码 |
 
 **响应示例:**
 
 ```json
 {
-  "code": 200,
-  "msg": "success",
-  "cargo_count": 10,
-  "cargo_list": {},
-  "success_list": []
+  "code": 207,
+  "msg": "部分订单上传失败，其他订单已保存",
+  "cargo_count": 1,
+  "cargo_list": {"ORIGINAL-1": "WB-SHARED", "ORIGINAL-2": "WB-SHARED"},
+  "success_list": [["cargo_uid_1", "WB-SHARED"]],
+  "success_items": [
+    {"uid": "cargo_uid_1", "order_uid": "order_uid_1", "order_id": "ORDER-1", "transfer_id": "ORIGINAL-1", "waybill_id": "WB-SHARED"}
+  ],
+  "failed_list": [
+    {"uid": "cargo_uid_2", "order_uid": "order_uid_2", "order_id": "ORDER-2", "transfer_id": "ORIGINAL-2", "waybill_id": "WB-SHARED", "code": 400, "reason": "箱子与订单的客户归属不一致（含失败箱子定位信息）"}
+  ],
+  "tracking_error": null
 }
 ```
+
+全成功为 HTTP 200、`code=200`；部分成功为 HTTP 200、`code=207`；全部失败为 HTTP 400、`code=400`。`cargo_list` 保留原始映射。`cargo_count` 是已保存货物记录数，`success_list` 和 `success_items` 包含所有已保存的匹配记录，也包含号码未变化的重复提交。
+
+前端以 `success_items` 为成功依据，只将 `failed_list` 中的记录列为上传失败，并逐条显示订单号、原单号、转单号和原因；失败项的 `uid`、`order_uid` 可为空。部分成功使用警告提示，成功订单无需重传。同转单号可能对应多条原单号，不能据转单号推断某条记录是否保存。旧服务器未返回 `failed_list` 时，前端兼容使用 `cargo_list` 与 `success_list` 推断失败项。
+
+追踪注册在保存之后进行，失败不回滚已保存的记录。追踪失败响应保留 `success_items` 与 `failed_list`，并返回 `tracking_error={code,reason}`；原有 `code=502` / `rejected` 或 `code=500` 约定继续兼容。前端分别显示保存失败与追踪失败，报告明确追踪失败的记录已保存，不能将其列为上传失败。
 
 ---
 
@@ -1311,4 +1347,4 @@ Docker 部署时通过环境变量配置初始管理员：
 
 ---
 
-*文档更新时间: 2026-09-16*
+*文档更新时间: 2026-10-07*

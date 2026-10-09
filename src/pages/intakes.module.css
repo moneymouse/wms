@@ -15,9 +15,13 @@
 .photo { display: block; width: 100%; max-height: 75vh; object-fit: contain; background: #edf0f4; border-radius: 6px; }
 .photoLinks { display: flex; justify-content: space-between; margin-top: 10px; }
 .field { display: flex; flex-direction: column; gap: 7px; min-width: 0; font-weight: 500; }
-.reviewFields { display: grid; grid-template-columns: 1fr 1.2fr; gap: 16px; }
+.reviewFields { display: grid; grid-template-columns: 1fr; gap: 16px; }
 .sourceNote { margin: 10px 0 18px; font-size: 12px; }
+.bulkActions { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.remarkCount { align-self: flex-end; font-weight: 400; }
 .boxTable :global(.ant-input-number) { width: 100%; }
+.itemCountNote { display: block; font-size: 11px; line-height: 1.4; margin-top: 4px; }
+.boxWorkerSelect { width: 100%; min-width: 210px; }
 .boxTable :global(.ant-table-cell) { padding: 8px 6px !important; }
 .addBox { width: 100%; margin-top: 12px; }
 .reviewFooter { position: sticky; bottom: 0; padding: 16px 0 0; margin-top: 18px; border-top: 1px solid #edf0f4; background: #fff; z-index: 2; }
@@ -56,5 +60,6 @@
 .continueList { list-style: none; padding: 0; margin: 12px 0 0; }
 .continueList li { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 12px 0; border-bottom: 1px solid #edf0f4; }
 .continueList li > div { display: flex; flex-direction: column; gap: 4px; }
+.continueList li > .continueActions { flex-direction: row; align-items: center; flex-wrap: wrap; gap: 12px; }
 .continueList a { flex-shrink: 0; }
 @media (max-width: 600px) { .continueList li { align-items: flex-start; flex-direction: column; gap: 8px; } }

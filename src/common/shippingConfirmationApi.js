@@ -16,11 +16,11 @@ export async function shippingConfirmationRequest(path, { body, headers, ...opti
     return result.data;
 }
 
-export async function fetchShippingConfirmationPdf(uid, version) {
+export async function fetchShippingConfirmationPdf(uid, version, cargoUids) {
     const response = await fetch(`${endpoint}/shipping-confirmation-drafts/${encodeURIComponent(uid)}/pdf`, {
         method: 'POST',
         headers: { ...getSafeHeader(), 'Content-Type': 'application/json' },
-        body: JSON.stringify({ expected_version: version }),
+        body: JSON.stringify({ expected_version: version, ...(cargoUids !== undefined ? { cargo_uids: cargoUids } : {}) }),
     });
     const contentType = response.headers.get('content-type') || '';
     if (!response.ok || !contentType.toLowerCase().startsWith('application/pdf')) {

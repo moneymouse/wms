@@ -1138,6 +1138,13 @@ const AdminPage = () => {
                 </Typography.Text>
             </div>
 
+            <Card title="存储管理">
+                <Space direction="vertical" size={12}>
+                    <Typography.Text type="secondary">查看全部纸单照片的磁盘占用和所属装箱单，清理归档照片及历史出货照片。</Typography.Text>
+                    <Button type="primary" onClick={() => navigate('/storage-management')}>进入存储管理</Button>
+                </Space>
+            </Card>
+
             <AdminSection
                 id="approval-management"
                 title="审批处理"

@@ -31,7 +31,7 @@ async function loadAllBoxes(params, signal) {
     return [...new Map(rows.map(row => [row.box_uid, row])).values()];
 }
 
-export default function PaymentPackingBoxPicker({ value = [], onChange, customerId, selectedBoxes = [], disabled = false, id }) {
+export default function PaymentPackingBoxPicker({ value = [], onChange, customerId, selectedBoxes = [], disabled = false, id, packingListUid, retainEligibleOnCustomerChange = false }) {
     const customerKey = customerId ? String(customerId) : '';
     const previousCustomer = useRef(customerKey);
     const completedResult = useRef(null);
@@ -44,7 +44,7 @@ export default function PaymentPackingBoxPicker({ value = [], onChange, customer
     const [children, setChildren] = useState({ customerKey, lists: {} });
     const [expansion, setExpansion] = useState({ customerKey, query: '', keys: [] });
     const scoped = search.customerKey === customerKey ? search : { text: '', query: '', page: 1 };
-    const requestKey = JSON.stringify([customerKey, scoped.query, retry]);
+    const requestKey = JSON.stringify([customerKey, packingListUid, scoped.query, retry]);
     const current = result.key === requestKey ? result : { items: [], loading: Boolean(!disabled && customerKey), error: '' };
     const selected = useMemo(() => Array.isArray(value) ? value : [], [value]);
     const groups = useMemo(() => {
@@ -69,8 +69,10 @@ export default function PaymentPackingBoxPicker({ value = [], onChange, customer
         setExpansion({ customerKey, query: '', keys: [] });
         completedResult.current = null;
         fullLists.current = { customerKey, lists: {} };
-        if (old && selected.length) onChange?.([]);
-    }, [customerKey, onChange, selected]);
+        if (old && selected.length) onChange?.(retainEligibleOnCustomerChange && customerKey
+            ? selected.filter(uid => selectedBoxes.some(row => String(row.box_uid) === String(uid)
+                && (row.customer_id == null || String(row.customer_id) === customerKey))) : []);
+    }, [customerKey, onChange, retainEligibleOnCustomerChange, selected, selectedBoxes]);
 
     useEffect(() => {
         if (!customerKey || disabled || completedResult.current?.key === requestKey) return undefined;
@@ -78,7 +80,7 @@ export default function PaymentPackingBoxPicker({ value = [], onChange, customer
         const controller = new AbortController();
         completedResult.current = null;
         setResult({ key: requestKey, items: [], loading: true, error: '' });
-        loadAllBoxes({ customer_id: customerKey, q: scoped.query }, controller.signal)
+        loadAllBoxes({ customer_id: customerKey, ...(packingListUid ? { packing_list_uid: packingListUid } : {}), q: scoped.query }, controller.signal)
             .then(items => {
                 if (!active) return;
                 const next = { key: requestKey, items, loading: false, error: '' };
@@ -87,7 +89,7 @@ export default function PaymentPackingBoxPicker({ value = [], onChange, customer
                 setCache(previous => ({ customerKey, rows: { ...(previous.customerKey === customerKey ? previous.rows : {}), ...Object.fromEntries(items.map(row => [row.box_uid, row])) } }));
             }).catch(error => { if (active && error.name !== 'AbortError') setResult({ key: requestKey, items: [], loading: false, error: error.message || '装箱单加载失败' }); });
         return () => { active = false; controller.abort(); };
-    }, [customerKey, disabled, requestKey, scoped.query]);
+    }, [customerKey, disabled, packingListUid, requestKey, scoped.query]);
 
     useEffect(() => {
         if (!customerKey || disabled || !scoped.query || current.loading || current.error) return undefined;

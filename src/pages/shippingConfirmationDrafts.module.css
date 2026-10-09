@@ -108,6 +108,21 @@
     margin-top: 12px;
 }
 
+.groupRemarks {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
+    overflow: hidden;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.addField {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
 @media (max-width: 1199px) {
     .header {
         align-items: flex-start;

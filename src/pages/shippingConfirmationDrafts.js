@@ -1,9 +1,10 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Alert, Button, Card, Empty, Input, Modal, Popconfirm, Space, Table, Tag, Typography, message } from 'antd';
-import { ArrowLeftOutlined, DeleteOutlined, PlusOutlined, PrinterOutlined, ReloadOutlined, SaveOutlined } from '@ant-design/icons';
+import { ArrowLeftOutlined, DeleteOutlined, DownOutlined, PlusOutlined, PrinterOutlined, ReloadOutlined, RightOutlined, SaveOutlined } from '@ant-design/icons';
 import { useBlocker, useNavigate, useParams } from 'react-router-dom';
 import styles from './shippingConfirmationDrafts.module.css';
 import { fetchShippingConfirmationPdf, shippingConfirmationRequest } from '../common/shippingConfirmationApi';
+import { isCargoOutboundOrLater } from '../common/cargoStatus';
 
 const blankDraft = () => ({ uid: '', title: '', version: null, entries: [] });
 const draftPayload = draft => ({
@@ -11,6 +12,33 @@ const draftPayload = draft => ({
     entries: draft.entries.map(entry => ({ cargo_uid: entry.cargo_uid, agent_name: entry.agent_name || '', remarks: entry.remarks || '' })),
 });
 const normalizeDraft = draft => ({ ...blankDraft(), ...draft, entries: draft?.entries || [] });
+const packingRowPrefix = 'packing-list:';
+const onlyBoxKeys = keys => keys.filter(key => !String(key).startsWith(packingRowPrefix));
+const groupPackingBoxes = entries => {
+    const groups = new Map();
+    entries.forEach(entry => {
+        const key = `${packingRowPrefix}${entry.packing_list_uid || `missing:${entry.cargo_uid}`}`;
+        if (!groups.has(key)) groups.set(key, {
+            row_key: key, isPackingList: true, list_number: entry.list_number || '-',
+            customer_name: entry.customer_name || '', children: [],
+        });
+        groups.get(key).children.push({ ...entry, row_key: entry.cargo_uid });
+    });
+    return [...groups.values()].map(group => ({ ...group,
+        box_number: `${group.children.length} 箱`,
+        weight: group.children.reduce((total, entry) => total + (Number(entry.weight) || 0), 0),
+        available: group.children.every(entry => entry.available !== false),
+    }));
+};
+const groupFieldText = (group, field, mixedText) => {
+    const values = [...new Set(group.children.map(entry => entry[field] || ''))];
+    return values.length === 1 ? values[0] || '-' : mixedText;
+};
+const packingListExpandable = {
+    expandIcon: ({ expanded, onExpand, record }) => record.isPackingList ? <Button type="text" size="small"
+        aria-label={`${expanded ? '收起' : '展开'}装箱单 ${record.list_number}`}
+        icon={expanded ? <DownOutlined /> : <RightOutlined />} onClick={event => onExpand(record, event)} /> : null,
+};
 
 export default function ShippingConfirmationDrafts() {
     const { uid } = useParams();
@@ -37,12 +65,17 @@ export default function ShippingConfirmationDrafts() {
     const [page, setPage] = useState(1);
     const [lookupTick, setLookupTick] = useState(0);
     const [selectedBoxUids, setSelectedBoxUids] = useState([]);
+    const [pendingBoxUids, setPendingBoxUids] = useState([]);
+    const [addAgent, setAddAgent] = useState('');
+    const [addRemarks, setAddRemarks] = useState('');
     const [selectedDraftBoxUids, setSelectedDraftBoxUids] = useState([]);
     const [bulkAgent, setBulkAgent] = useState('');
     const [bulkRemarks, setBulkRemarks] = useState('');
     const requestSequence = useRef(0);
+    const addBoxesSequence = useRef(0);
     const routeLoadState = useRef({ reloadTick: 0, failed: false });
     const currentDraft = useRef({ draft, dirty });
+    const printLock = useRef(false);
     currentDraft.current = { draft, dirty };
 
     const blocker = useBlocker(() => currentDraft.current.dirty);
@@ -78,14 +111,16 @@ export default function ShippingConfirmationDrafts() {
         const forceReload = routeLoadState.current.failed || routeLoadState.current.reloadTick !== draftReloadTick;
         routeLoadState.current = { reloadTick: draftReloadTick, failed: false };
         let active = true;
-        setError('');
-        setConflict(false);
-        setDraftLoadError('');
-        setSelectedDraftBoxUids([]);
         if ((uid || '') === currentDraft.current.draft.uid && !forceReload) {
             setDraftLoading(false);
             return undefined;
         }
+        setError('');
+        setConflict(false);
+        setDraftLoadError('');
+        setSelectedDraftBoxUids([]);
+        addBoxesSequence.current += 1;
+        setPendingBoxUids([]);
         if (!uid) {
             setCurrentDraft(blankDraft());
             setDraftLoading(false);
@@ -111,7 +146,10 @@ export default function ShippingConfirmationDrafts() {
             event.returnValue = '';
         };
         window.addEventListener('beforeunload', handler);
-        return () => window.removeEventListener('beforeunload', handler);
+        return () => {
+            window.removeEventListener('beforeunload', handler);
+            addBoxesSequence.current += 1;
+        };
     }, []);
 
     useEffect(() => {
@@ -194,18 +232,49 @@ export default function ShippingConfirmationDrafts() {
         blocker.proceed?.();
     });
 
-    const handleAddBoxes = () => runAction(async () => {
-        const existing = new Set(draft.entries.map(entry => entry.cargo_uid));
-        const newBoxUids = selectedBoxUids.filter(uid => !existing.has(uid));
-        if (draft.entries.length + newBoxUids.length > 500) throw new Error('每份出货单草稿最多可添加 500 个箱子');
-        const result = await shippingConfirmationRequest('/packing-lists/shipping-confirmation/boxes', {
-            method: 'POST', body: { cargo_uids: selectedBoxUids },
+    const handleAddBoxes = () => {
+        setPendingBoxUids([...selectedBoxUids]);
+        setAddAgent('');
+        setAddRemarks('');
+        setError('');
+    };
+
+    const handleConfirmAddBoxes = () => {
+        if (busy || !pendingBoxUids.length) return;
+        return runAction(async () => {
+            const sequence = ++addBoxesSequence.current;
+            const current = currentDraft.current.draft;
+            const existing = new Set(current.entries.map(entry => entry.cargo_uid));
+            const newBoxUids = pendingBoxUids.filter(uid => !existing.has(uid));
+            if (current.entries.length + newBoxUids.length > 500) throw new Error('每份出货单草稿最多可添加 500 个箱子');
+            if (!newBoxUids.length) {
+                setSelectedBoxUids([]);
+                setPendingBoxUids([]);
+                messageApi.info('所选箱子均已加入草稿');
+                return;
+            }
+            let result;
+            try {
+                result = await shippingConfirmationRequest('/packing-lists/shipping-confirmation/boxes', {
+                    method: 'POST', body: { cargo_uids: newBoxUids },
+                });
+            } catch (requestError) {
+                if (sequence !== addBoxesSequence.current) return;
+                throw requestError;
+            }
+            if (sequence !== addBoxesSequence.current) return;
+            const latestExisting = new Set(currentDraft.current.draft.entries.map(entry => entry.cargo_uid));
+            const additions = (result?.items || []).filter(entry => !latestExisting.has(entry.cargo_uid)).map(entry => ({ ...entry,
+                ...(addAgent.trim() ? { agent_name: addAgent.trim() } : {}),
+                ...(addRemarks.trim() ? { remarks: addRemarks.trim() } : {}),
+            }));
+            if (currentDraft.current.draft.entries.length + additions.length > 500) throw new Error('每份出货单草稿最多可添加 500 个箱子');
+            if (additions.length) editDraft(previous => ({ ...previous, entries: [...previous.entries, ...additions] }));
+            setSelectedBoxUids([]);
+            setPendingBoxUids([]);
+            messageApi.success(`已添加 ${additions.length} 个箱子到出货单草稿`);
         });
-        const additions = (result?.items || []).filter(entry => !existing.has(entry.cargo_uid));
-        if (additions.length) editDraft(previous => ({ ...previous, entries: [...previous.entries, ...additions] }));
-        setSelectedBoxUids([]);
-        messageApi.success(`已添加 ${additions.length} 个箱子到出货单草稿`);
-    });
+    };
 
     const updateEntry = (uid, field, value) => editDraft(previous => ({ ...previous,
         entries: previous.entries.map(entry => entry.cargo_uid === uid ? { ...entry, [field]: value } : entry),
@@ -217,30 +286,45 @@ export default function ShippingConfirmationDrafts() {
     };
 
     const handlePrint = () => {
+        if (busy || printLock.current || draftLoadError || !printable) return;
+        const cargoUids = [...selectedDraftBoxUids];
         const preview = window.open('', '_blank');
         if (!preview) { setError('浏览器拦截了新窗口，请允许弹窗后重试'); return; }
+        printLock.current = true;
         preview.document.write('正在生成出货确认单 PDF...');
         runAction(async () => {
             try {
                 const saved = await saveDraft();
-                const blob = await fetchShippingConfirmationPdf(saved.uid, saved.version);
+                const targets = cargoUids.length ? cargoUids.map(cargoUid => saved.entries.find(entry => entry.cargo_uid === cargoUid)) : saved.entries;
+                if (!targets.length || targets.some(entry => !entry || entry.available === false)) {
+                    throw new Error('打印范围包含已删除、归档或不再可访问的箱子，请核对草稿后重试');
+                }
+                const blob = await (cargoUids.length
+                    ? fetchShippingConfirmationPdf(saved.uid, saved.version, cargoUids)
+                    : fetchShippingConfirmationPdf(saved.uid, saved.version));
                 const url = URL.createObjectURL(blob);
                 preview.location.href = url;
                 window.setTimeout(() => URL.revokeObjectURL(url), 60 * 1000);
                 messageApi.success('出货确认单 PDF 已打开，草稿已保存');
             } catch (requestError) { preview.close(); throw requestError; }
+            finally { printLock.current = false; }
         });
     };
 
     const existingBoxUids = new Set(draft.entries.map(entry => entry.cargo_uid));
-    const catalogBoxes = catalog.items.flatMap(list => (list.boxes || []).map(box => ({
-        ...box, cargo_uid: box.uid, list_number: list.list_number || list.mark || '-', customer_name: list.customer_name || '',
+    const catalogBoxes = catalog.items.flatMap(list => (list.boxes || []).filter(box => !isCargoOutboundOrLater(box)).map(box => ({
+        ...box, cargo_uid: box.uid, packing_list_uid: list.uid,
+        list_number: list.list_number || list.mark || '-', customer_name: list.customer_name || '',
     })));
+    const draftRows = groupPackingBoxes(draft.entries);
+    const catalogRows = groupPackingBoxes(catalogBoxes);
     const unavailable = draft.entries.some(entry => entry.available === false);
+    const printTargets = selectedDraftBoxUids.length ? selectedDraftBoxUids.map(cargoUid => draft.entries.find(entry => entry.cargo_uid === cargoUid)) : draft.entries;
+    const printable = printTargets.length > 0 && printTargets.every(entry => entry && entry.available !== false);
     const totalWeight = draft.entries.reduce((total, entry) => total + (Number(entry.weight) || 0), 0);
     const identityColumns = [
-        { title: '装箱单', dataIndex: 'list_number', width: 150 },
-        { title: '客户', dataIndex: 'customer_name', width: 120 },
+        { title: '装箱单', dataIndex: 'list_number', width: 180, render: (text, entry) => entry.isPackingList ? <Typography.Text strong>{text}</Typography.Text> : null },
+        { title: '客户', dataIndex: 'customer_name', width: 120, render: (text, entry) => entry.isPackingList ? text : null },
         { title: '箱号', dataIndex: 'box_number', width: 70 },
         { title: '唛头', dataIndex: 'tag', width: 160 },
         { title: '原单号', dataIndex: 'transfer_id', width: 160 },
@@ -261,7 +345,7 @@ export default function ShippingConfirmationDrafts() {
                 <Button icon={<SaveOutlined />} loading={actionBusy} disabled={draftLoading || Boolean(draftLoadError)} onClick={() => runAction(async () => {
                     await saveDraft(); messageApi.success('出货单草稿已保存，可稍后继续添加箱子');
                 })}>保存草稿</Button>
-                <Button type="primary" icon={<PrinterOutlined />} disabled={busy || Boolean(draftLoadError) || !draft.entries.length || unavailable} onClick={handlePrint}>保存并打印 PDF</Button>
+                <Button type="primary" icon={<PrinterOutlined />} disabled={busy || Boolean(draftLoadError) || !printable} onClick={handlePrint}>保存并打印 PDF</Button>
             </Space>
         </div>
         {error && <Alert className={styles.pageAlert} type="error" showIcon message={error} action={conflict && <Button disabled={busy} onClick={() => runAction(async () => {
@@ -298,7 +382,8 @@ export default function ShippingConfirmationDrafts() {
                             <Typography.Text strong>出货单草稿：{draft.entries.length} 箱，共 {totalWeight.toFixed(2)} kg</Typography.Text>
                             <Tag color={dirty ? 'gold' : 'green'}>{dirty ? '有未保存修改' : draft.uid ? '已保存' : '新草稿'}</Tag>
                         </Space>
-                        {unavailable && <Alert type="warning" showIcon message="部分箱子已删除、归档或不再可访问，请先从草稿移除后打印。" />}
+                        <Typography.Text aria-label="当前打印范围" type="secondary">{selectedDraftBoxUids.length ? `打印范围：所选 ${selectedDraftBoxUids.length} 箱` : `打印范围：草稿全部 ${draft.entries.length} 箱（未勾选）`}</Typography.Text>
+                        {unavailable && <Alert type="warning" showIcon message="部分箱子已删除、归档或不再可访问。可勾选有效箱子打印；保存修改前仍需移除失效箱子。" />}
                         <Space wrap>
                             <Input aria-label="批量渠道代理" placeholder="渠道代理，如 JF / TC / YX" value={bulkAgent} maxLength={128} disabled={busy} style={{ width: 210 }} onChange={event => setBulkAgent(event.target.value)} />
                             <Button disabled={busy || !draft.entries.length} onClick={() => applyBulk('agent_name')}>批量填写代理</Button>
@@ -306,18 +391,23 @@ export default function ShippingConfirmationDrafts() {
                             <Button disabled={busy || !draft.entries.length} onClick={() => applyBulk('remarks')}>批量填写备注</Button>
                             <Typography.Text type="secondary">{selectedDraftBoxUids.length ? `应用至所选 ${selectedDraftBoxUids.length} 箱` : '未勾选时应用至草稿全部箱子'}</Typography.Text>
                         </Space>
-                        <Table aria-label="出货单草稿箱子" size="small" rowKey="cargo_uid" dataSource={draft.entries} pagination={{ pageSize: 20, hideOnSinglePage: true, showSizeChanger: false }} scroll={{ x: 1130 }}
-                            locale={{ emptyText: '从下方选择箱子，加入出货单草稿' }} rowSelection={{ selectedRowKeys: selectedDraftBoxUids, preserveSelectedRowKeys: true,
-                                onChange: setSelectedDraftBoxUids, getCheckboxProps: () => ({ disabled: busy }) }}
+                        <Table aria-label="出货单草稿箱子" size="small" rowKey="row_key" dataSource={draftRows} expandable={packingListExpandable}
+                            pagination={{ pageSize: 20, hideOnSinglePage: true, showSizeChanger: false }} scroll={{ x: 1180 }}
+                            locale={{ emptyText: '从下方选择箱子，加入出货单草稿' }} rowSelection={{ selectedRowKeys: selectedDraftBoxUids, checkStrictly: false,
+                                onChange: keys => setSelectedDraftBoxUids(onlyBoxKeys(keys)), getCheckboxProps: () => ({ disabled: busy }) }}
                             columns={[...identityColumns,
-                                { title: '渠道代理', key: 'agent_name', width: 140, render: (_, entry) => <Input aria-label={`箱子 ${entry.cargo_uid} 渠道代理`} value={entry.agent_name || ''} maxLength={128} disabled={busy} onChange={event => updateEntry(entry.cargo_uid, 'agent_name', event.target.value)} /> },
-                                { title: '备注（地址、邮编等）', key: 'remarks', width: 250, render: (_, entry) => <Input.TextArea aria-label={`箱子 ${entry.cargo_uid} 出货备注`} value={entry.remarks || ''} maxLength={2000} autoSize={{ minRows: 1, maxRows: 3 }} disabled={busy} onChange={event => updateEntry(entry.cargo_uid, 'remarks', event.target.value)} /> },
+                                { title: '渠道代理', key: 'agent_name', width: 140, render: (_, entry) => entry.isPackingList
+                                    ? groupFieldText(entry, 'agent_name', '多种代理')
+                                    : <Input aria-label={`箱子 ${entry.cargo_uid} 渠道代理`} value={entry.agent_name || ''} maxLength={128} disabled={busy} onChange={event => updateEntry(entry.cargo_uid, 'agent_name', event.target.value)} /> },
+                                { title: '备注（地址、邮编等）', key: 'remarks', width: 250, render: (_, entry) => entry.isPackingList
+                                    ? <span className={styles.groupRemarks} title={groupFieldText(entry, 'remarks', '多条备注')}>{groupFieldText(entry, 'remarks', '多条备注')}</span>
+                                    : <Input.TextArea aria-label={`箱子 ${entry.cargo_uid} 出货备注`} value={entry.remarks || ''} maxLength={2000} autoSize={{ minRows: 1, maxRows: 3 }} disabled={busy} onChange={event => updateEntry(entry.cargo_uid, 'remarks', event.target.value)} /> },
                                 { title: '操作', key: 'action', width: 100, render: (_, entry) => <Space direction="vertical" size={0}>
-                                    {entry.available === false && <Tag color="red">已失效</Tag>}
-                                    <Button type="link" danger disabled={busy} aria-label={`移除箱子 ${entry.cargo_uid}`} onClick={() => {
+                                    {entry.available === false && <Tag color="red">{entry.isPackingList ? '含失效箱子' : '已失效'}</Tag>}
+                                    {!entry.isPackingList && <Button type="link" danger disabled={busy} aria-label={`移除箱子 ${entry.cargo_uid}`} onClick={() => {
                                         editDraft(previous => ({ ...previous, entries: previous.entries.filter(item => item.cargo_uid !== entry.cargo_uid) }));
                                         setSelectedDraftBoxUids(previous => previous.filter(uid => uid !== entry.cargo_uid));
-                                    }}>移除</Button>
+                                    }}>移除</Button>}
                                 </Space> },
                             ]} />
                     </Space>
@@ -331,15 +421,19 @@ export default function ShippingConfirmationDrafts() {
                             <Button icon={<PlusOutlined />} type="primary" disabled={busy || !selectedBoxUids.length} onClick={handleAddBoxes}>添加所选箱子（{selectedBoxUids.length}）</Button>
                             {selectedBoxUids.length > 0 && <Button disabled={busy} onClick={() => setSelectedBoxUids([])}>清空待添加选择</Button>}
                         </Space>
-                        <Typography.Text type="secondary">搜索和翻页会保留待添加选择；已在草稿内的箱子不能重复添加。</Typography.Text>
+                        <Typography.Text type="secondary">勾选装箱单可选择其中全部可添加箱子，展开后可逐箱选择。搜索和翻页会保留选择；已加入的箱子不能重复添加。</Typography.Text>
                         {catalogError && <Alert type="error" message={catalogError} action={<Button size="small" onClick={() => setLookupTick(value => value + 1)}>重试</Button>} />}
-                        <Table aria-label="可添加的装箱单箱子" size="small" rowKey="cargo_uid" columns={[...identityColumns,
-                            { title: '重量 (kg)', dataIndex: 'weight', width: 100 },
-                            { title: '订单分配', key: 'assigned', width: 100, render: (_, entry) => existingBoxUids.has(entry.cargo_uid) ? <Tag>已加入</Tag> : <Tag color={entry.target_order_uid ? 'blue' : 'gold'}>{entry.target_order_uid ? '已分配' : '待分配'}</Tag> },
-                        ]} dataSource={catalogBoxes} loading={catalogLoading} scroll={{ x: 880 }}
+                        <Table aria-label="可添加的装箱单箱子" size="small" rowKey="row_key" expandable={packingListExpandable} columns={[...identityColumns,
+                            { title: '重量 (kg)', dataIndex: 'weight', width: 100, render: weight => (Number(weight) || 0).toFixed(2) },
+                            { title: '订单分配', key: 'assigned', width: 130, render: (_, entry) => entry.isPackingList
+                                ? <Typography.Text type="secondary">已加入 {entry.children.filter(box => existingBoxUids.has(box.cargo_uid)).length} / {entry.children.length} 箱</Typography.Text>
+                                : existingBoxUids.has(entry.cargo_uid) ? <Tag>已加入</Tag> : <Tag color={entry.target_order_uid ? 'blue' : 'gold'}>{entry.target_order_uid ? '已分配' : '待分配'}</Tag> },
+                        ]} dataSource={catalogRows} loading={catalogLoading} scroll={{ x: 910 }}
                             locale={{ emptyText: catalogError ? '装箱单加载失败' : '没有匹配的箱子' }}
-                            rowSelection={{ selectedRowKeys: selectedBoxUids, preserveSelectedRowKeys: true, onChange: setSelectedBoxUids,
-                                getCheckboxProps: entry => ({ disabled: busy || catalogLoading || Boolean(catalogError) || existingBoxUids.has(entry.cargo_uid) }) }}
+                            rowSelection={{ selectedRowKeys: selectedBoxUids, preserveSelectedRowKeys: true, checkStrictly: false,
+                                onChange: keys => setSelectedBoxUids(onlyBoxKeys(keys)),
+                                getCheckboxProps: entry => ({ disabled: busy || catalogLoading || Boolean(catalogError) || (entry.isPackingList
+                                    ? entry.children.every(box => existingBoxUids.has(box.cargo_uid)) : existingBoxUids.has(entry.cargo_uid)) }) }}
                             pagination={false} />
                         <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
                             <Space>
@@ -354,6 +448,22 @@ export default function ShippingConfirmationDrafts() {
                 </>}
             </div>
         </div>
+        <Modal title="添加所选箱子" open={pendingBoxUids.length > 0} closable={!busy} keyboard={!busy} maskClosable={false}
+            onCancel={() => { if (!busy) setPendingBoxUids([]); }} footer={<Space>
+                <Button disabled={busy} onClick={() => setPendingBoxUids([])}>取消</Button>
+                <Button type="primary" loading={actionBusy} disabled={draftLoading} onClick={handleConfirmAddBoxes}>确认添加</Button>
+            </Space>}>
+            <Space direction="vertical" size={16} className={styles.section}>
+                <Typography.Text>本次添加 {pendingBoxUids.length} 个箱子。代理和备注均为选填，填写后应用至本次新增箱子；代理留空时沿用默认代理。</Typography.Text>
+                <label className={styles.addField}>渠道代理（选填）
+                    <Input aria-label="添加箱子渠道代理" placeholder="如 JF / TC / YX" value={addAgent} maxLength={128} disabled={busy} onChange={event => setAddAgent(event.target.value)} />
+                </label>
+                <label className={styles.addField}>备注（选填）
+                    <Input.TextArea aria-label="添加箱子出货备注" placeholder="地址、邮编等出货备注" value={addRemarks} maxLength={2000} autoSize={{ minRows: 3, maxRows: 6 }} disabled={busy} onChange={event => setAddRemarks(event.target.value)} />
+                </label>
+                {error && <Alert type="error" showIcon message={error} />}
+            </Space>
+        </Modal>
         <Modal title="有未保存的出货单内容" open={blocker.state === 'blocked'} closable={!busy} keyboard={!busy} maskClosable={false} onCancel={() => { if (!busy) blocker.reset?.(); }}
             footer={<Space wrap>
                 <Button disabled={busy} onClick={() => blocker.reset?.()}>继续编辑</Button>

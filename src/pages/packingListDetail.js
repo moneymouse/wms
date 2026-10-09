@@ -34,11 +34,13 @@ import {
 } from '@ant-design/icons';
 import { endpoint } from '../config';
 import getSafeHeader from '../common/safeHeader';
-import { hasPermission } from '../common/roleConfig';
+import { getUserRoles, hasPermission } from '../common/roleConfig';
 import { getBoxEditPolicy, normalizeOrderEditPolicy } from '../common/orderEditPolicy';
 import { isBoxIdentityEditable, isBoxOriginalNumberEditable, isCargoOutboundOrLater } from '../common/cargoStatus';
 import { buildCustomsCodeOptions, findCustomsCodeForName } from '../common/customsCodeLookup';
+import { captureEditorPosition, restoreEditorPosition } from '../common/editorPosition';
 import styles from './packingListDetail.module.css';
+import PackingListReceiptButton from '../components/PackingListReceiptButton';
 
 const { Title, Text } = Typography;
 const { Option } = Select;
@@ -182,6 +184,13 @@ export default function PackingListDetail() {
     const [undoShippingBoxUid, setUndoShippingBoxUid] = useState(null);
     const [deletingBoxUid, setDeletingBoxUid] = useState(null);
     const [boxEditForm] = Form.useForm();
+    const pageRef = useRef(null);
+    const editorPositionRef = useRef(null);
+    const boxEditorOpenRef = useRef(false);
+    const boxEditSessionRef = useRef(0);
+    const boxSavePendingRef = useRef(null);
+    const detailRequestRef = useRef(0);
+    const mountedRef = useRef(true);
     const addBoxItemDetails = Form.useWatch('item_details', boxForm) || [];
     const editBoxItemDetails = Form.useWatch('item_details', boxEditForm) || [];
 
@@ -189,6 +198,7 @@ export default function PackingListDetail() {
     const canEditPackingListDetail = hasPermission(payload?.roles, ['admin', 'store_manager', 'salesperson']);
     const canEditBoxes = hasPermission(payload?.roles, ['admin', 'store_manager', 'salesperson', 'clerk']);
     const canUndoShip = hasPermission(payload?.roles, ['admin', 'store_manager']);
+    const canRegisterPayment = hasPermission(getUserRoles(payload), ['admin', 'finance', 'salesperson']);
     const boxPolicyDefaults = {
         box_content: canEditBoxes,
         box_weight: hasPermission(payload?.roles, ['admin', 'store_manager', 'salesperson', 'worker']),
@@ -221,9 +231,23 @@ export default function PackingListDetail() {
 
     useEffect(() => {
         setPayload(getJwtPayload());
+        mountedRef.current = true;
+        return () => {
+            mountedRef.current = false;
+            boxEditSessionRef.current += 1;
+            detailRequestRef.current += 1;
+            editorPositionRef.current = null;
+        };
     }, []);
 
     useEffect(() => {
+        boxEditSessionRef.current += 1;
+        editorPositionRef.current = null;
+        boxEditorOpenRef.current = false;
+        setBoxEditVisible(false);
+        setEditingBox(null);
+        boxSavePendingRef.current = null;
+        setSavingBox(false);
         if (uid) {
             handleViewDetail(uid);
             fetchWorkers();
@@ -289,12 +313,18 @@ export default function PackingListDetail() {
     };
 
     const handleViewDetail = async (detailUid) => {
+        if (String(activePackingUid.current) !== String(detailUid)) return;
+        const request = ++detailRequestRef.current;
+        const isCurrent = () => mountedRef.current && request === detailRequestRef.current
+            && String(activePackingUid.current) === String(detailUid);
         setLoading(true);
+        setCurrentDetail(previous => String(previous?.uid) === String(detailUid) ? previous : null);
         try {
             const res = await fetch(`${endpoint}/packing-list/${detailUid}`, {
                 headers: getSafeHeader()
             });
             const data = await res.json();
+            if (!isCurrent()) return;
 
             if (data.code === 200) {
                 setCurrentDetail(data.data);
@@ -302,10 +332,11 @@ export default function PackingListDetail() {
                 messageApi.error(data.msg || '获取详情失败');
             }
         } catch (error) {
+            if (!isCurrent()) return;
             messageApi.error('获取详情失败');
             console.error(error);
         } finally {
-            setLoading(false);
+            if (isCurrent()) setLoading(false);
         }
     };
 
@@ -512,8 +543,8 @@ export default function PackingListDetail() {
         }
 
         Modal.confirm({
-            title: '确认彻底删除该装箱单吗？',
-            content: `唛头：${getMarkText(currentDetail)}。此操作不可恢复，数据将从数据库中永久删除。`,
+            title: '确认删除该装箱单吗？',
+            content: `唛头：${getMarkText(currentDetail)}。对应上传的照片会一并删除，此操作不可恢复。`,
             okText: '删除',
             okType: 'danger',
             cancelText: '取消',
@@ -616,12 +647,35 @@ export default function PackingListDetail() {
         }
     };
 
-    const openBoxEditModal = async (box) => {
+    const closeBoxEditor = () => {
+        boxEditSessionRef.current += 1;
+        boxEditorOpenRef.current = false;
+        setBoxEditVisible(false);
+        setEditingBox(null);
+    };
+
+    const restoreBoxEditorPosition = () => {
+        const saved = editorPositionRef.current;
+        if (!saved || boxEditorOpenRef.current || !mountedRef.current
+            || String(activePackingUid.current) !== String(saved.packingUid)) return;
+        editorPositionRef.current = null;
+        const button = Array.from(pageRef.current?.querySelectorAll('[data-box-edit-uid]') || [])
+            .find(element => element.dataset.boxEditUid === String(saved.boxUid));
+        restoreEditorPosition(saved.position, button);
+    };
+
+    const openBoxEditModal = async (box, trigger) => {
         if (!box || originalGenerationPending.current) return;
         if (!canOpenBoxEditor(box)) {
             messageApi.warning('当前没有修改该箱子的权限');
             return;
         }
+        const session = ++boxEditSessionRef.current;
+        const packingUid = currentDetail.uid;
+        const isCurrent = () => mountedRef.current && session === boxEditSessionRef.current
+            && String(activePackingUid.current) === String(packingUid);
+        editorPositionRef.current = { packingUid, boxUid: box.uid, position: captureEditorPosition(trigger) };
+        boxEditorOpenRef.current = true;
         const itemDetails = getBoxItemDetails(box);
         setEditingBox(box);
         boxEditForm.setFieldsValue({
@@ -642,7 +696,7 @@ export default function PackingListDetail() {
                 headers: getSafeHeader()
             });
             const data = await res.json();
-            if (data.code === 200) {
+            if (isCurrent() && data.code === 200) {
                 boxEditForm.setFieldValue(
                     'worker_ids',
                     (data.data || []).map((worker) => worker.worker_id)
@@ -654,10 +708,17 @@ export default function PackingListDetail() {
     };
 
     const handleUpdateBox = async () => {
-        if (!editingBox?.uid || !currentDetail?.uid) return;
+        if (!editingBox?.uid || !currentDetail?.uid || boxSavePendingRef.current !== null) return;
+        const session = boxEditSessionRef.current;
+        boxSavePendingRef.current = session;
+        setSavingBox(true);
+        const packingUid = currentDetail.uid;
+        const isCurrent = () => mountedRef.current && session === boxEditSessionRef.current
+            && String(activePackingUid.current) === String(packingUid);
 
         try {
             const values = await boxEditForm.validateFields();
+            if (!isCurrent()) return;
             const policy = resolveBoxPolicy(editingBox);
             const details = (values.item_details || [])
                 .map((row) => ({
@@ -698,7 +759,6 @@ export default function PackingListDetail() {
                 return;
             }
 
-            setSavingBox(true);
             const updateRes = await fetch(`${endpoint}/box/${editingBox.uid}`, {
                 method: 'PUT',
                 headers: {
@@ -708,21 +768,26 @@ export default function PackingListDetail() {
                 body: JSON.stringify(payload)
             });
             const updateData = await updateRes.json();
+            if (!isCurrent()) return;
             if (updateData.code !== 200) {
                 messageApi.error(updateData.msg || '更新箱子失败');
                 return;
             }
 
             messageApi.success('箱子信息已更新');
-            setBoxEditVisible(false);
-            setEditingBox(null);
-            await handleViewDetail(currentDetail.uid);
+            // Keep both the list height and editor mounted until the refresh ends.
+            await handleViewDetail(packingUid);
+            if (isCurrent()) closeBoxEditor();
         } catch (error) {
+            if (!isCurrent()) return;
             if (error?.errorFields) return;
             messageApi.error('更新箱子失败');
             console.error(error);
         } finally {
-            setSavingBox(false);
+            if (boxSavePendingRef.current === session) {
+                boxSavePendingRef.current = null;
+                if (mountedRef.current && String(activePackingUid.current) === String(packingUid)) setSavingBox(false);
+            }
         }
     };
 
@@ -982,6 +1047,7 @@ export default function PackingListDetail() {
     const isShipAllChecked = allSelectableBoxUids.length > 0 && selectedSelectableCount === allSelectableBoxUids.length;
     const isShipIndeterminate = selectedSelectableCount > 0 && selectedSelectableCount < allSelectableBoxUids.length;
     const canBatchActions = canEditBoxes;
+    const canSelectBoxes = canBatchActions || canRegisterPayment;
     const batchActionMenuItems = [];
     if (canEditBoxes) {
         batchActionMenuItems.push({ key: 'archive', label: '归档已选', danger: true });
@@ -1024,7 +1090,7 @@ export default function PackingListDetail() {
         setSelectedShipBoxUids((prev) => Array.from(new Set([...prev, ...allSelectableBoxUids])));
     };
 
-    if (loading) {
+    if ((loading && !currentDetail) || (currentDetail && String(currentDetail.uid) !== String(uid))) {
         return (
             <div style={{ padding: '24px', textAlign: 'center' }}>
                 <Spin size="large" />
@@ -1044,7 +1110,7 @@ export default function PackingListDetail() {
     }
 
     return (
-        <div style={{ padding: screens.md ? '24px' : '12px' }}>
+        <div ref={pageRef} aria-busy={loading} style={{ padding: screens.md ? '24px' : '12px' }}>
             {contextHolder}
             <div style={{ marginBottom: 16, display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px' }}>
                 <Space align="center" style={{ flexShrink: 0 }}>
@@ -1057,6 +1123,7 @@ export default function PackingListDetail() {
                     <Title level={screens.md ? 2 : 4} style={{ margin: 0 }}>装箱单详情</Title>
                 </Space>
                 <Space wrap style={{ flex: '1 1 auto', justifyContent: 'flex-start' }}>
+                    {canRegisterPayment && <PackingListReceiptButton key={uid} packingList={currentDetail} selectedBoxUids={selectedPrintableBoxUids} />}
                     {currentDetail.status === 'draft' && (
                         <Button
                             type="primary"
@@ -1161,7 +1228,7 @@ export default function PackingListDetail() {
                 extra={
                     ((currentDetail?.boxes || []).length > 0 || canBatchActions) ? (
                         <Space size={8} wrap style={{ marginBottom: 4 }}>
-                            {canBatchActions && (
+                            {canSelectBoxes && (
                                 <Checkbox
                                     checked={isShipAllChecked}
                                     indeterminate={isShipIndeterminate}
@@ -1222,6 +1289,7 @@ export default function PackingListDetail() {
             >
                 <List
                     bordered
+                    rowKey="uid"
                     dataSource={currentDetail.boxes || []}
                     renderItem={(box, idx) => {
                         const itemDetails = getBoxItemDetails(box);
@@ -1246,7 +1314,8 @@ export default function PackingListDetail() {
                                                         type="link"
                                                         icon={<EditOutlined />}
                                                         disabled={generatingOriginalNumbers}
-                                                        onClick={() => openBoxEditModal(box)}
+                                                        data-box-edit-uid={box.uid}
+                                                        onClick={event => openBoxEditModal(box, event.currentTarget)}
                                                     >
                                                         编辑
                                                     </Button>
@@ -1310,7 +1379,7 @@ export default function PackingListDetail() {
                                                 <Text type="secondary" style={{ fontSize: '13px' }}>箱号</Text>
                                                 <div style={{ marginTop: 4 }}>
                                                     <Space direction="vertical" size={6}>
-                                                        {canBatchActions ? (
+                                                        {canSelectBoxes ? (
                                                             <Checkbox
                                                                 aria-label={`箱子 ${box.box_number || (idx + 1)}`}
                                                                 checked={selectedShipBoxUids.includes(box.uid)}
@@ -1388,7 +1457,7 @@ export default function PackingListDetail() {
                                     <div style={{ display: 'flex', flexDirection: 'column', width: '100%', gap: '8px' }}>
                                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
                                             <Space size={8}>
-                                                {canBatchActions && (
+                                                {canSelectBoxes && (
                                                     <Checkbox
                                                         aria-label={`箱子 ${box.box_number || (idx + 1)}`}
                                                         checked={selectedShipBoxUids.includes(box.uid)}
@@ -1643,10 +1712,12 @@ export default function PackingListDetail() {
             <Modal
                 title={editingBox ? `编辑箱子 ${editingBox.box_number || '-'}` : '编辑箱子'}
                 open={boxEditVisible}
-                onCancel={() => {
-                    setBoxEditVisible(false);
-                    setEditingBox(null);
-                }}
+                onCancel={() => { if (!savingBox) closeBoxEditor(); }}
+                afterClose={restoreBoxEditorPosition}
+                focusTriggerAfterClose={false}
+                maskClosable={!savingBox}
+                closable={!savingBox}
+                cancelButtonProps={{ disabled: savingBox }}
                 onOk={handleUpdateBox}
                 okText="保存"
                 cancelText="取消"

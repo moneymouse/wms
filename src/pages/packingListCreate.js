@@ -32,7 +32,8 @@ import {
 import { endpoint } from '../config';
 import getSafeHeader from '../common/safeHeader';
 import { PaperIntakeUpload } from './intakes';
-import { getIntakeRoles } from '../common/intakeApi';
+import { getIntakeRoles, MAX_INTAKE_WORKERS, normalizeIntakeWorkerIds } from '../common/intakeApi';
+import { COMMON_GOODS_GROUPS } from '../common/chineseGoodsNames';
 import entryStyles from './packingListEntry.module.css';
 
 const { Title, Text } = Typography;
@@ -70,24 +71,7 @@ const normalizeLoadedPhotos = (value, prefix) => {
         .filter(Boolean);
 };
 
-const COMMON_GOODS_GROUPS = [
-    {
-        label: '服装类',
-        items: ['T-恤', '衬衫', '背心', '布料', '荷兰布', '围巾', '头巾', '帽子', '连衣裙', '女套裙', '童裙', '童套装', '裤子', '牛仔裤', '西服', '卫衣', '休闲服', '运动套装', '毛衣', '毛巾', '枕头', '窗帘', '文胸']
-    },
-    {
-        label: '鞋包类',
-        items: ['运动鞋', '女凉鞋', '男凉鞋', '高跟鞋', '拖鞋', '手提包', '钱包', '卡包', '皮带', '假发', '眼镜']
-    },
-    {
-        label: '首饰类',
-        items: ['手镯', '耳环', '戒指', '项链', '铁牌']
-    },
-    {
-        label: '杂项',
-        items: ['不锈钢锅', '不锈钢盆', '陶瓷盆', '陶瓷碗', '耳机']
-    }
-];
+const getBoxWorkerIds = box => normalizeIntakeWorkerIds(box.worker_ids ?? (box.workers || []).map(worker => typeof worker === 'object' ? worker.worker_id ?? worker.id : worker));
 
 function PackingListTab({
     tabKey,
@@ -105,6 +89,10 @@ function PackingListTab({
     // 状态
     const [customers, setCustomers] = useState([]);
     const [workers, setWorkers] = useState([]);
+    const [workersLoaded, setWorkersLoaded] = useState(false);
+    const [workerEditor, setWorkerEditor] = useState(null);
+    const [editingWorkerIds, setEditingWorkerIds] = useState([]);
+    const [workerSaving, setWorkerSaving] = useState(false);
     const [selectedCustomerId, setSelectedCustomerId] = useState(null);
     const [photos, setPhotos] = useState([]);
     const [boxes, setBoxes] = useState([]);
@@ -114,6 +102,10 @@ function PackingListTab({
     const [loading, setLoading] = useState(false);
     const [saving, setSaving] = useState(false);
     const [initializingDraft, setInitializingDraft] = useState(!!initialDraftUid);
+    const canReplaceWorkers = getIntakeRoles().some(role => ['admin', 'store_manager', 'salesperson'].includes(role));
+    const workerNameCounts = new Map();
+    workers.forEach(worker => workerNameCounts.set(worker.name, (workerNameCounts.get(worker.name) || 0) + 1));
+    const workerOptions = workers.map(worker => ({ value: Number(worker.id), label: `${worker.name}${workerNameCounts.get(worker.name) > 1 ? ` · ID ${worker.id}` : ''}${worker.phone ? ` (${worker.phone})` : ''}` }));
 
     // 箱子表单
     const [boxForm] = Form.useForm();
@@ -279,12 +271,13 @@ function PackingListTab({
 
     const fetchWorkers = async () => {
         try {
-            const res = await fetch(`${endpoint}/work/workers`, {
+            const res = await fetch(`${endpoint}/work/workers?roles=worker,employee`, {
                 headers: getSafeHeader()
             });
             const data = await res.json();
             if (data.code === 200) {
                 setWorkers(data.data || []);
+                setWorkersLoaded(true);
             }
         } catch (error) {
             console.error('获取操作员列表失败:', error);
@@ -338,6 +331,7 @@ function PackingListTab({
 
     // 添加箱子
     const handleAddBox = async () => {
+        if (loading || workerSaving) return;
         if (!packingListUid) {
             messageApi.warning('请先创建装箱单');
             return;
@@ -395,7 +389,7 @@ function PackingListTab({
             if (data.code === 200) {
                 let workerAssignResult = { success: true };
 
-                // 如果选择了操作员，尝试设置（仅允许首次设置）
+                // 操作人员属于本次添加的这一箱。
                 if (values.worker_ids && values.worker_ids.length > 0) {
                     workerAssignResult = await setBoxWorkers(data.data.uid, values.worker_ids);
                 }
@@ -403,7 +397,7 @@ function PackingListTab({
                 const newBox = {
                     ...data.data,
                     key: data.data.uid,
-                    workers: workerAssignResult.success ? (values.worker_ids || []) : []
+                    workers: workerAssignResult.success ? (values.worker_ids || []).map(id => ({ worker_id: id, worker_name: workers.find(worker => Number(worker.id) === Number(id))?.name })) : []
                 };
 
                 setBoxes(prev => [...prev, newBox]);
@@ -414,7 +408,7 @@ function PackingListTab({
                         item_name: row.item_name,
                         piece_count: ''
                     })),
-                    worker_ids: values.worker_ids || []
+                    worker_ids: [...(values.worker_ids || [])]
                 });
                 if (workerAssignResult.success) {
                     messageApi.success('箱子添加成功');
@@ -437,10 +431,10 @@ function PackingListTab({
     };
 
     // 设置箱子操作员
-    const setBoxWorkers = async (boxUid, workerIds) => {
+    const setBoxWorkers = async (boxUid, workerIds, replace = false) => {
         try {
-            const res = await fetch(`${endpoint}/box/${boxUid}/workers/add`, {
-                method: 'POST',
+            const res = await fetch(`${endpoint}/box/${boxUid}/workers${replace ? '' : '/add'}`, {
+                method: replace ? 'PUT' : 'POST',
                 headers: {
                     ...getSafeHeader(),
                     'Content-Type': 'application/json'
@@ -473,6 +467,24 @@ function PackingListTab({
                 msg: '设置操作员请求失败，请检查网络或稍后重试'
             };
         }
+    };
+
+    const handleSaveBoxWorkers = async () => {
+        if (!workerEditor || workerEditor.edit_policy?.box_workers === false || workerSaving || loading || !workersLoaded || editingWorkerIds.length > MAX_INTAKE_WORKERS) return;
+        if (editingWorkerIds.some(id => !workers.some(worker => Number(worker.id) === id))) { messageApi.warning('请选择有效的操作人员'); return; }
+        const currentIds = getBoxWorkerIds(workerEditor);
+        if (!canReplaceWorkers && currentIds.length) return;
+        setWorkerSaving(true);
+        const result = await setBoxWorkers(workerEditor.uid, editingWorkerIds, canReplaceWorkers);
+        if (result.success) {
+            setBoxes(current => current.map(box => box.uid === workerEditor.uid ? {
+                ...box,
+                worker_ids: [...editingWorkerIds],
+                workers: editingWorkerIds.map(id => ({ worker_id: id, worker_name: workers.find(worker => Number(worker.id) === id)?.name }))
+            } : box));
+            setWorkerEditor(null); messageApi.success('本箱操作人员已保存');
+        } else messageApi.error(result.msg);
+        setWorkerSaving(false);
     };
 
     // 归档箱子
@@ -656,6 +668,17 @@ function PackingListTab({
             }
         },
         {
+            title: '实际操作人员',
+            key: 'workers',
+            width: 210,
+            render: (_, box, index) => {
+                const ids = getBoxWorkerIds(box);
+                const names = ids.map(id => workers.find(worker => Number(worker.id) === id)?.name || (box.workers || []).find(worker => worker?.worker_id === id)?.worker_name || `人员 ${id}`);
+                const editableWorkers = box.edit_policy?.box_workers !== false && (canReplaceWorkers || !ids.length);
+                return <Space direction="vertical" size={4}><Text>{names.join('、') || '未设置'}</Text>{editableWorkers && <Button size="small" aria-label={`修改第${index + 1}箱操作人员`} disabled={loading || workerSaving || !workersLoaded} onClick={() => { setWorkerEditor(box); setEditingWorkerIds(ids); }}>{ids.length ? '修改操作人员' : '设置操作人员'}</Button>}</Space>;
+            }
+        },
+        {
             title: '备注',
             dataIndex: 'remark',
             key: 'remark',
@@ -682,6 +705,10 @@ function PackingListTab({
     return (
         <div style={{ padding: '8px' }}>
             {contextHolder}
+            <Modal title="修改本箱操作人员" open={!!workerEditor} okText="保存本箱操作人员" cancelText="取消" confirmLoading={workerSaving} cancelButtonProps={{ disabled: workerSaving }} onCancel={() => { if (!workerSaving) setWorkerEditor(null); }} onOk={handleSaveBoxWorkers} okButtonProps={{ disabled: !workersLoaded || loading || editingWorkerIds.length > MAX_INTAKE_WORKERS || (!canReplaceWorkers && !editingWorkerIds.length) }}>
+                <p>仅修改箱号 {workerEditor?.box_number || '—'} 的操作人员，每箱最多 {MAX_INTAKE_WORKERS} 人。</p>
+                <Select aria-label="本箱实际操作人员" mode="multiple" showSearch optionFilterProp="label" value={editingWorkerIds} options={workerOptions} disabled={workerSaving || !workersLoaded} style={{ width: '100%' }} onChange={ids => { if (ids.length > MAX_INTAKE_WORKERS) { messageApi.warning(`每箱最多选择 ${MAX_INTAKE_WORKERS} 名操作人员`); return; } setEditingWorkerIds(ids); }} />
+            </Modal>
 
             {/* 基本信息 */}
             {!packingListUid ? (
@@ -820,6 +847,7 @@ function PackingListTab({
                                                         style={{ width: isMobile ? 140 : 220, marginBottom: 24 }}
                                                     >
                                                         <AutoComplete
+                                                            aria-label={`新箱第${field.name + 1}项品名`}
                                                             size="large"
                                                             placeholder="选择品名或输入"
                                                             style={{ width: '100%' }}
@@ -902,20 +930,20 @@ function PackingListTab({
                             <Form.Item
                                 name="worker_ids"
                                 label="操作员 (最多4人)"
-                                rules={[{ required: true, message: '选择操作人员' }]}
+                                rules={[{ required: true, message: '选择本箱操作人员' }, { validator: (_, ids) => (ids || []).length <= MAX_INTAKE_WORKERS ? Promise.resolve() : Promise.reject(new Error(`每箱最多选择 ${MAX_INTAKE_WORKERS} 人`)) }]}
                                 style={{ marginBottom: 16 }}
                             >
                                 <Select
+                                    aria-label="新箱操作人员"
                                     mode="multiple"
                                     size="large"
                                     placeholder="选择操作员"
                                     style={{ width: '100%' }}
                                     maxTagCount={3}
-                                >
-                                    {workers.map(w => (
-                                        <Option key={w.id} value={w.id}>{w.name} {w.phone ? `(${w.phone})` : ''}</Option>
-                                    ))}
-                                </Select>
+                                    disabled={loading || workerSaving || !workersLoaded}
+                                    options={workerOptions}
+                                    optionFilterProp="label"
+                                />
                             </Form.Item>
 
                             <Form.Item name="remark" label="备注" style={{ marginBottom: 12 }}>
@@ -950,7 +978,7 @@ function PackingListTab({
                             pagination={false}
                             rowKey="uid"
                             size="small"
-                            scroll={{ x: isMobile ? 680 : undefined }}
+                            scroll={{ x: 900 }}
                         />
 
                         <div style={{ marginTop: 16, textAlign: isMobile ? 'left' : 'right' }}>

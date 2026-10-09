@@ -33,6 +33,7 @@ export const menuPermissions = {
     'logs': [ROLES.ADMIN], // 操作日志
     'audit-logs': [ROLES.ADMIN], // 审计日志
     'admin': [ROLES.ADMIN], // 用户申请
+    'storage-management': [ROLES.ADMIN, ROLES.STORE_MANAGER], // 照片存储管理
     'settings': [ROLES.ADMIN, ROLES.STORE_MANAGER, ROLES.SALESPERSON, ROLES.CLERK, ROLES.FINANCE, ROLES.WORKER], // 设置（所有角色）
 };
 
@@ -58,6 +59,7 @@ export const routePermissions = {
     '/logs': [ROLES.ADMIN],
     '/audit-logs': [ROLES.ADMIN],
     '/admin': [ROLES.ADMIN],
+    '/storage-management': [ROLES.ADMIN, ROLES.STORE_MANAGER],
     '/settings': [ROLES.ADMIN, ROLES.STORE_MANAGER, ROLES.SALESPERSON, ROLES.CLERK, ROLES.FINANCE, ROLES.WORKER], // 设置
 };
 

@@ -6,6 +6,7 @@ import FinanceWorkspace from './financeWorkspace';
 import styles from './financeWorkspace.module.css';
 import { ReceiptAudit } from './financeReceivables';
 import FinanceOrderSettlements from './financeOrderSettlements';
+import SupplierReconciliation from './supplierReconciliation';
 import { endpoint } from '../config';
 import getSafeHeader from '../common/safeHeader';
 import { COST_QUOTE_RECEIPT_TOUR } from '../common/featureTourConfig';
@@ -99,6 +100,7 @@ export default function FinanceHub({ extraTabs = [] }) {
     return <div className={styles.hub}>
         <FinanceWorkspace activeTab={activeTab} onTabChange={setActiveTab} extraTabs={[
             { key: 'receivable', label: '订单应收', children: <FinanceOrderSettlements /> },
+            { key: 'supplier-reconciliation', label: '第三方对账', children: <SupplierReconciliation readOnly /> },
             { key: 'audit', label: '历史收款清理', children: <ReceiptAudit /> },
             { key: 'bonus', label: '奖金', children: <><SalesBonusRates /><FinanceCenter /></> },
             ...extraTabs,

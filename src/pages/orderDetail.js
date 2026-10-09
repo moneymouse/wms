@@ -4,6 +4,7 @@ import {
     Button,
     Descriptions,
     Form,
+    Grid,
     InputNumber,
     message,
     Modal,
@@ -35,6 +36,7 @@ import { normalizeOrderEditPolicy } from "../common/orderEditPolicy";
 import { isBoxOriginalNumberEditable, isCargoOutboundOrLater } from "../common/cargoStatus";
 import OrderHistoryDrawer from "../components/OrderHistoryDrawer";
 import OrderReceiptButton from "../components/OrderReceiptButton";
+import OrderSupplierCosts from "../components/OrderSupplierCosts";
 import { buildCustomsCodeOptions } from "../common/customsCodeLookup";
 import FeatureTour from "../components/FeatureTour";
 import { COST_QUOTE_RECEIPT_TOUR, getCostQuoteReceiptChapter } from "../common/featureTourConfig";
@@ -163,7 +165,7 @@ const EditableCell = (props) => {
                             />
                         ) : (
                             <GoodInput onEnter={() => onEnter(dataIndex)} onBlur={onBlur}
-                                defaultValue={record[dataIndex]} />
+                                defaultValue={record[dataIndex]} style={{ minWidth: 240 }} />
                         )}
                     </Form.Item>
                     {generateButton}
@@ -185,6 +187,7 @@ export default function OrderDetail() {
     // const _orderProperty = [...orderProperty];
     const { order_id } = useParams()
     const navigate = useNavigate();
+    const screens = Grid.useBreakpoint();
     const { userId: tourUserId, roles: sessionRoles } = getCurrentTourUser();
     const canViewQuotes = hasPermission(sessionRoles, ['admin', 'store_manager', 'salesperson', 'finance']);
     const initialTourFlow = readFeatureTourFlow(tourUserId);
@@ -900,7 +903,7 @@ export default function OrderDetail() {
             key: 'transfer_id',
             dataIndex: 'transfer_id',
             ellipsis: false,
-            fixed: 'left',
+            fixed: screens.xl ? 'left' : undefined,
             editable: true,
             width: 270,
             render: (text) => <CargoText value={text} />
@@ -909,7 +912,7 @@ export default function OrderDetail() {
             key: 'waybill_id',
             dataIndex: 'waybill_id',
             ellipsis: { showTitle: false },
-            fixed: 'left',
+            fixed: screens.xl ? 'left' : undefined,
             editable: true,
             width: 200,
             render: (text) => <CargoText value={text} ellipsis />
@@ -927,28 +930,31 @@ export default function OrderDetail() {
                     return <CargoText value={text} />;
                 }
                 return (
-                    <Tooltip title={text} styles={{ body: fieldTooltipStyle }}>
-                        <Button
-                            type="link"
-                            style={{
-                                padding: 0,
-                                height: 'auto',
-                                width: '100%',
-                                maxWidth: '100%',
-                                whiteSpace: 'normal',
-                                overflowWrap: 'anywhere',
-                                wordBreak: 'break-all',
-                                textAlign: 'left',
-                                lineHeight: 1.5,
-                            }}
-                            onClick={(event) => {
-                                event.stopPropagation();
-                                navigate(`/packing-lists/${encodeURIComponent(record.packing_list_uid)}`);
-                            }}
-                        >
-                            {text}
-                        </Button>
-                    </Tooltip>
+                    <Typography.Text className={styles.cargoText} copyable={{ text, tooltips: ['复制唛头', '已复制'] }}>
+                        <Tooltip title={text} styles={{ body: fieldTooltipStyle }}>
+                            <Button
+                                type="link"
+                                style={{
+                                    padding: 0,
+                                    height: 'auto',
+                                    width: '100%',
+                                    minWidth: 0,
+                                    maxWidth: '100%',
+                                    whiteSpace: 'normal',
+                                    overflowWrap: 'anywhere',
+                                    wordBreak: 'break-all',
+                                    textAlign: 'left',
+                                    lineHeight: 1.5,
+                                }}
+                                onClick={(event) => {
+                                    event.stopPropagation();
+                                    navigate(`/packing-lists/${encodeURIComponent(record.packing_list_uid)}`);
+                                }}
+                            >
+                                {text}
+                            </Button>
+                        </Tooltip>
+                    </Typography.Text>
                 );
             }
         },
@@ -976,7 +982,7 @@ export default function OrderDetail() {
             dataIndex: 'real_en_name',
             ellipsis: false,
             editable: true,
-            width: 150,
+            width: 320,
             render: (text) => <CargoText value={text} />
         },
         {
@@ -1080,7 +1086,7 @@ export default function OrderDetail() {
             title: '操作',
             key: 'x',
             dataIndex: '',
-            fixed: 'right',
+            fixed: screens.xl ? 'right' : undefined,
             align: 'center',
             width: 230,
             render(_, record) {
@@ -1126,6 +1132,7 @@ export default function OrderDetail() {
             }
         }
     ];
+    const cargoTableWidth = columns.reduce((width, column) => width + column.width, 48);
     const mergedColumns = columns.map((col) => {
         if (!col.editable) {
             return col;
@@ -1717,6 +1724,10 @@ export default function OrderDetail() {
                     </>
                 )}
             </Descriptions>
+            {String(descriptionData.uid || '') === String(order_id)
+                && hasPermission(userRoles, ['admin', 'clerk', 'finance']) && (
+                <OrderSupplierCosts orderUid={order_id} refreshKey={historyRefreshKey} />
+            )}
             <Typography.Title level={4} style={{ marginBottom: '2rem' }}>包裹详情/Cargo Detail</Typography.Title>
             <Typography.Title level={5}>添加包装箱</Typography.Title>
             <Space size='small' style={{ marginBottom: '2rem' }} align={'center'}>
@@ -1778,7 +1789,7 @@ export default function OrderDetail() {
                         }, selectedRowKeys: selectedKeys
                     }}
 
-                    scroll={{ y: 250 }} />
+                    scroll={{ x: cargoTableWidth, y: 250 }} />
             </Form>
             <OrderHistoryDrawer
                 open={historyOpen}

@@ -30,3 +30,17 @@ test('only accepts a nonempty PDF response for the saved version', async () => {
     global.fetch.mockResolvedValue({ ok: true, headers: { get: () => 'application/pdf' }, blob: async () => new Blob([]) });
     await expect(fetchShippingConfirmationPdf('draft-1', 4)).rejects.toThrow('出货确认单 PDF 为空');
 });
+
+test.each([[['box-2']], [[]], [null], ['box-1']])('preserves the explicit PDF cargo selection %p for server validation', async cargoUids => {
+    const pdf = new Blob(['%PDF-1.4'], { type: 'application/pdf' });
+    global.fetch.mockResolvedValue({ ok: true, headers: { get: () => 'application/pdf' }, blob: async () => pdf });
+    await expect(fetchShippingConfirmationPdf('draft-1', 5, cargoUids)).resolves.toBe(pdf);
+    expect(JSON.parse(global.fetch.mock.calls[0][1].body)).toEqual({ expected_version: 5, cargo_uids: cargoUids });
+});
+
+test.each([[400, []], [403, ['box-2']], [404, ['box-2']], [409, ['box-2']]])('selected PDF error %s preserves scope without a second unrestricted request', async (status, cargoUids) => {
+    global.fetch.mockResolvedValue({ ok: false, status, headers: { get: () => 'application/json' }, json: async () => ({ code: status, msg: '所选范围不可打印' }) });
+    await expect(fetchShippingConfirmationPdf('draft-1', 5, cargoUids)).rejects.toMatchObject({ status, message: '所选范围不可打印' });
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(global.fetch.mock.calls[0][1].body)).toEqual({ expected_version: 5, cargo_uids: cargoUids });
+});

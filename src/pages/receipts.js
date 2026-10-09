@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Alert, Button, Descriptions, Drawer, Input, Select, Space, Spin, Table, Tabs, Typography, message } from 'antd';
 import { HistoryOutlined, PrinterOutlined, ReloadOutlined } from '@ant-design/icons';
-import { useLocation } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { endpoint } from '../config';
 import getSafeHeader from '../common/safeHeader';
 import { PAYMENT_METHODS, printReceipt } from '../common/receiptApi';
@@ -98,13 +98,29 @@ export function LegacyReceiptHistory() {
 
 export default function Receipts() {
     const location = useLocation();
+    const navigate = useNavigate();
+    const searchParams = new URLSearchParams(location.search);
+    const paymentParam = searchParams.get('payment_id');
+    const parsedPaymentId = Number(paymentParam);
+    const paymentId = /^\d+$/.test(paymentParam || '') && Number.isSafeInteger(parsedPaymentId) && parsedPaymentId > 0 ? parsedPaymentId : null;
+    const hasPaymentLink = searchParams.has('payment_id');
     const { userId } = getCurrentTourUser();
     const roles = getUserRoles(decodeJwtPayload(window.localStorage.getItem('jwt')) || {});
     const [scope, setScope] = useState('mine');
     const [tab, setTab] = useState('entry');
     const canViewAll = roles.some(role => ['admin', 'finance'].includes(role));
     useEffect(() => { if (readFeatureTourFlow(userId)?.campaignId === COST_QUOTE_RECEIPT_TOUR.id) clearFeatureTourFlow(userId); }, [userId]);
-    useEffect(() => { if (location.state?.paymentContext) setTab('entry'); }, [location.key, location.state]);
+    useEffect(() => {
+        if (paymentId || (!hasPaymentLink && location.state?.paymentContext)) setTab('entry');
+    }, [paymentId, hasPaymentLink, location.key, location.state]);
+    const closePaymentLink = () => {
+        const params = new URLSearchParams(location.search);
+        params.delete('payment_id');
+        const search = params.toString();
+        navigate({ pathname: location.pathname, search: search ? `?${search}` : '', hash: location.hash }, {
+            replace: true, state: location.state,
+        });
+    };
     return <div className={styles.page}>
         <div className={styles.header}><Typography.Title level={4} className={styles.title}>收付款</Typography.Title></div>
         <Tabs activeKey={tab} onChange={setTab} items={[
@@ -113,7 +129,8 @@ export default function Receipts() {
                     {canViewAll && <Select aria-label="登记人范围" value={scope} onChange={setScope} options={[{ value: 'mine', label: '我登记的收付款' }, { value: 'all', label: '全部收付款' }]} />}
                 </Space>
                 <FinancePayments business initialFilter={scope === 'mine' && userId ? { created_by_id: userId } : {}} filterRevision={scope === 'mine' ? 1 : 2}
-                    initialContext={location.state?.paymentContext} navigationToken={location.key} />
+                    initialContext={hasPaymentLink ? undefined : location.state?.paymentContext} navigationToken={location.key}
+                    initialPaymentId={paymentId} onDetailClose={closePaymentLink} />
             </> },
             { key: 'list', label: '历史收款（只读）', children: <LegacyReceiptHistory /> },
         ]} />
