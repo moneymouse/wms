@@ -68,6 +68,7 @@ def _preview(session, order_uid, *, locked=False):
     document_ids = [row.id for row in documents]
     unknown = session.query(FinanceDocument.id).outerjoin(FinanceDocumentLine).filter(
         or_(FinanceDocumentLine.order_uid == order_uid, FinanceDocument.original_document_id.in_(document_ids or [-1])),
+        FinanceDocument.document_type.in_(["customer_invoice", "customer_credit"]),
         FinanceDocument.status == "posted", ~FinanceDocument.id.in_(document_ids or [-1])).first()
     if unknown:
         blockers.append("订单已有其他已入账账单，请先核准归属，不能重复生成应收")

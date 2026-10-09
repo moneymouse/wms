@@ -28,7 +28,7 @@ Content-Disposition: attachment; filename=shipping-confirmation.pdf
 Cache-Control: private, no-store
 ```
 
-PDF 标题仅为“出货单”。使用 A4 纵向纸张，一行并排两张订单，沿用现有蓝色抬头、灰色表头和内嵌中文字体。两列裁切边界等高，单据间保留 6 mm 间隔，中央竖虚线与行间横虚线交叉形成十字裁切线，不画外围框。普通订单保持完整；只有超过整页可打印高度的订单才拆成续单，重复客户、代理、订单编号和列标题。
+PDF 标题仅为“出货单”。v1.32 起使用 A4 纵向纸张、一行一单的整页宽度版式，正文 12 号、标题 18 号，沿用现有蓝色抬头、灰色表头和内嵌中文字体。单据间保留 6 mm 间隔和横向虚线裁切线，不画外围框。普通订单保持完整；只有超过整页可打印高度的订单才拆成续单，重复客户、代理、订单编号和列标题。详见 [API v1.32](API-v1.32-shipping-layout-and-number-format.md)。
 
 订单级字段为客户名和代理名；每箱字段为唛头（`CargoTable.tag`）及原单号（`CargoTable.transfer_id`）。小号订单编号便于裁切后识别。
 

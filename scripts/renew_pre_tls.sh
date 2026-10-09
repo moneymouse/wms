@@ -66,6 +66,20 @@ fi
 if [[ -f "$reload_marker" ]]; then
     "${compose[@]}" exec -T nginx nginx -t
     "${compose[@]}" exec -T nginx nginx -s reload
+
+    # The existing renewal job also refreshes production once it uses this
+    # certificate. Leave HTTP-only production unchanged before its TLS rollout.
+    certificate_source="$(cd -- "$PRE_TLS_DIR/letsencrypt" && pwd -P)"
+    production_container="$(docker ps -a --filter 'name=^/wms_nginx$' --format '{{.Names}}')"
+    if [[ -n "$production_container" ]]; then
+        production_certificate_source="$(docker inspect --format \
+            '{{range .Mounts}}{{if eq .Destination "/etc/letsencrypt"}}{{.Source}}{{end}}{{end}}' \
+            wms_nginx)"
+        if [[ "$production_certificate_source" -ef "$certificate_source" ]]; then
+            docker exec wms_nginx nginx -t
+            docker exec wms_nginx nginx -s reload
+        fi
+    fi
     rm -- "$reload_marker"
-    echo "$(date -Iseconds): pre-production TLS renewal hook completed; Nginx reloaded."
+    echo "$(date -Iseconds): TLS renewal hook completed; Nginx reloaded."
 fi

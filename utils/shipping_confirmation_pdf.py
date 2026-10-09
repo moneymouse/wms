@@ -1,4 +1,4 @@
-"""Compact, cuttable shipping confirmations with two orders per A4 row."""
+"""Readable, cuttable shipping confirmations with one order per A4 row."""
 
 from dataclasses import dataclass
 from io import BytesIO
@@ -20,7 +20,7 @@ PDF_FONT = register_pdf_font()
 PAGE_MARGIN = 12 * mm
 CUT_GAP = 6 * mm
 CARD_PADDING = 2.5 * mm
-CARD_WIDTH = (A4[0] - 2 * PAGE_MARGIN - CUT_GAP) / 2
+CARD_WIDTH = A4[0] - 2 * PAGE_MARGIN
 PAGE_CONTENT_HEIGHT = A4[1] - 2 * PAGE_MARGIN
 BLUE = colors.HexColor("#1f497d")
 CUT_COLOR = colors.HexColor("#94a3b8")
@@ -34,24 +34,24 @@ def _styles():
     base = ParagraphStyle(
         "ShippingConfirmationBase",
         fontName=PDF_FONT,
-        fontSize=9,
-        leading=12,
+        fontSize=12,
+        leading=16,
         textColor=colors.HexColor("#333333"),
         wordWrap="CJK",
     )
     return {
         "base": base,
         "title": ParagraphStyle(
-            "ShippingConfirmationTitle", parent=base, fontSize=12,
-            leading=16, alignment=TA_CENTER, textColor=BLUE,
+            "ShippingConfirmationTitle", parent=base, fontSize=18,
+            leading=23, alignment=TA_CENTER, textColor=BLUE,
         ),
         "identity": ParagraphStyle(
-            "ShippingConfirmationIdentity", parent=base, fontSize=7,
-            leading=10, textColor=colors.HexColor("#64748b"),
+            "ShippingConfirmationIdentity", parent=base, fontSize=10,
+            leading=14, textColor=colors.HexColor("#64748b"),
         ),
         "heading": ParagraphStyle(
-            "ShippingConfirmationHeading", parent=base, fontSize=8,
-            leading=11, alignment=TA_CENTER, textColor=BLUE,
+            "ShippingConfirmationHeading", parent=base, fontSize=11,
+            leading=15, alignment=TA_CENTER, textColor=BLUE,
         ),
     }
 
@@ -69,7 +69,7 @@ def _header(order, styles, continuation=""):
         metadata_rows.append([Paragraph("备注", styles["base"]), Paragraph(_text(order["remarks"]), styles["base"])])
     metadata = Table(
         metadata_rows,
-        colWidths=[19 * mm, width - 19 * mm],
+        colWidths=[24 * mm, width - 24 * mm],
     )
     metadata.setStyle(TableStyle([
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
@@ -87,6 +87,15 @@ def _header(order, styles, continuation=""):
         metadata,
         Spacer(1, 1.5 * mm),
     ]
+
+
+def _mark_group(box):
+    list_number = str(box.get("list_number") or "").strip()
+    if list_number:
+        return list_number
+    tag = str(box.get("tag") or "").strip()
+    mark, separator, box_number = tag.rpartition("_")
+    return mark if mark and separator and box_number.isdecimal() else tag
 
 
 def _box_table(boxes, styles):
@@ -108,9 +117,14 @@ def _box_table(boxes, styles):
         ("LINEABOVE", (0, 0), (-1, 0), 0.8, BLUE),
         ("LEFTPADDING", (0, 0), (-1, -1), 4),
         ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-        ("TOPPADDING", (0, 0), (-1, -1), 3),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
     ]))
+    for row, (box, next_box) in enumerate(zip(boxes, boxes[1:]), start=1):
+        if _mark_group(box) != _mark_group(next_box):
+            table.setStyle(TableStyle([
+                ("LINEBELOW", (0, row), (-1, row), 1.2, BLUE),
+            ]))
     return table
 
 
@@ -172,18 +186,13 @@ def _draw_card(canvas, card, x, top, row_height):
 
 
 def _draw_cut_lines(canvas, row_bottoms):
-    """Place dashed crosses in the gaps, with no surrounding card frames."""
+    """Separate full-width shipping notes with horizontal dashed cut lines."""
     if not row_bottoms:
         return
     canvas.saveState()
     canvas.setStrokeColor(CUT_COLOR)
     canvas.setLineWidth(0.4)
     canvas.setDash(2, 3)
-    center = A4[0] / 2
-    canvas.line(
-        center, A4[1] - PAGE_MARGIN + CUT_GAP / 2,
-        center, row_bottoms[-1] - CUT_GAP,
-    )
     for bottom in row_bottoms:
         y = bottom - CUT_GAP / 2
         canvas.line(PAGE_MARGIN - CUT_GAP / 2, y, A4[0] - PAGE_MARGIN + CUT_GAP / 2, y)
@@ -200,16 +209,14 @@ def build_shipping_confirmation_pdf(details: list[dict]) -> BytesIO:
     canvas.setTitle("出货单")
     top = A4[1] - PAGE_MARGIN
     row_bottoms = []
-    for index in range(0, len(cards), 2):
-        row = cards[index:index + 2]
-        row_height = max(card.height for card in row)
+    for card in cards:
+        row_height = card.height
         if top - row_height < PAGE_MARGIN - 0.01:
             _draw_cut_lines(canvas, row_bottoms)
             canvas.showPage()
             top = A4[1] - PAGE_MARGIN
             row_bottoms = []
-        for column, card in enumerate(row):
-            _draw_card(canvas, card, PAGE_MARGIN + column * (CARD_WIDTH + CUT_GAP), top, row_height)
+        _draw_card(canvas, card, PAGE_MARGIN, top, row_height)
         row_bottoms.append(top - row_height)
         top -= row_height + CUT_GAP
     _draw_cut_lines(canvas, row_bottoms)

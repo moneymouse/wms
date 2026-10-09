@@ -24,6 +24,8 @@ from controllers.finance_legacy_controller import finance_legacy_bp
 from controllers.finance_accounting_controller import finance_accounting_bp
 from controllers.finance_revenue_controller import finance_revenue_bp
 from controllers.supplier_reconciliation_controller import supplier_reconciliation_bp
+from controllers.storage_management_controller import storage_management_bp
+from controllers.message_controller import message_bp
 from services.auth_service import init_admin_user
 from controllers.oauth_controller import init_oauth
 
@@ -68,6 +70,8 @@ app.register_blueprint(finance_legacy_bp)
 app.register_blueprint(finance_accounting_bp)
 app.register_blueprint(finance_revenue_bp)
 app.register_blueprint(supplier_reconciliation_bp)
+app.register_blueprint(storage_management_bp)
+app.register_blueprint(message_bp)
 init_oauth(app)
 
 

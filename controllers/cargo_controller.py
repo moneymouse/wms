@@ -28,7 +28,8 @@ from services.number_generation_service import (
 )
 from services.order_edit_policy import OrderEditConflictError
 from services.outbound_service import (
-    confirm_outbound, parse_confirm_outbound, update_cargo_details, undo_outbound,
+    WaybillImportResult, confirm_outbound, parse_confirm_outbound,
+    update_cargo_details, undo_outbound,
 )
 
 cargo_bp = Blueprint("cargo", __name__, url_prefix="/api")
@@ -495,8 +496,9 @@ def generate_excel_route(mode="jifei"):
 @log(desc="Upload waybill list.")
 def upload_order(mode):
     if mode != "transfer_table":
-        return make_response(404)
+        return make_response("", 404)
 
+    import_result = WaybillImportResult()
     register_list = []
     transfer_map = {}
     try:
@@ -514,10 +516,11 @@ def upload_order(mode):
         supplement = parse_confirm_outbound(request.form.get("confirm_outbound", "true"))
         if supplement and not set(get_payload_roles(get_token_payload() or {})).intersection(CARGO_SHIP_ROLES):
             return _waybill_upload_response(403, "Permission denied"), 403
-        register_list, track_err = apply_waybill_table(
+        import_result, track_err = apply_waybill_table(
             cargo_model, transfer_map, confirm_outbound=supplement,
-            operator=get_token_payload() or {},
+            operator=get_token_payload() or {}, return_details=True,
         )
+        register_list = import_result.registered
     except PermissionError as e:
         return _waybill_upload_response(403, str(e), cargo_list=transfer_map), 403
     except OrderEditConflictError as e:
@@ -543,35 +546,29 @@ def upload_order(mode):
             500,
         )
 
+    response = {
+        "code": 200,
+        "msg": "success",
+        "cargo_count": len(import_result.successful),
+        "cargo_list": transfer_map,
+        "success_list": [(item["uid"], item["waybill_id"]) for item in import_result.successful],
+        "success_items": import_result.successful,
+        "failed_list": import_result.failed,
+        "tracking_error": None,
+    }
+    if import_result.failed:
+        response["code"] = 207 if import_result.successful else 400
+        response["msg"] = (
+            "部分订单上传失败，其他订单已保存" if import_result.successful else "所有记录均未上传成功"
+        )
+
     if track_err:
         e_body = track_err.args[0] if track_err.args else {}
         if isinstance(e_body, dict) and e_body.get("code") == 502:
-            return jsonify(
-                {
-                    "code": 502,
-                    "msg": "17track rejected",
-                    "rejected": e_body["data"],
-                    "cargo_count": len(register_list),
-                    "success_list": register_list,
-                    "cargo_list": transfer_map,
-                }
-            )
-        return jsonify(
-            {
-                "code": 500,
-                "msg": "Register Error",
-                "cargo_count": len(register_list),
-                "success_list": register_list,
-                "cargo_list": transfer_map,
-            }
-        )
+            response.update({"code": 502, "msg": "17track rejected", "rejected": e_body.get("data", [])})
+        else:
+            response.update({"code": 500, "msg": "Register Error"})
+        response["tracking_error"] = {"code": response["code"], "reason": response["msg"]}
+        return jsonify(response)
 
-    return jsonify(
-        {
-            "code": 200,
-            "msg": "success",
-            "cargo_count": len(register_list),
-            "cargo_list": transfer_map,
-            "success_list": register_list,
-        }
-    )
+    return jsonify(response), 400 if response["code"] == 400 else 200

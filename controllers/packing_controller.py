@@ -245,6 +245,10 @@ def create_packing_list():
     creator_id = payload.get("user_id")
     data = request.get_json() or {}
 
+    from services.packing_photo_cleanup import DELETE_PHOTOS_PREFIX
+
+    if str(data.get("status") or "").startswith(DELETE_PHOTOS_PREFIX):
+        return jsonify({"code": 400, "msg": "status 不能使用内部删除状态"}), 400
     customer_id = data.get("customer_id")
     mark = (data.get("list_number") or data.get("mark") or "").strip().upper()
     if not mark:
@@ -391,10 +395,14 @@ def archive_packing_list(uid):
 @log(desc="Delete packing list.")
 def delete_packing_list(uid):
     """删除装箱单"""
+    from services.packing_photo_cleanup import PackingPhotoCleanupError
+
     try:
         success = packing_list_service.delete_packing_list(uid)
     except OrderEditConflictError as e:
         return jsonify({"code": 409, "msg": str(e)}), 409
+    except PackingPhotoCleanupError as e:
+        return jsonify({"code": 500, "msg": str(e), "data": {"deleted": True, "photo_cleanup_pending": True}}), 500
     if not success:
         return jsonify({"code": 404, "msg": "Packing list not found"}), 404
     return jsonify({"code": 200, "msg": "success"})
@@ -406,6 +414,11 @@ def delete_packing_list(uid):
 @log(desc="Complete packing list.")
 def complete_packing_list(uid):
     """完成装箱单"""
+    from services.packing_photo_cleanup import DELETE_PHOTOS_PREFIX
+
+    data = request.get_json(silent=True)
+    if isinstance(data, dict) and str(data.get("status") or "").startswith(DELETE_PHOTOS_PREFIX):
+        return jsonify({"code": 400, "msg": "status 不能使用内部删除状态"}), 400
     success = packing_list_service.complete_packing_list(uid)
     if not success:
         return jsonify({"code": 404, "msg": "Packing list not found"}), 404

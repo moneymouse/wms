@@ -2,7 +2,7 @@
 
 import pytest
 from data.packing.PackingList import PackingListTable
-from services.outbound_service import update_cargo_details
+from services.outbound_service import WaybillImportResult, update_cargo_details
 from unittest.mock import Mock, patch, MagicMock
 from io import BytesIO
 import pandas as pd
@@ -591,6 +591,62 @@ class TestCargoService(BaseServiceTest, FileTestMixin):
                 session.query(CargoTable).filter_by(uid="cargo1").one().waybill_id
                 == "WB001"
             )
+
+    def test_apply_waybill_table_returns_details_and_registers_only_changes(self):
+        """详细协议保留全部成功/失败项，追踪只登记实际变更。"""
+        from services import cargo_service
+
+        pairs = [("cargo1", "WB001")]
+        result = WaybillImportResult(
+            registered=pairs,
+            successful=[{"uid": "cargo1", "waybill_id": "WB001"},
+                        {"uid": "cargo2", "waybill_id": "WB002"}],
+            failed=[{"uid": "cargo3", "code": 400, "reason": "归属不一致"}],
+        )
+        transfer_map = {"TR001": "WB001", "TR002": "WB002", "TR003": "WB003"}
+        operator = {"user_id": 1, "role": "clerk"}
+        with patch("services.outbound_service.update_waybill_table", return_value=result) as mock_update, patch(
+            "services.cargo_service.registerTrack"
+        ) as mock_register:
+            returned, error = apply_waybill_table(
+                cargo_model, transfer_map, confirm_outbound=False,
+                operator=operator, return_details=True,
+            )
+        assert returned is result
+        assert error is None
+        mock_register.assert_called_once_with(pairs)
+        mock_update.assert_called_once_with(
+            cargo_service.SessionFactory, transfer_map, confirm_outbound=False,
+            operator=operator, return_details=True,
+        )
+
+    def test_apply_waybill_table_unchanged_success_skips_tracking(self):
+        result = WaybillImportResult(successful=[{"uid": "cargo1", "waybill_id": "WB001"}])
+        with patch("services.outbound_service.update_waybill_table", return_value=result), patch(
+            "services.cargo_service.registerTrack"
+        ) as mock_register:
+            returned, error = apply_waybill_table(
+                cargo_model, {"TR001": "WB001"}, return_details=True,
+            )
+        assert returned is result
+        assert error is None
+        mock_register.assert_not_called()
+
+    def test_apply_waybill_table_tracking_error_keeps_details(self):
+        result = WaybillImportResult(
+            registered=[("cargo1", "WB001")],
+            successful=[{"uid": "cargo1", "waybill_id": "WB001"}],
+            failed=[{"uid": "cargo2", "code": 400, "reason": "归属不一致"}],
+        )
+        tracking_error = RuntimeError("API Error")
+        with patch("services.outbound_service.update_waybill_table", return_value=result), patch(
+            "services.cargo_service.registerTrack", side_effect=tracking_error
+        ):
+            returned, error = apply_waybill_table(
+                cargo_model, {"TR001": "WB001"}, return_details=True,
+            )
+        assert returned is result
+        assert error is tracking_error
 
     def test_apply_waybill_table_empty_map(self):
         """测试空转运单映射"""

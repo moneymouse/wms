@@ -3,6 +3,7 @@
 Run with pytest --confcutdir=tests/intake tests/intake.
 """
 import importlib.util
+import hashlib
 import logging
 import os
 import subprocess
@@ -89,6 +90,15 @@ def photo():
     Image.new("RGB", (20, 20), "white").save(output, format="PNG")
     output.seek(0)
     return output
+
+
+def assert_stored_png(photo_row):
+    photo_path = Path(os.environ["PAPER_PHOTO_ROOT"]) / photo_row.storage_path
+    data = photo_path.read_bytes()
+    assert data.startswith(b"\x89PNG")
+    assert photo_row.size_bytes == len(data)
+    assert photo_row.sha256 == hashlib.sha256(data).hexdigest()
+    return photo_path
 
 
 def test_formal_app_exposes_intake_routes_with_existing_jwt_authentication(formal_app):
@@ -189,26 +199,35 @@ def test_formal_hard_delete_keeps_paper_upload_review_and_source_creator_identit
         assert session.execute(text("PRAGMA foreign_keys")).scalar() == 1
         assert session.query(UserTable).filter_by(id=user_id).one().status == "approved"
         assert session.query(IntakeTable).one().uid == record["uid"]
-        assert session.query(IntakePhotoTable).one().data.startswith(b"\x89PNG")
+        assert_stored_png(session.query(IntakePhotoTable).one())
         assert session.query(PackingListTable).count() == int(confirmed)
         assert session.query(CargoTable).count() == int(confirmed)
         assert session.query(BoxWorkerTable).count() == int(confirmed)
 
 
-def test_formal_source_packing_list_hard_delete_returns_conflict_and_archive_preserves_paper(formal_app):
+def test_formal_source_packing_list_archive_preserves_paper_and_delete_cleans_photos(formal_app):
     client, factory, _, _, _ = formal_app
     record = create_paper_record(client, factory, confirmed=True)
     uid = record["packing_list_uid"]
     admin = login(client, 22)
-    response = client.delete(f"/api/packing-list/{uid}", headers=admin)
-    assert response.status_code == 409 and "归档" in response.json["msg"]
     assert client.post(f"/api/packing-list/{uid}/archive", headers=admin).status_code == 200
     with factory() as session:
         assert session.query(PackingListTable).filter_by(uid=uid).one().archive is True
         assert session.query(IntakeTable).one().packing_list_uid == uid
-        assert session.query(IntakePhotoTable).one().data.startswith(b"\x89PNG")
+        source_photo_path = assert_stored_png(session.query(IntakePhotoTable).one())
         assert session.query(CargoTable).one().packing_list_uid == uid
         assert session.query(BoxWorkerTable).one().worker_id == 17
+    response = client.delete(f"/api/packing-list/{uid}", headers=admin)
+    assert response.status_code == 200, response.json
+    with factory() as session:
+        assert session.query(PackingListTable).count() == 0
+        assert session.query(IntakeTable).one().status == "deleted"
+        assert session.query(IntakeTable).one().packing_list_uid is None
+        assert session.query(IntakePhotoTable).count() == 0
+        assert session.query(CargoTable).one().packing_list_uid is None
+        assert session.query(BoxWorkerTable).one().worker_id == 17
+    assert client.get(record["photos"][0]["url"], headers=login(client, 17)).status_code == 404
+    assert not source_photo_path.exists()
 
 
 def test_formal_hard_delete_remains_available_without_paper_references(formal_app):

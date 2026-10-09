@@ -1,6 +1,6 @@
 """Paper intake stays outside inventory until its uploader checks and completes it."""
-from sqlalchemy import Column, ForeignKey, Integer, LargeBinary, String, Text
-from sqlalchemy.orm import deferred, relationship
+from sqlalchemy import BigInteger, Column, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy.orm import relationship
 
 from data.database import Base
 
@@ -34,10 +34,23 @@ class IntakeTable(Base):
 
 class IntakePhotoTable(Base):
     __tablename__ = "paper_intake_photos"
+    __table_args__ = (UniqueConstraint("storage_path", name="uq_paper_intake_photo_storage_path"),)
 
     uid = Column(String(32), primary_key=True)
     intake_uid = Column(String(32), ForeignKey("paper_intakes.uid"), nullable=False, index=True)
     position = Column(Integer, nullable=False)
     filename = Column(String(256), nullable=False)
     mime_type = Column(String(64), nullable=False)
-    data = deferred(Column(LargeBinary(length=16777216), nullable=False))
+    storage_path = Column(String(512), nullable=False)
+    size_bytes = Column(BigInteger, nullable=False)
+    sha256 = Column(String(64), nullable=False)
+
+
+class PaperPhotoCleanupTable(Base):
+    """Durable cleanup requests survive failures after photo metadata is removed."""
+    __tablename__ = "paper_photo_cleanup"
+
+    storage_path = Column(String(512), primary_key=True)
+    size_bytes = Column(BigInteger, nullable=False)
+    packing_list_uid = Column(String(32), nullable=True, index=True)
+    created_at = Column(String(32), nullable=False)

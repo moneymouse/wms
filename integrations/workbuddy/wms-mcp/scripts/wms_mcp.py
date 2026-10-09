@@ -26,9 +26,9 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
-DEFAULT_SERVER = "https://8.166.137.88:8081/mcp"
-READ_SCOPES = "mcp orders:list orders:read"
-ALL_SCOPES = "mcp orders:create orders:list orders:read packing_lists:create"
+DEFAULT_SERVER = "https://8.166.137.88/mcp"
+READ_SCOPES = "mcp orders:list orders:read tracking:read"
+ALL_SCOPES = "mcp orders:create orders:list orders:read tracking:read packing_lists:create"
 PROTOCOL_VERSION = "2025-11-25"
 MAX_RESPONSE = 8 * 1024 * 1024
 

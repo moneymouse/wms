@@ -9,6 +9,7 @@ from data.customer.Customer import CustomerTable
 from data.database import SessionFactory
 from data.packing import box_model
 from data.packing.PackingList import PackingListTable
+from data.user.Role import RoleTable
 from data.user.User import UserTable
 
 
@@ -21,11 +22,14 @@ class TestPackingListModel:
         session = SessionFactory()
         try:
             customer = CustomerTable(name="客户A")
+            worker_role = session.query(RoleTable).filter_by(name="worker").first()
+            if worker_role is None:
+                worker_role = RoleTable(name="worker", label="工人")
             operator = UserTable(
                 phone="13800000001",
                 name="操作员A",
                 password="hashed-password",
-                role="worker",
+                roles=[worker_role],
                 status="approved",
             )
             session.add_all([customer, operator])

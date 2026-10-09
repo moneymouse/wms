@@ -5,3 +5,5 @@ frontend/
 log/
 env.toml
 .DS_Store
+uploads/
+uploads_*/

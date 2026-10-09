@@ -39,12 +39,13 @@ from data.oauth import (
 from data.user.User import STATUS_APPROVED, UserTable
 
 
-SCOPES = ("mcp", "orders:create", "orders:list", "orders:read", "packing_lists:create")
+SCOPES = ("mcp", "orders:create", "orders:list", "orders:read", "tracking:read", "packing_lists:create")
 SCOPE_LABELS = {
     "mcp": "连接 MCP 并查看工具列表",
     "orders:create": "创建订单",
     "orders:list": "查询订单列表",
     "orders:read": "查询订单详情",
+    "tracking:read": "查询订单下包裹及物流状态",
     "packing_lists:create": "创建装箱单",
 }
 CODE_SECONDS = 300
@@ -219,9 +220,15 @@ def normalize_client_metadata(metadata, *, cimd=False):
     scope = metadata.get("scope", " ".join(SCOPES))
     if not isinstance(scope, str) or not set(scope.split()).issubset(SCOPES):
         raise InvalidClientMetadataError("Unsupported scopes.")
-    return {"client_name": name.strip(), "redirect_uris": list(dict.fromkeys(redirects)),
-            "token_endpoint_auth_method": method, "grant_types": grant_types,
-            "response_types": response_types, "scope": " ".join(dict.fromkeys(scope.split()))}
+    normalized = {"client_name": name.strip(), "redirect_uris": list(dict.fromkeys(redirects)),
+                  "token_endpoint_auth_method": method, "grant_types": grant_types,
+                  "response_types": response_types, "scope": " ".join(dict.fromkeys(scope.split()))}
+    if "application_type" in metadata:
+        application_type = metadata["application_type"]
+        if not isinstance(application_type, str) or application_type not in {"native", "web"}:
+            raise InvalidClientMetadataError("Unsupported application_type.")
+        normalized["application_type"] = application_type
+    return normalized
 
 
 def fetch_client_metadata(client_id):

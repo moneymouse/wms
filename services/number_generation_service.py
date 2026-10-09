@@ -133,13 +133,11 @@ def _lock_order(session, order_uid):
     return order
 
 
-def _unused_number(session, *, original=False):
+def _unused_number(session):
     for _ in range(MAX_GENERATION_ATTEMPTS):
-        # Nine digits keeps these internal numbers separate from manually
-        # supplied ten-digit carrier numbers. Preserve leading zeroes inside.
-        candidate = f"8{secrets.randbelow(100_000_000):08d}"
-        if original:
-            candidate = f"XD{candidate}L"
+        # Both generated fields use D/L around the existing nine-digit body.
+        # Preserve leading zeroes and share one collision pool across fields.
+        candidate = f"D8{secrets.randbelow(100_000_000):08d}L"
         if session.query(OrderTable.uid).filter_by(order_id=candidate).first():
             continue
         if session.query(CargoTable.uid).filter_by(transfer_id=candidate).first():
@@ -150,7 +148,7 @@ def _unused_number(session, *, original=False):
 
 def _save_number(session, order, target, field, operator_payload):
     before = snapshot_order(session, order.uid)
-    number = _unused_number(session, original=field == "transfer_id")
+    number = _unused_number(session)
     setattr(target, field, number)
     target.update_date = time.strftime("%Y-%m-%d %H:%M")
     session.flush()
@@ -243,7 +241,7 @@ def generate_packing_original_numbers(
         before = {order_uid: snapshot_order(session, order_uid) for order_uid in order_uids}
         generated = {}
         for box in boxes:
-            box.transfer_id = _unused_number(session, original=True)
+            box.transfer_id = _unused_number(session)
             box.update_date = time.strftime("%Y-%m-%d %H:%M")
             # This session disables autoflush; each candidate must see earlier
             # numbers in the same batch before checking for collisions.

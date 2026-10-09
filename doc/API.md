@@ -2,7 +2,19 @@
 
 **Base URL:** `http://localhost:5001`
 
-**版本:** 1.30
+**版本:** 1.43
+
+拍照装箱单检查页支持每箱备注及批量修改备注，草稿保存与确认入库保留 `remark`，见 [API v1.43](API-v1.43-intake-box-remarks.md)。
+
+纸单识别加入系统品名库和常见商品参考，检查、草稿与确认入库支持每箱多项品名及独立件数，见 [API v1.42](API-v1.42-intake-goods-recognition.md)。
+
+财务“退回修改”自动通知收据原登记员工，并支持从收件箱直接打开对应收据详情，见 [API v1.41](API-v1.41-finance-return-messages.md)。
+
+站内消息的发送、个人收件箱、未读数量和已读接口见 [API v1.40](API-v1.40-in-app-messages.md)。各业务服务可使用统一发送接口指定员工与处理路径；首期收件箱通过三分钟轮询同步消息。
+
+纸单照片改存持久化文件目录；存储管理展示全部照片来源、磁盘占用和装箱单跳转，可直接预览并删除照片，未达到建议保留期限时提示确认，详见 [API v1.36](API-v1.36-photo-storage-management.md)。
+
+纸单识别与确认复用手动创建的唛头重名规则，自动追加日期和序号，见 [API v1.39](API-v1.39-intake-mark-deduplication.md)。
 
 财务账簿与审计新增接口见 [API v1.20 财务](API-v1.20-finance.md)。原订单接口保持兼容。
 
@@ -12,9 +24,15 @@
 
 订单号与原单号随机生成见 [API v1.25](API-v1.25-auto-numbers.md)，撤销出库后恢复原单号编辑与生成见 [API v1.26](API-v1.26-original-number-editing.md)。
 
-装箱单出货确认单与服务器草稿见 [API v1.27](API-v1.27-packing-shipping-drafts.md)，收据备注箱子和按所属订单核销见 [API v1.28](API-v1.28-receipt-packing-boxes.md)，装箱单批量生成原单号及 `XD8xxxxxxxxL` 格式见 [API v1.29](API-v1.29-packing-original-numbers.md)。
+装箱单出货确认单与服务器草稿见 [API v1.27](API-v1.27-packing-shipping-drafts.md)，收据备注箱子和按所属订单核销见 [API v1.28](API-v1.28-receipt-packing-boxes.md)，装箱单批量生成原单号见 [API v1.29](API-v1.29-packing-original-numbers.md)。随机订单号与原单号统一为 `D8xxxxxxxxL`，出货确认单改为每行一单并增大字号，见 [API v1.32](API-v1.32-shipping-layout-and-number-format.md)。
 
 纸质单改为上传者检查后完成上传，待核对页面移除，出货确认单草稿改为独立页面，见 [API v1.30](API-v1.30-uploader-check-and-shipping-drafts-page.md)。
+
+统一 Excel 供应商对账、异常重核、自动生成应付草稿及订单实际成本见 [API v1.31](API-v1.31-supplier-reconciliation.md)。
+
+原单号未匹配货物时支持精确匹配订单号并按订单总实重对账，订单级上传重量须小于实重且最多少 5 kg，见 [API v1.33](API-v1.33-order-level-supplier-reconciliation.md)。
+
+装箱单上传检查采用每箱独立 `worker_ids`，旧整单人员仅兼容填入尚未配置人员的箱子，见 [API v1.34](API-v1.34-intake-per-box-workers.md)。有上传照片或纸单来源的装箱单允许删除，并清理对应上传照片，仍保留原有权限、出库和成本历史保护，见 [API v1.35](API-v1.35-packing-photo-deletion.md)。
 
 ---
 
@@ -998,7 +1016,7 @@ x-token: <JWT_TOKEN>
 
 ### 3.10 上传转运单
 
-上传转运单文件，批量更新运单号并发货。
+上传转运单文件，按订单分别更新运单号并补登记出库。失败订单仅回滚自己的上传记录，其他订单继续保存。部分成功返回 HTTP 200、`code=207`，响应 `failed_list` 仅列未保存记录及原因；重复相同号码的已保存记录仍计为成功。保存和物流追踪注册的结果分别报告。完整契约见 [API v1.38](API-v1.38-partial-waybill-upload.md)。
 
 - **URL:** `POST /api/order/upload/transfer_table`
 - **认证:** 需要
@@ -1019,7 +1037,10 @@ x-token: <JWT_TOKEN>
   "msg": "success",
   "cargo_count": 10,
   "cargo_list": {},
-  "success_list": []
+  "success_list": [],
+  "success_items": [],
+  "failed_list": [],
+  "tracking_error": null
 }
 ```
 
@@ -1751,6 +1772,6 @@ Docker 部署时通过环境变量配置初始管理员：
 
 ## 按需生成订单号和原单号
 
-`POST /api/orders/<order_uid>/generate-order-number` 与 `POST /api/orders/<order_uid>/cargo/<cargo_uid>/generate-original-number` 允许管理员、店长、业务员和文员在订单详情中为指定目标生成并保存号码。自动号码为首位 `8` 的 9 位数字，跨订单号和原单号查重（含归档），并串行处理并发生成，不修改数据库唯一约束；手动输入沿用原接口且不新增查重限制。请求可传 `{ "expected_value": "页面已保存值" }` 防止覆盖已被他人修改的号码。箱子出库后的标识保护继续生效，生成不会触发出库。完整契约见 [API v1.25](API-v1.25-auto-numbers.md)。
+`POST /api/orders/<order_uid>/generate-order-number` 与 `POST /api/orders/<order_uid>/cargo/<cargo_uid>/generate-original-number` 允许管理员、店长、业务员和文员在订单详情中为指定目标生成并保存号码。随机号码统一为 `D` 开头、`L` 结尾，中间保留首位 `8` 的 9 位数字，例如 `D800012345L`。跨订单号和原单号查重（含归档），并串行处理并发生成，不修改数据库唯一约束；手动输入和已保存号码保持原样。请求可传 `{ "expected_value": "页面已保存值" }` 防止覆盖已被他人修改的号码。箱子出库后的标识保护继续生效，生成不会触发出库。完整契约见 [API v1.25](API-v1.25-auto-numbers.md) 和 [API v1.32](API-v1.32-shipping-layout-and-number-format.md)。
 
-*文档更新时间: 2026-10-06*
+*文档更新时间: 2026-10-07*

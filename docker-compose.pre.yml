@@ -88,6 +88,8 @@ services:
       - wms_network
     expose:
       - "8000"
+    volumes:
+      - ./env.toml:/app/env.toml:ro
 
 
 volumes:

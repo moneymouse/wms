@@ -17,11 +17,11 @@ def test_auth_discovery_and_fixed_catalog(mcp_app):
         metadata = client.get("/.well-known/oauth-protected-resource/mcp").json()
         assert metadata["resource"] == "https://wms.example/mcp"
         assert metadata["authorization_servers"] == ["https://wms.example"]
-        assert set(metadata["scopes_supported"]) == {"mcp", "orders:create", "orders:list", "orders:read", "packing_lists:create"}
+        assert set(metadata["scopes_supported"]) == {"mcp", "orders:create", "orders:list", "orders:read", "tracking:read", "packing_lists:create"}
         response = rpc(client, "tools/list")
         assert response.status_code == 200
         tools = response.json()["result"]["tools"]
-        assert {tool["name"] for tool in tools} == {"create_order", "list_orders", "get_order", "create_packing_list"}
+        assert {tool["name"] for tool in tools} == {"create_order", "list_orders", "get_order", "get_tracking", "create_packing_list"}
         for tool in tools:
             assert tool["inputSchema"]["additionalProperties"] is False
             assert tool["outputSchema"]["required"] == ["code"]
@@ -43,7 +43,7 @@ def test_new_and_legacy_protocols(mcp_app):
 def test_step_up_prevents_mutation_and_keeps_catalog(mcp_app, mcp_db):
     mcp_db["principal"]["scopes"] = ["mcp"]
     with TestClient(mcp_app, base_url="https://wms.example") as client:
-        assert len(rpc(client, "tools/list").json()["result"]["tools"]) == 4
+        assert len(rpc(client, "tools/list").json()["result"]["tools"]) == 5
         response = rpc(client, "tools/call", {"name": "create_order", "arguments": {
             "order": {"customer_id": mcp_db["customer_id"]}, "idempotency_key": "scope-test"}})
         assert response.status_code == 403
@@ -54,7 +54,7 @@ def test_step_up_prevents_mutation_and_keeps_catalog(mcp_app, mcp_db):
         assert session.query(McpIdempotencyTable).count() == 0
 
 
-def test_four_real_tools_and_structured_envelope(mcp_app, mcp_db):
+def test_order_and_packing_tools_and_structured_envelope(mcp_app, mcp_db):
     with TestClient(mcp_app, base_url="https://wms.example") as client:
         schemas = {tool["name"]: tool["outputSchema"] for tool in rpc(client, "tools/list").json()["result"]["tools"]}
         created = rpc(client, "tools/call", {"name": "create_order", "arguments": {

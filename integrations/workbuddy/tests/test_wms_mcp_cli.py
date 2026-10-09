@@ -163,6 +163,27 @@ class PeerHandler(http.server.BaseHTTPRequestHandler):
         return self.respond({}, 404)
 
 
+class ConfigurationTests(unittest.TestCase):
+    def test_status_defaults_to_preproduction_and_supports_explicit_server(self):
+        # Exercise the CLI entry point without network or credentials: importing
+        # a Skill alone must select the deployed preproduction environment.
+        # The explicit URL is only inspected locally, not assumed deployed.
+        with tempfile.TemporaryDirectory() as directory:
+            servers = (None, "https://8.166.137.88/mcp")
+            for server in servers:
+                output, errors = io.StringIO(), io.StringIO()
+                arguments = ["--cache-dir", directory, "status"]
+                if server:
+                    arguments = ["--server", server, *arguments]
+                with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+                    code = client.main(arguments)
+                self.assertEqual(code, 0, errors.getvalue())
+                result = json.loads(output.getvalue())
+                self.assertEqual(result["resource"], server or "https://8.166.137.88:8081/mcp")
+                self.assertFalse(result["logged_in"])
+            self.assertEqual(len(list(Path(directory).glob("session-*.lock"))), 2)
+
+
 class ClientTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

@@ -16,7 +16,7 @@ from mcp.server.auth.provider import AccessToken, TokenVerifier
 from mcp_server import create_mcp_app
 
 
-ALL_SCOPES = ["mcp", "orders:create", "orders:list", "orders:read", "packing_lists:create"]
+ALL_SCOPES = ["mcp", "orders:create", "orders:list", "orders:read", "tracking:read", "packing_lists:create"]
 
 
 @pytest.fixture
@@ -32,7 +32,7 @@ def mcp_db(tmp_path, monkeypatch):
                "data.customer.Customer", "data.user.User", "data.user.Role",
                "data.packing.PackingList", "services.order_service",
                "services.receivable_service", "services.packing_list_service",
-               "services.mcp_service", "utils.audit", "services.oauth_service"]
+               "services.mcp_service", "services.tracking_service", "utils.audit", "services.oauth_service"]
     for name in modules:
         try:
             module = importlib.import_module(name)

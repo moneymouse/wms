@@ -3,13 +3,13 @@ import hashlib
 import json
 from decimal import Decimal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy.exc import IntegrityError
 
 from Auth import get_payload_roles
 from data.database import SessionFactory
 from data.mcp import IDEMPOTENCY_CONSTRAINT, McpIdempotencyTable
-from services import order_service, packing_list_service
+from services import order_service, packing_list_service, tracking_service
 from services.receivable_service import normalize_quote_payload
 from utils.audit import record_audit
 
@@ -17,6 +17,7 @@ TOOL_SCOPES = {
     "create_order": "orders:create",
     "list_orders": "orders:list",
     "get_order": "orders:read",
+    "get_tracking": "tracking:read",
     "create_packing_list": "packing_lists:create",
 }
 LIST_ROLES = {"admin", "store_manager", "salesperson", "clerk"}
@@ -81,6 +82,15 @@ class GetOrderInput(BusinessInput):
     uid: str = Field(min_length=1, max_length=32)
 
 
+class GetTrackingInput(BusinessInput):
+    order_id: str = Field(min_length=1, max_length=128, description="业务订单号，精确匹配未归档订单；不是内部UID或转单号")
+
+    @field_validator("order_id", mode="before")
+    @classmethod
+    def strip_order_id(cls, value):
+        return value.strip() if isinstance(value, str) else value
+
+
 class CreatePackingListInput(BusinessInput):
     idempotency_key: str = Field(min_length=1, max_length=128)
     mark: str | None = Field(default=None, max_length=64)
@@ -99,6 +109,7 @@ INPUT_MODELS = {
     "create_order": CreateOrderInput,
     "list_orders": ListOrdersInput,
     "get_order": GetOrderInput,
+    "get_tracking": GetTrackingInput,
     "create_packing_list": CreatePackingListInput,
 }
 
@@ -130,7 +141,8 @@ def _authorized(tool_name, operator):
         return bool(roles & LIST_ROLES)
     if tool_name == "create_packing_list":
         return bool(roles & PACKING_ROLES)
-    # The corresponding REST endpoints use allow() without role restrictions.
+    # Other reads rely on the approved OAuth identity and their required scope.
+    # Order creation/detail match REST's allow() without role restrictions.
     return True
 
 
@@ -187,13 +199,15 @@ def execute_tool(tool_name, arguments, principal):
     if key is None:
         if tool_name == "list_orders":
             result = order_service.list_orders(**args)
+        elif tool_name == "get_tracking":
+            result = tracking_service.get_tracking(**args)
         else:
             result = order_service.get_order(args["uid"], operator)
             if result.get("code") == 200 and result.get("data") is None:
                 result = {"code": 404, "msg": "订单不存在", "data": None}
         result = json.loads(_json(result))
         with SessionFactory() as session:
-            _audit(session, principal, tool_name, result, target_id=args.get("uid"))
+            _audit(session, principal, tool_name, result, target_id=args.get("uid") or result.get("order_uid"))
             session.commit()
         return result
     identity = _identity(principal, tool_name, key)

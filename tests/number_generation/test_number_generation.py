@@ -27,7 +27,7 @@ PACKING_ROUTE = "/api/packing-lists/packing/boxes/generate-original-numbers"
 
 
 def formatted(number, field):
-    return f"XD{number}L" if field == "transfer_id" else number
+    return f"D{number}L"
 
 
 def headers(role="clerk", **payload):
@@ -67,7 +67,7 @@ def assert_only_number_changed(before, after, table, uid, field, number):
     (BOX_ROUTE, "transfer_id", "cargos", "box"),
 ])
 @pytest.mark.parametrize("random_value, expected", [(0, "800000000"), (99_999_999, "899999999")])
-def test_click_allocates_nine_digits_and_changes_only_the_target(
+def test_click_allocates_d_l_number_with_nine_digits_and_changes_only_the_target(
     world, monkeypatch, route, field, table, uid, random_value, expected,
 ):
     expected = formatted(expected, field)
@@ -86,7 +86,8 @@ def test_click_allocates_nine_digits_and_changes_only_the_target(
     assert response.status_code == 200, response.json
     assert response.json["code"] == 200
     assert response.json["data"][field] == expected
-    assert re.fullmatch(r"XD8\d{8}L" if field == "transfer_id" else r"8\d{8}", expected)
+    assert re.fullmatch(r"D8\d{8}L", expected)
+    assert len(expected) == 11
     random.assert_called_once_with(100_000_000)
     assert_only_number_changed(before, rows(world), table, uid, field, expected)
     with world["factory"]() as session:
@@ -218,7 +219,7 @@ def test_box_reentry_allows_generation_and_preserves_shipment_history(world, mon
     )
 
     assert response.status_code == 200, response.json
-    assert_only_number_changed(before, rows(world), "cargos", "box", "transfer_id", "XD800000042L")
+    assert_only_number_changed(before, rows(world), "cargos", "box", "transfer_id", "D800000042L")
     assert versions(world)[-1][3] == "original_number_generated"
     with world["factory"]() as session:
         assert session.query(CargoOutboundRecordTable).count() == 1
@@ -294,7 +295,7 @@ def test_empty_number_can_be_generated_with_matching_expected_value(
         setattr(session.get(model, uid), field, saved_value)
     response = world["client"].post(route, headers=headers(), json={"expected_value": expected})
     assert response.status_code == 200, response.json
-    assert re.fullmatch(r"XD8\d{8}L" if field == "transfer_id" else r"8\d{8}", response.json["data"][field])
+    assert re.fullmatch(r"D8\d{8}L", response.json["data"][field])
 
 
 def test_manual_numbers_still_accept_duplicates_across_and_within_tables(world):
@@ -305,6 +306,27 @@ def test_manual_numbers_still_accept_duplicates_across_and_within_tables(world):
     with world["factory"]() as session:
         assert session.query(OrderTable).filter_by(order_id=repeated).count() == 2
         assert session.query(CargoTable).filter_by(transfer_id=repeated).count() == 2
+
+
+def test_new_format_does_not_convert_existing_generated_or_manual_numbers(world, monkeypatch):
+    with world["factory"].begin() as session:
+        session.get(OrderTable, "order").order_id = "800012345"
+        session.get(CargoTable, "box").transfer_id = "XD800012346L"
+        session.get(CargoTable, "cargo").transfer_id = "MANUAL-123"
+    before = rows(world)
+    random = Mock(return_value=42)
+    monkeypatch.setattr(number_generation_service.secrets, "randbelow", random)
+
+    viewed = world["client"].get("/api/orders/order", headers=headers())
+    assert viewed.status_code == 200, viewed.json
+    assert rows(world) == before
+    random.assert_not_called()
+
+    generated = world["client"].post(
+        ORDER_ROUTE, headers=headers(), json={"expected_value": "800012345"},
+    )
+    assert generated.status_code == 200, generated.json
+    assert_only_number_changed(before, rows(world), "orders", "order", "order_id", "D800000042L")
 
 
 @pytest.mark.parametrize("route, entity_type, entity_uid, field, previous", [
@@ -395,8 +417,9 @@ def test_concurrent_order_and_box_generation_share_one_collision_pool(world, mon
     with world["factory"]() as session:
         order_number = session.get(OrderTable, "order").order_id
         box_number = session.get(CargoTable, "box").transfer_id
-        assert re.fullmatch(r"8\d{8}", order_number)
-        assert re.fullmatch(r"XD8\d{8}L", box_number)
+        assert re.fullmatch(r"D8\d{8}L", order_number)
+        assert re.fullmatch(r"D8\d{8}L", box_number)
+        assert {order_number, box_number} == {"D800000077L", "D800000078L"}
         assert [row.version_no for row in session.query(OrderVersionTable).order_by(
             OrderVersionTable.version_no
         )] == [1, 2, 3]
@@ -427,8 +450,9 @@ def test_concurrent_generation_on_different_orders_shares_collision_pool(world, 
     with world["factory"]() as session:
         order_number = session.get(OrderTable, "order").order_id
         cargo_number = session.get(CargoTable, "other-cargo").transfer_id
-        assert re.fullmatch(r"8\d{8}", order_number)
-        assert re.fullmatch(r"XD8\d{8}L", cargo_number)
+        assert re.fullmatch(r"D8\d{8}L", order_number)
+        assert re.fullmatch(r"D8\d{8}L", cargo_number)
+        assert {order_number, cargo_number} == {"D800000077L", "D800000078L"}
         for order_uid in ("order", "other-order"):
             assert [row.version_no for row in session.query(OrderVersionTable).filter_by(
                 order_uid=order_uid
@@ -457,7 +481,7 @@ def test_packing_batch_generates_assigned_and_unassigned_boxes_and_only_selected
     assert result["generated_count"] == 3
     assert [box["uid"] for box in result["boxes"]] == selected
     assert {box["transfer_id"] for box in result["boxes"]} == {
-        "XD800000042L", "XD800000043L", "XD800000044L",
+        "D800000042L", "D800000043L", "D800000044L",
     }
     assert random.call_count == 4
     after = rows(world)
@@ -548,7 +572,7 @@ def test_packing_batch_requires_generation_role(world, role, status):
 
 def test_packing_batch_rolls_back_all_numbers_and_history_on_late_collision_exhaustion(world, monkeypatch):
     with world["factory"].begin() as session:
-        session.add(CargoTable(uid="reserved", transfer_id="XD800000007L", archive=True))
+        session.add(CargoTable(uid="reserved", transfer_id="D800000007L", archive=True))
     monkeypatch.setattr(number_generation_service.secrets, "randbelow", Mock(side_effect=[42] + [7] * 100))
     before = rows(world)
     response = world["client"].post(PACKING_ROUTE, headers=headers(), json={"box_uids": ["box", "second-box"]})
@@ -571,7 +595,7 @@ def test_concurrent_original_generators_preserve_unique_formatted_numbers(world,
     with ThreadPoolExecutor(max_workers=2) as executor:
         futures = [executor.submit(generate, target) for target in ("packing", "order")]
         results = [future.result(timeout=15) for future in futures]
-    assert {result["transfer_id"] for result in results} == {"XD800000077L", "XD800000078L"}
+    assert {result["transfer_id"] for result in results} == {"D800000077L", "D800000078L"}
 
 
 def mysql_session_stubs(monkeypatch, *, acquired=1, released=1, release_error=False):

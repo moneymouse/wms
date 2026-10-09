@@ -4,8 +4,10 @@ All callers lock orders before cargo, use the same guards and preserve the
 first outbound date and cost. Tracking registration belongs after commit.
 """
 
+import logging
 import math
 import time
+from dataclasses import dataclass, field
 from datetime import datetime
 
 from flask import has_request_context
@@ -20,6 +22,14 @@ from data.order_version import (
 from services.order_edit_policy import OrderEditConflictError, cargo_is_outbound_or_later, cargo_currently_outbound
 
 OUTBOUND_ROLES = {"admin", "store_manager", "salesperson", "clerk"}
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class WaybillImportResult:
+    registered: list = field(default_factory=list)
+    successful: list = field(default_factory=list)
+    failed: list = field(default_factory=list)
 
 
 def parse_confirm_outbound(value=True):
@@ -91,7 +101,16 @@ def _guard_outbound(session, cargo):
             raise ValueError("装箱单不存在或已归档")
         customers = {customer.id for customer in order.customers}
         if packing.customer_id is not None and customers and packing.customer_id not in customers:
-            raise ValueError("箱子与订单的客户归属不一致")
+            order_customer_ids = ", ".join(str(customer_id) for customer_id in sorted(customers))
+            raise ValueError(
+                "箱子与订单的客户归属不一致"
+                f"（原单号：{cargo.transfer_id or '未填写'}；"
+                f"装箱单：{packing.list_number or packing.uid}；"
+                f"箱号：{cargo.box_number or '未填写'}；"
+                f"订单号：{order.order_id or order.uid}；"
+                f"装箱单客户ID：{packing.customer_id}；"
+                f"订单客户ID：{order_customer_ids}）"
+            )
     try:
         weight = float(cargo.weight or 0)
     except (TypeError, ValueError):
@@ -265,37 +284,103 @@ def undo_outbound(uid, *, operator=None):
             raise
 
 
-def update_waybill_table(session_factory, transfer_map, *, confirm_outbound=True, operator=None):
-    """One atomic import. All authorization checks run before any mutation."""
-    normalized = {str(k).strip(): str(v).strip() for k, v in (transfer_map or {}).items()
-                  if str(k or "").strip() and str(v or "").strip()}
+def update_waybill_table(session_factory, transfer_map, *, confirm_outbound=True,
+                         operator=None, return_details=False):
+    """Commit each order independently and report only its failed import items."""
+    result = WaybillImportResult()
+    normalized = {}
+    for original, waybill in (transfer_map or {}).items():
+        original = str(original or "").strip()
+        waybill = str(waybill or "").strip()
+        if not original:
+            result.failed.append({
+                "uid": None, "order_uid": None, "order_id": "",
+                "transfer_id": original, "waybill_id": waybill,
+                "code": 400, "reason": "原单号未填写",
+            })
+        else:
+            normalized[original] = waybill
     if not normalized:
-        return []
+        return result if return_details else result.registered
+
+    # Resolve the submitted rows once; every order then owns its own transaction.
     with session_factory() as session:
+        candidates = session.query(
+            CargoTable.uid, CargoTable.target_order_uid, CargoTable.transfer_id,
+        ).filter(CargoTable.transfer_id.in_(normalized)).order_by(CargoTable.uid.asc()).all()
+        order_uids = {row.target_order_uid for row in candidates if row.target_order_uid}
+        order_numbers = dict(session.query(OrderTable.uid, OrderTable.order_id).filter(
+            OrderTable.uid.in_(order_uids)
+        ).all()) if order_uids else {}
+
+    groups = {}
+    matched = set()
+    for candidate in candidates:
+        original = str(candidate.transfer_id or "").strip()
+        if original not in normalized:
+            continue
+        matched.add(original)
+        item = {
+            "uid": candidate.uid, "order_uid": candidate.target_order_uid,
+            "order_id": order_numbers.get(candidate.target_order_uid) or candidate.target_order_uid or "",
+            "transfer_id": original, "waybill_id": normalized[original],
+        }
+        # Unassigned cargo have no shared order and are isolated individually.
+        key = (candidate.target_order_uid, None if candidate.target_order_uid else candidate.uid)
+        groups.setdefault(key, []).append(item)
+    for original, waybill in normalized.items():
+        if original in matched:
+            continue
+        result.failed.append({
+            "uid": None, "order_uid": None, "order_id": "",
+            "transfer_id": original, "waybill_id": waybill,
+            "code": 404 if waybill else 400,
+            "reason": "系统未找到该原单号" if waybill else "转单号未填写",
+        })
+
+    for (expected_order_uid, _), items in groups.items():
         try:
-            uids = [row[0] for row in session.query(CargoTable.uid).filter(
-                CargoTable.transfer_id.in_(normalized)
-            ).all()]
-            rows, order_uids = _lock_cargos(session, uids)
-            before = {oid: snapshot_order(session, oid) for oid in order_uids}
-            for row in rows:
-                if str(row.transfer_id or "").strip() not in normalized:
-                    raise OrderEditConflictError("原单号已变化，请刷新后重试")
-                next_waybill = normalized[str(row.transfer_id or "").strip()]
-            register = []
-            shipped = False
-            now = time.strftime("%Y-%m-%d %H:%M")
-            for row in rows:
-                next_waybill = normalized[str(row.transfer_id or "").strip()]
-                if next_waybill != str(row.waybill_id or "").strip():
-                    row.waybill_id = next_waybill
-                    row.update_date = now
-                    register.append((row.uid, next_waybill))
-                if confirm_outbound:
-                    shipped = confirm_in_session(session, row, source="waybill_import", operator=operator) or shipped
-            _versions(session, before, action="waybills_imported", operator=operator, shipped=shipped)
-            session.commit()
-            return register
-        except Exception:
-            session.rollback()
-            raise
+            with session_factory() as session:
+                try:
+                    rows, order_uids = _lock_cargos(session, [item["uid"] for item in items])
+                    expected_items = {item["uid"]: item for item in items}
+                    for row in rows:
+                        if row.target_order_uid != expected_order_uid:
+                            raise OrderEditConflictError("货物归属已变化，请刷新后重试")
+                        if str(row.transfer_id or "").strip() != expected_items[row.uid]["transfer_id"]:
+                            raise OrderEditConflictError("原单号已变化，请刷新后重试")
+                        if not expected_items[row.uid]["waybill_id"]:
+                            raise ValueError(f"原单号 {row.transfer_id} 的转单号未填写")
+                    before = {oid: snapshot_order(session, oid) for oid in order_uids}
+                    register = []
+                    shipped = False
+                    now = time.strftime("%Y-%m-%d %H:%M")
+                    for row in rows:
+                        next_waybill = expected_items[row.uid]["waybill_id"]
+                        if next_waybill != str(row.waybill_id or "").strip():
+                            row.waybill_id = next_waybill
+                            row.update_date = now
+                            register.append((row.uid, next_waybill))
+                        if confirm_outbound:
+                            shipped = confirm_in_session(session, row, source="waybill_import", operator=operator) or shipped
+                    _versions(session, before, action="waybills_imported", operator=operator, shipped=shipped)
+                    session.commit()
+                except Exception:
+                    session.rollback()
+                    raise
+            result.registered.extend(register)
+            result.successful.extend(items)
+        except Exception as error:
+            if isinstance(error, PermissionError):
+                code = 403
+            elif isinstance(error, OrderEditConflictError):
+                code = 409
+            elif isinstance(error, LookupError):
+                code = 404
+            elif isinstance(error, ValueError):
+                code = 400
+            else:
+                code = 500
+                logger.exception("Waybill import failed for order %s", expected_order_uid)
+            result.failed.extend({**item, "code": code, "reason": str(error)} for item in items)
+    return result if return_details else result.registered

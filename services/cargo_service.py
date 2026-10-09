@@ -340,19 +340,23 @@ def parse_waybill_file(fp, filename: str) -> dict:
     return table
 
 
-def apply_waybill_table(cargo_model, transfer_map: dict, *, confirm_outbound=True, operator=None):
-    """Persist the atomic service mutation, then register tracking after commit."""
+def apply_waybill_table(cargo_model, transfer_map: dict, *, confirm_outbound=True,
+                        operator=None, return_details=False):
+    """Import independently per order, then register only committed changes."""
     from services.outbound_service import update_waybill_table
-    register_list = update_waybill_table(
-        SessionFactory, transfer_map, confirm_outbound=confirm_outbound, operator=operator
+    result = update_waybill_table(
+        SessionFactory, transfer_map, confirm_outbound=confirm_outbound,
+        operator=operator, return_details=True,
     )
+    register_list = result.registered
+    response = result if return_details else register_list
     try:
         if register_list:
             registerTrack(register_list)
-        return register_list, None
+        return response, None
     except Exception as e:
         logger.error("apply_waybill_table: committed; 17track registration failed: %s", e)
-        return register_list, e
+        return response, e
 
 
 def background_register(uid: str, waybill_id: str) -> None:

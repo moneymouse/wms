@@ -227,7 +227,10 @@ def _print_groups(entries):
         group = groups[key]
         if entry["list_number"] not in group["identity_numbers"]:
             group["identity_numbers"].append(entry["list_number"])
-        group["boxes"].append({"uid": entry["cargo_uid"], "tag": entry["tag"], "transfer_id": entry["transfer_id"]})
+        group["boxes"].append({
+            "uid": entry["cargo_uid"], "list_number": entry["list_number"],
+            "tag": entry["tag"], "transfer_id": entry["transfer_id"],
+        })
     for group in groups.values():
         group["identity_value"] = ", ".join(group.pop("identity_numbers"))
     return list(groups.values())
@@ -245,5 +248,19 @@ def load_draft_shipping_details(uid, body, actor):
         row = _draft(session, uid, actor)
         if row.version != expected:
             raise ShippingConfirmationError("草稿已更新，请重新打开后打印", 409)
-        entries = _hydrate(session, json.loads(row.entries_json), strict=True)
+        entries = json.loads(row.entries_json)
+        if "cargo_uids" in body:
+            value = body["cargo_uids"]
+            if not isinstance(value, list) or not value or len(value) > MAX_BOXES:
+                raise ShippingConfirmationError(f"打印范围 cargo_uids 须为非空列表，最多 {MAX_BOXES} 箱")
+            selected = {_text(item, "cargo_uid", 32) for item in value}
+            if "" in selected:
+                raise ShippingConfirmationError("打印范围包含无效箱子编号")
+            known = {entry["cargo_uid"] for entry in entries}
+            if not selected.issubset(known):
+                raise ShippingConfirmationError("所选打印箱子不属于当前草稿，请重新检查打印范围")
+            # Keep persisted order and overrides. Printing never rewrites the
+            # complete draft or silently drops an invalid selection.
+            entries = [entry for entry in entries if entry["cargo_uid"] in selected]
+        entries = _hydrate(session, entries, strict=True)
         return _print_groups(entries)

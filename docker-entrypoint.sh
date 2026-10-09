@@ -113,6 +113,12 @@ if [ -n "$ADMIN_PHONE" ] && [ -n "$ADMIN_PASSWORD" ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Reject incomplete paper photo migration before serving requests
+# ---------------------------------------------------------------------------
+echo "Checking paper photo file storage readiness..."
+python -m scripts.check_paper_photo_storage
+
+# ---------------------------------------------------------------------------
 # Start the application
 # ---------------------------------------------------------------------------
 echo "Starting Gunicorn..."

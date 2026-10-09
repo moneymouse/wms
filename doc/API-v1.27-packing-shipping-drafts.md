@@ -8,7 +8,7 @@ v1.30 起前端编辑使用独立页面 `/shipping-confirmation-drafts` 及 `/sh
 
 `POST /api/packing-lists/shipping-confirmation/boxes`：请求 `{ "cargo_uids": ["箱子UID"] }`，返回 `{code:200,data:{items:[...]}}`。条目包含 `cargo_uid`、`packing_list_uid`、`list_number`、`box_number`、`tag`、`transfer_id`、`weight`、`customer_id`、`customer_name`、`target_order_uid`、`order_id`、`agent_name`、`remarks`、`available`。未分配订单的箱子也可使用；已分配箱子的初始代理依据订单运输渠道的渠道组（沿用原映射）。
 
-`POST /api/packing-lists/shipping-confirmation/pdf`：请求 `{ "entries": [{"cargo_uid":"箱子UID","agent_name":"手填代理","remarks":"地址、邮编等"}] }`，返回 PDF。代理和备注只用于确认单，不写回渠道或订单。按客户、代理、备注分组，允许一个分组包含多个装箱单，抬头列出来源装箱单；沿用 A4 两列裁切版式。
+`POST /api/packing-lists/shipping-confirmation/pdf`：请求 `{ "entries": [{"cargo_uid":"箱子UID","agent_name":"手填代理","remarks":"地址、邮编等"}] }`，返回 PDF。代理和备注只用于确认单，不写回渠道或订单。按客户、代理、备注分组，允许一个分组包含多个装箱单，抬头列出来源装箱单；v1.32 起使用 A4 一行一单、放大字体的横向裁切版式，详见 [API v1.32](API-v1.32-shipping-layout-and-number-format.md)。
 
 ## 草稿
 

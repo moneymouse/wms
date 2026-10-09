@@ -20,9 +20,10 @@ WorkBuddy 用户接入使用 `integrations/workbuddy/wms-mcp.zip` 技能包。
 | `create_order` | `POST /api/create` | `order` 业务对象、`idempotency_key` | `orders:create` |
 | `list_orders` | `GET /api/orders` | `p=1,s=30,sf=create_date,so=1,q=""` | `orders:list` |
 | `get_order` | `GET /api/orders/<uid>` | `uid` | `orders:read` |
+| `get_tracking` | 订单下包裹详情及 17TRACK 物流摘要 | 业务订单号 `order_id` | `tracking:read` |
 | `create_packing_list` | `POST /api/packing-list` | `mark` 或 `list_number`、可选 `customer_id/photos`、`idempotency_key` | `packing_lists:create` |
 
-所有 MCP 请求还需要基础 `mcp` scope。`tools/list` 返回四个工具的输入和输出
+所有 MCP 请求还需要基础 `mcp` scope。`tools/list` 返回五个工具的输入和输出
 Schema；工具调用根据当前数据库角色和授权 scope 共同决定能否执行。订单列表
 沿用全部未归档订单的可见范围，保持搜索、排序、分页和每页最多 200 条的限制。
 
@@ -30,6 +31,14 @@ Schema；工具调用根据当前数据库角色和授权 scope 共同决定能�
 `salesman_id` 和可选初始 `quote`。操作人、装箱单创建者和审计身份来自 OAuth
 用户，不能由工具参数提供；内部 UID、归档和创建时间等字段不可写。
 装箱单只创建草稿表头，不创建箱子、不绑定订单；照片参数是已有图片地址。
+
+`get_tracking` 接收真实业务订单号 `order_id`，精确解析未归档订单后返回
+该订单下包裹的基本信息、仓储状态和物流摘要，对应网页订单包裹详情的用途。
+工具自行取得内部 UID，与 `GET /api/orders/<uid>/cargo` 使用 UID 的参数不同。
+同次请求中的转单号去重后每 40 个一批直接查 17TRACK，不使用 WMS 物流缓存、
+不自动注册、不修改订单或货物状态；部分物流失败只标记对应包裹的错误。
+`get_order` 保留已有详情行为。参数、收束后的返回字段和错误处理见
+[API v1.37 — MCP 订单包裹与物流查询](API-v1.37-MCP-tracking.md)。
 
 结果提供 `structuredContent` 和文本摘要，业务字段保留 REST JSON 响应格式。
 业务失败使用 `isError=true`；订单不存在或已归档明确返回“订单不存在”。
@@ -88,6 +97,14 @@ HTTP 403，并显示可重新提交的页面，保留用户已选择的权限。
 均需提供与 `MCP_PUBLIC_URL` 一致的 `resource`。授权响应带固定 issuer 的
 `iss`。回调必须匹配客户端登记值，生产回调使用 HTTPS；本地原生客户端允许
 标准 loopback 回调。
+
+客户端元数据声明 `application_type=native` 时，HTTP loopback 回调按 RFC 8252
+允许本机监听端口变化；scheme、host、path 和 query 仍须精确匹配。
+授权码记录本次实际使用的完整回调，兑换令牌时仍必须提交相同地址。
+这兼容 Codex CIMD 文档中无端口的回调登记与登录时随机端口的组合。
+服务器无法访问 CIMD 元数据来源时，Codex 可通过
+`mcp login wms-pre --scopes mcp,orders:list,orders:read,tracking:read --oauth-client-registration dcr`
+完成用户授权；DCR 仅为该次登录选择，不改变证书校验或业务权限。
 
 访问令牌默认 15 分钟，授权码 5 分钟，刷新令牌 30 天。令牌使用随机 opaque
 值，数据库只存哈希；刷新时轮换，旧刷新令牌重放会撤销整个令牌家族。

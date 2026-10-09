@@ -81,11 +81,11 @@ def _authorize(mcp_db, monkeypatch, selected_scopes):
     return browser, client_id, token_response.json
 
 
-def test_real_oauth_to_all_four_tools_and_live_permissions(mcp_db, monkeypatch):
+def test_real_oauth_to_order_and_packing_tools_and_live_permissions(mcp_db, monkeypatch):
     browser, client_id, credentials = _authorize(mcp_db, monkeypatch, ALL_SCOPES)
     token = credentials["access_token"]
     with TestClient(create_mcp_app(), base_url=ORIGIN) as client:
-        assert len(rpc(client, "tools/list", token=token).json()["result"]["tools"]) == 4
+        assert len(rpc(client, "tools/list", token=token).json()["result"]["tools"]) == 5
         args = {"order": {"customer_id": mcp_db["customer_id"], "order_id": "OAUTH-E2E"},
                 "idempotency_key": "oauth-e2e-order"}
         created = rpc(client, "tools/call", {"name": "create_order", "arguments": args}, token=token).json()["result"]
@@ -122,3 +122,28 @@ def test_real_consent_narrowing_produces_http_scope_challenge(mcp_db, monkeypatc
         assert 'scope="mcp orders:create"' in response.headers["WWW-Authenticate"]
     with mcp_db["factory"]() as db:
         assert db.query(OrderTable).count() == 0
+
+
+def test_tracking_only_consent_can_query_tracking_but_not_order_details(mcp_db, monkeypatch):
+    _, _, credentials = _authorize(mcp_db, monkeypatch, ["mcp", "tracking:read"])
+    calls = []
+
+    def get_tracking(order_id):
+        calls.append(order_id)
+        return {"code": 200, "order_id": order_id, "order_uid": "order-uid",
+                "data": [], "total": 0, "tracking_complete": True,
+                "queried_at": "2026-10-07T00:00:00Z"}
+
+    monkeypatch.setattr("services.tracking_service.get_tracking", get_tracking)
+    with TestClient(create_mcp_app(), base_url=ORIGIN) as client:
+        result = rpc(client, "tools/call", {"name": "get_tracking", "arguments": {
+            "order_id": "ORDER-001",
+        }}, token=credentials["access_token"]).json()["result"]
+        assert result["isError"] is False
+        assert result["structuredContent"]["order_id"] == "ORDER-001"
+        denied = rpc(client, "tools/call", {"name": "get_order", "arguments": {
+            "uid": "unavailable-order",
+        }}, token=credentials["access_token"])
+    assert calls == ["ORDER-001"]
+    assert denied.status_code == 403
+    assert 'scope="mcp orders:read"' in denied.headers["WWW-Authenticate"]

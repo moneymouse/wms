@@ -2,6 +2,8 @@
 
 import hashlib
 import hmac
+import ipaddress
+from urllib.parse import urlsplit
 
 from sqlalchemy import BigInteger, Column, ForeignKey, Integer, JSON, String, Text
 
@@ -10,6 +12,30 @@ from data.database import Base
 
 def credential_hash(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _native_loopback_redirect_key(uri):
+    """Remove only the port from a valid HTTP loopback redirect URI."""
+    if (not isinstance(uri, str) or not uri.startswith("http://")
+            or any(character in uri for character in "\r\n\t")):
+        return None
+    try:
+        parsed = urlsplit(uri)
+        port = parsed.port
+        if parsed.username or parsed.password or parsed.fragment:
+            return None
+        if parsed.hostname != "localhost" and not ipaddress.ip_address(parsed.hostname).is_loopback:
+            return None
+        authority = parsed.netloc
+        if port is not None:
+            authority = authority.rsplit(":", 1)[0]
+        elif authority.endswith(":"):
+            return None
+        # Preserve the original host spelling, path and query, including an
+        # empty query delimiter. RFC 8252 permits changing only the port.
+        return "http://" + authority + uri[len("http://") + len(parsed.netloc):]
+    except (TypeError, ValueError):
+        return None
 
 
 class OAuthClientTable(Base):
@@ -38,7 +64,17 @@ class OAuthClientTable(Base):
         return " ".join(dict.fromkeys(requested))
 
     def check_redirect_uri(self, redirect_uri):
-        return redirect_uri in self.metadata_json["redirect_uris"]
+        registered = self.metadata_json["redirect_uris"]
+        if redirect_uri in registered:
+            return True
+        if self.metadata_json.get("application_type") != "native":
+            return False
+        # Native apps bind a fresh loopback port for each authorization. Other
+        # components and all non-loopback redirects still match exactly.
+        requested = _native_loopback_redirect_key(redirect_uri)
+        return requested is not None and any(
+            requested == _native_loopback_redirect_key(uri) for uri in registered
+        )
 
     def check_client_secret(self, client_secret):
         return bool(self.secret_hash and client_secret and hmac.compare_digest(

@@ -7,6 +7,7 @@ from io import BytesIO
 
 from tests.base import BaseControllerTest
 from tests.factories import AuthFactory, OrderFactory, CargoFactory, FileFactory
+from services.outbound_service import WaybillImportResult
 
 
 @pytest.mark.integration
@@ -225,13 +226,15 @@ class TestEndToEndWorkflows(BaseControllerTest):
             )
             self.assert_api_success(response, ["data"])
 
-    def test_complete_batch_waybill_upload_workflow(self, employee_token):
+    def test_complete_batch_waybill_upload_workflow(self, clerk_token):
         """测试完整的批量运单上传流程"""
         with patch("controllers.cargo_controller.parse_waybill_file") as mock_parse, patch(
             "controllers.cargo_controller.apply_waybill_table"
         ) as mock_apply, patch(
-            "services.cargo_service.generate_excel"
-        ) as mock_generate_excel:
+            "controllers.cargo_controller.generate_excel"
+        ) as mock_generate_excel, patch(
+            "controllers.cargo_controller._get_valid_excel_modes", return_value={"jifei"}
+        ):
 
             # 1. 准备转运单数据
             waybill_data = FileFactory.create_waybill_data(3)
@@ -242,19 +245,33 @@ class TestEndToEndWorkflows(BaseControllerTest):
 
             # 2. 上传转运单文件
             mock_parse.return_value = transfer_map
-            mock_apply.return_value = ([("cargo1", "WB001"), ("cargo2", "WB002")], None)
+            mock_apply.return_value = (
+                WaybillImportResult(
+                    registered=[("cargo1", "WB001"), ("cargo2", "WB002")],
+                    successful=[
+                        {"uid": "cargo1", "order_uid": "order1", "order_id": "ORDER001",
+                         "transfer_id": "TR001", "waybill_id": "WB001"},
+                        {"uid": "cargo2", "order_uid": "order2", "order_id": "ORDER002",
+                         "transfer_id": "TR002", "waybill_id": "WB002"},
+                    ],
+                ),
+                None,
+            )
 
             file_obj = BytesIO(txt_content.encode("utf-8"))
             response = self.client.post(
                 f"{self.base_url}/order/upload/transfer_table",
                 data={"file": (file_obj, "waybill.txt"), "filename": "waybill.txt"},
-                headers={"Authorization": f"Bearer {employee_token}"},
+                headers={"x-token": clerk_token},
             )
 
             json_data = self.assert_api_success(
                 response, ["cargo_count", "cargo_list", "success_list"]
             )
             assert json_data["cargo_count"] == 2
+            assert json_data["success_items"] == mock_apply.return_value[0].successful
+            assert json_data["failed_list"] == []
+            assert mock_apply.call_args.kwargs["return_details"] is True
 
             # 3. 生成Excel导出文件
             mock_generate_excel.return_value = ("export_document_123", None, False)
@@ -267,7 +284,7 @@ class TestEndToEndWorkflows(BaseControllerTest):
             response = self.make_authenticated_request(
                 "POST",
                 f"{self.base_url}/cargo/excel/jifei",
-                employee_token,
+                clerk_token,
                 excel_request,
             )
 

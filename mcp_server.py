@@ -35,10 +35,62 @@ OUTPUT_SCHEMA = {
     },
     "additionalProperties": True,
 }
+TRACKING_OUTPUT_SCHEMA = {
+    **OUTPUT_SCHEMA,
+    "properties": {
+        **OUTPUT_SCHEMA["properties"],
+        "order_id": {"type": "string", "description": "精确匹配的业务订单号"},
+        "order_uid": {"type": "string", "description": "匹配订单的内部UID"},
+        "queried_at": {"type": "string", "format": "date-time", "description": "本次查询时间（UTC），不是承运商更新时间"},
+        "tracking_complete": {"type": "boolean", "description": "有转单号的物流查询是否全部成功；无转单号不计失败"},
+        "data": {
+            "type": "array",
+            "description": "订单下未归档包裹的精简详情及物流信息",
+            "items": {
+                "type": "object", "additionalProperties": False,
+                "required": ["uid", "box_number", "item_name", "weight", "transfer_id", "waybill_id",
+                             "warehouse_status", "warehouse_status_text", "tracking"],
+                "properties": {
+                    "uid": {"type": "string", "description": "包裹内部UID"},
+                    "box_number": {"type": ["integer", "null"], "description": "箱号"},
+                    "item_name": {"type": ["string", "null"], "description": "品名"},
+                    "weight": {"type": ["number", "null"], "description": "重量"},
+                    "transfer_id": {"type": ["string", "null"], "description": "原单号"},
+                    "waybill_id": {"type": ["string", "null"], "description": "转单号"},
+                    "warehouse_status": {"type": ["integer", "string", "null"], "description": "WMS记录的仓储状态"},
+                    "warehouse_status_text": {"type": "string", "description": "待出库或已出库，与物流状态独立"},
+                    "tracking": {
+                        "type": ["object", "null"], "additionalProperties": False,
+                        "description": "无转单号时为null；查询失败时在error中说明原因",
+                        "required": ["status", "sub_status", "status_text", "description", "latest_event", "error"],
+                        "properties": {
+                            "status": {"type": ["string", "null"], "description": "17TRACK物流主状态"},
+                            "sub_status": {"type": ["string", "null"], "description": "17TRACK物流子状态"},
+                            "status_text": {"type": ["string", "null"], "description": "中文物流状态，如成功签收；查询失败时为空"},
+                            "description": {"type": ["string", "null"], "description": "17TRACK子状态描述"},
+                            "latest_event": {
+                                "type": ["object", "null"], "additionalProperties": False,
+                                "required": ["time", "location", "description"],
+                                "properties": {field: {"type": ["string", "null"]}
+                                               for field in ("time", "location", "description")},
+                            },
+                            "error": {
+                                "type": ["object", "null"], "additionalProperties": False,
+                                "required": ["code", "msg"],
+                                "properties": {"code": {"type": "integer"}, "msg": {"type": "string"}},
+                            },
+                        },
+                    },
+                },
+            },
+        },
+    },
+}
 TOOL_DESCRIPTIONS = {
     "create_order": "创建订单。order包含REST业务字段；身份由OAuth账号提供。重试请复用相同idempotency_key。可附带初始quote。",
     "list_orders": "按REST的p/s分页、q搜索、sf/so排序查询未归档订单。需要管理员、店长、业务员或文员角色。",
     "get_order": "按订单uid查询详情，保留编辑策略与版本信息；不存在时返回code=404。",
+    "get_tracking": "按业务订单号order_id精确查询订单下未归档包裹的精简详情，含原单号、转单号、仓储状态、中文物流状态及最新事件。自动查询17TRACK，不缓存、不自动注册单号。需要tracking:read授权；部分物流失败仍返回包裹及各自error。",
     "create_packing_list": "创建装箱单。list_number优先于mark，唛头去空格转大写；创建人为OAuth账号。重试请复用idempotency_key。",
 }
 
@@ -68,10 +120,11 @@ class WmsMCPServer(MCPServer):
         # Stable catalog: clients can discover a tool before granting its scope.
         return [Tool(
             name=name, description=TOOL_DESCRIPTIONS[name],
-            input_schema=model.model_json_schema(), output_schema=OUTPUT_SCHEMA,
+            input_schema=model.model_json_schema(),
+            output_schema=TRACKING_OUTPUT_SCHEMA if name == "get_tracking" else OUTPUT_SCHEMA,
             annotations=ToolAnnotations(
-                read_only_hint=name in {"list_orders", "get_order"},
-                destructive_hint=False, idempotent_hint=True, open_world_hint=False,
+                read_only_hint=name in {"list_orders", "get_order", "get_tracking"},
+                destructive_hint=False, idempotent_hint=True, open_world_hint=name == "get_tracking",
             ),
             meta={"required_scope": mcp_service.TOOL_SCOPES[name]},
         ) for name, model in mcp_service.INPUT_MODELS.items()]
@@ -100,6 +153,10 @@ class WmsMCPServer(MCPServer):
         success = result.get("code") == 200
         if success and name == "list_orders":
             text = f"查询成功，本页{len(result.get('data') or [])}条，共{result.get('total', 0)}条。"
+        elif success and name == "get_tracking":
+            text = f"订单{result['order_id']}，共{result['total']}个包裹。"
+            if not result["tracking_complete"]:
+                text += "部分包裹物流暂不可用。"
         elif success:
             data = result.get("data")
             uid = result.get("uid") or (data.get("uid") if isinstance(data, dict) else None)

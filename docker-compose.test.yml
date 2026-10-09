@@ -55,6 +55,7 @@ services:
       - ./log_test:/app/log
       - ./excels_test:/app/excels
       - ./data/history_test:/app/data/history
+      - ./uploads_test:/app/uploads
     networks:
       - wms_network_test
     expose:

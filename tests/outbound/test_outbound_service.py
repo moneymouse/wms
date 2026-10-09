@@ -122,20 +122,43 @@ def test_receipt_history_allows_weighing_and_first_outbound(world):
         assert session.query(BoxCostRecordTable).one().weight == 8
 
 
-@pytest.mark.parametrize("bad", ["weight", "order_archive", "cargo_archive", "packing_archive", "unassigned"])
-def test_batch_invalid_member_rolls_back_everything(world, bad):
+@pytest.mark.parametrize("bad", ["weight", "order_archive", "cargo_archive", "packing_archive"])
+def test_invalid_member_rolls_back_all_import_items_of_same_order(world, bad):
     from data.packing.PackingList import PackingListTable
     with world["factory"]() as session:
         if bad == "weight": session.get(CargoTable, "box").weight = 0
         elif bad == "order_archive": session.get(OrderTable, "order").archive = True
         elif bad == "cargo_archive": session.get(CargoTable, "box").archive = True
         elif bad == "packing_archive": session.get(PackingListTable, "packing").archive = True
-        else: session.get(CargoTable, "box").target_order_uid = None
         session.commit()
-    with pytest.raises(ValueError):
-        apply_waybill_table(cargo_model, {"ORIG-CARGO": "C", "ORIG-BOX": "B"}, operator=ADMIN)
+    result, error = apply_waybill_table(
+        cargo_model, {"ORIG-CARGO": "C", "ORIG-BOX": "B"}, operator=ADMIN,
+        return_details=True,
+    )
+    assert error is None and not result.successful and not result.registered
+    assert {item["uid"] for item in result.failed} == {"box", "cargo"}
+    assert {item["order_uid"] for item in result.failed} == {"order"}
+    assert all(item["code"] == 400 for item in result.failed)
     assert state(world, "cargo")[:3] == (0, None, "")
     assert state(world)[4:] == (0, 0, 0)
+
+
+def test_unassigned_import_failure_does_not_roll_back_other_order(world):
+    with world["factory"]() as session:
+        session.get(CargoTable, "box").target_order_uid = None
+        session.commit()
+    result, error = apply_waybill_table(
+        cargo_model, {"ORIG-CARGO": "C", "ORIG-BOX": "B"}, operator=ADMIN,
+        return_details=True,
+    )
+    assert error is None and result.registered == [("cargo", "C")]
+    assert [item["uid"] for item in result.successful] == ["cargo"]
+    assert [item["uid"] for item in result.failed] == ["box"]
+    assert result.failed[0]["order_uid"] is None
+    assert "必须先归属订单" in result.failed[0]["reason"]
+    assert state(world, "cargo")[:3] == (1, state(world, "cargo")[1], "C")
+    assert state(world, "box")[:3] == (0, None, "")
+    assert state(world)[4:6] == (0, 1)
 
 
 def test_version_failure_rolls_back_number_outbound_cost_and_fact(world, monkeypatch):
@@ -267,8 +290,13 @@ def test_later_invalid_box_rolls_back_earlier_cost_fact_and_number(world):
         session.add(CargoTable(uid="z-invalid-box", packing_list_uid="packing", target_order_uid="order",
                                transfer_id="ORIG-INVALID", waybill_id="", status=0, weight=0, archive=False))
         session.commit()
-    with pytest.raises(ValueError):
-        apply_waybill_table(cargo_model, {"ORIG-BOX": "WB1", "ORIG-INVALID": "WB2"}, operator=ADMIN)
+    result, error = apply_waybill_table(
+        cargo_model, {"ORIG-BOX": "WB1", "ORIG-INVALID": "WB2"}, operator=ADMIN,
+        return_details=True,
+    )
+    assert error is None and not result.successful and not result.registered
+    assert {item["uid"] for item in result.failed} == {"box", "z-invalid-box"}
+    assert all(item["code"] == 400 and "重量" in item["reason"] for item in result.failed)
     assert state(world) == (0, None, "", 2, 0, 0, 0)
 
 

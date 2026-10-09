@@ -18,7 +18,10 @@ def handled(fn):
         try:
             return fn(**kwargs)
         except service.IntakeError as exc:
-            return jsonify({"code": exc.status, "msg": str(exc)}), exc.status
+            result = {"code": exc.status, "msg": str(exc)}
+            if exc.data is not None:
+                result["data"] = exc.data
+            return jsonify(result), exc.status
         except Exception:
             from flask import current_app
             current_app.logger.exception("Paper intake request failed")
@@ -60,6 +63,14 @@ def list_records():
 @handled
 def detail(uid):
     return jsonify({"code": 200, "data": service.get_intake(payload(), uid)})
+
+
+@intake_bp.delete("/<uid>")
+@verify
+@handled
+def delete(uid):
+    data = body()
+    return jsonify({"code": 200, "data": service.delete_intake(payload(), uid, data.get("version"))})
 
 
 @intake_bp.get("/workers")

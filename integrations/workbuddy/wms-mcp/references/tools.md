@@ -31,6 +31,35 @@
 业务订单号 `order_id` 与内部 `uid` 不同；用户只给订单号时先搜索列表取得 UID。
 详情包含原接口的编辑策略和版本信息。无此订单或已归档返回 `code=404`。
 
+### get_tracking
+
+需要 `tracking:read`，只输入真实业务订单号：
+
+```json
+{"order_id":"用户提供的真实业务订单号"}
+```
+
+`order_id` 去除首尾空格后须非空，最多 128 字符。服务端精确查找未归档订单并
+自行解析内部 UID，不通过 `list_orders` 模糊搜索。它与原 REST 包裹详情的 UID
+参数不同。订单不存在或已归档返回 404，重复业务订单号返回 409。
+
+成功返回 `{code:200,data:[包裹],total,order_id,order_uid,queried_at,tracking_complete}`。
+`data` 每包只含 `uid`、`box_number`、`item_name`、`weight`、`transfer_id`、
+`waybill_id`、`warehouse_status`、`warehouse_status_text` 和 `tracking`。
+`tracking` 只含 `status`、`sub_status`、中文 `status_text`、`description`、
+`latest_event` 和 `error`；`latest_event` 为 `null` 或 `{time,location,description}`。
+例如 `sub_status=Delivered_Other`、`status_text=成功签收`。
+仓储状态和物流状态分别解释，不能互相覆盖。
+
+无转单号的包裹 `tracking=null`。查询失败只在对应包裹的 `tracking.error`
+给出 `{code,msg}`；外层仍为 200，`tracking_complete=false`。
+`tracking_complete` 表示有转单号的查询是否全部成功，无转单号包裹或空包裹列表
+不算失败。`NotFound` 表示“暂无物流轨迹”，属于成功查询，不代表已签收。
+
+每次调用将本订单转单号在同次请求内去重，每 40 个一批直接查 17TRACK，
+不使用 WMS 物流缓存、不自动注册、不修改订单或货物。返回信息仍取决于
+17TRACK 的采集进度；`queried_at` 是本次查询时间，不是物流事件发生时间。
+
 ## 创建
 
 ### create_order

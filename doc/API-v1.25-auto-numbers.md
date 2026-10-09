@@ -4,7 +4,7 @@
 
 ## 格式与防碰撞
 
-自动订单号为 **9 位纯数字，首位为 8**，例如 `800012345`。v1.29 起自动原单号在同样的 9 位数字外增加 `XD` 前缀和 `L` 后缀，例如 `XD800012345L`，详见 [API v1.29](API-v1.29-packing-original-numbers.md)。生成的是系统内部号码，不代表 DHL 签发的运单；已保存和手动号码保持原样。
+v1.32 起自动订单号和原单号统一为 **`D` 前缀、9 位数字、`L` 后缀，数字首位为 8**，例如 `D800012345L`，共 11 个字符。详见 [API v1.32](API-v1.32-shipping-layout-and-number-format.md)。生成的是系统内部号码，不代表 DHL 签发的运单；已保存和手动号码保持原样。
 
 使用安全随机数生成候选值，分别查询 `orders.order_id` 与 `cargos.transfer_id`，两类号码共用查重范围，包含归档数据。遇到重复时重新生成，最多尝试 100 次。现有迁移已提供非唯一索引 `idx_orders_order_id`、`idx_cargos_transfer_id`；不新增表、不修改唯一约束、不需要数据库迁移。
 
@@ -27,7 +27,7 @@ MySQL/MariaDB 使用专用连接上的 `GET_LOCK` 将自动生成请求串行化
 成功示例：
 
 ```json
-{"code":200,"msg":"订单号已生成","data":{"uid":"ORDER_UID","order_uid":"ORDER_UID","order_id":"800012345","current_version":3}}
+{"code":200,"msg":"订单号已生成","data":{"uid":"ORDER_UID","order_uid":"ORDER_UID","order_id":"D800012345L","current_version":3}}
 ```
 
 只修改该订单的 `order_id` 与 `update_date`，不改变包裹原单号。
@@ -39,7 +39,7 @@ MySQL/MariaDB 使用专用连接上的 `GET_LOCK` 将自动生成请求串行化
 请求体规则相同，`expected_value` 为该货物当前已保存的 `transfer_id`。
 
 ```json
-{"code":200,"msg":"原单号已生成","data":{"uid":"CARGO_UID","order_uid":"ORDER_UID","transfer_id":"XD800012346L","current_version":4}}
+{"code":200,"msg":"原单号已生成","data":{"uid":"CARGO_UID","order_uid":"ORDER_UID","transfer_id":"D800012346L","current_version":4}}
 ```
 
 锁定当前订单和货物后核对订单归属，只修改目标货物的 `transfer_id` 与 `update_date`。不修改转单号、重量、其它货物或订单号，不触发出库或追踪注册。当前已出库货箱不可修改原单号；v1.26 起撤销出库后恢复原单号编辑与生成，出库/成本历史仍保留。归档订单、货物或装箱单不可生成。

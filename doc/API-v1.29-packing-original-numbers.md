@@ -4,7 +4,7 @@
 
 ## 原单号格式
 
-所有自动生成的原单号（包括既有订单详情生成接口）改为 `XD` 前缀与 `L` 后缀，中间保留原来的 9 位数字、首位 `8`，例如 `XD800012345L`。自动订单号继续使用原有的 `800012345` 格式。现有已保存号码和手动输入格式不作修改。
+v1.32 起所有自动生成的原单号和订单号统一使用 `D` 前缀与 `L` 后缀，中间保留原来的 9 位数字、首位 `8`，例如 `D800012345L`，共 11 个字符。此规则覆盖装箱单批量生成及订单详情两个生成接口，详见 [API v1.32](API-v1.32-shipping-layout-and-number-format.md)。现有已保存号码和手动输入格式不作修改。
 
 安全随机生成、保留前导零、对订单号及原单号完整字符串查重（包含归档记录）、最多重试 100 次、MySQL/MariaDB 专用连接生成锁、SQLite `BEGIN IMMEDIATE` 等规则沿用 v1.25。无需新增数据库字段或迁移。
 
@@ -33,8 +33,8 @@
     "packing_list_uid": "PACKING_UID",
     "generated_count": 2,
     "boxes": [
-      {"uid": "BOX_A", "order_uid": null, "transfer_id": "XD800012345L"},
-      {"uid": "BOX_B", "order_uid": "ORDER_UID", "transfer_id": "XD800012346L", "current_version": 3}
+      {"uid": "BOX_A", "order_uid": null, "transfer_id": "D800012345L"},
+      {"uid": "BOX_B", "order_uid": "ORDER_UID", "transfer_id": "D800012346L", "current_version": 3}
     ]
   }
 }

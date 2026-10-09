@@ -11,4 +11,6 @@ log/
 log_*/
 excels_pre/
 uploads_pre/
+uploads/
+uploads_*/
 data/history_pre/

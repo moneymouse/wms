@@ -8,6 +8,18 @@ from werkzeug.datastructures import FileStorage
 
 from tests.base import BaseControllerTest, APITestMixin, FileTestMixin
 from tests.factories import FileFactory
+from services.outbound_service import WaybillImportResult
+
+
+def _waybill_result(pairs):
+    return WaybillImportResult(
+        registered=pairs,
+        successful=[
+            {"uid": uid, "order_uid": "order1", "order_id": "ORDER001",
+             "transfer_id": f"TR{index:03}", "waybill_id": waybill_id}
+            for index, (uid, waybill_id) in enumerate(pairs, start=1)
+        ],
+    )
 
 
 @pytest.mark.unit
@@ -162,7 +174,7 @@ class TestCargoControllerPart2(BaseControllerTest, APITestMixin, FileTestMixin):
                     json_data = self.assert_api_success(response, ["data"])
                     assert "document_id" in json_data["data"]
 
-    def test_upload_waybill_txt_success(self, employee_token):
+    def test_upload_waybill_txt_success(self, clerk_token):
         """测试成功上传txt格式转运单"""
         waybill_data = FileFactory.create_waybill_data(3)
         txt_content = FileFactory.create_waybill_txt_content(waybill_data)
@@ -181,13 +193,15 @@ class TestCargoControllerPart2(BaseControllerTest, APITestMixin, FileTestMixin):
                 item["transfer_id"]: item["waybill_id"] for item in waybill_data
             }
             mock_parse.return_value = transfer_map
-            mock_apply.return_value = ([("cargo1", "WB001"), ("cargo2", "WB002")], None)
+            mock_apply.return_value = (
+                _waybill_result([("cargo1", "WB001"), ("cargo2", "WB002")]), None
+            )
 
             # 使用client直接发送multipart/form-data请求
             response = self.client.post(
                 f"{self.base_url}/order/upload/transfer_table",
                 data={"file": file_storage, "filename": "waybill.txt"},
-                headers={"Authorization": f"Bearer {employee_token}"},
+                headers={"x-token": clerk_token},
             )
 
             json_data = self.assert_api_success(
@@ -196,8 +210,13 @@ class TestCargoControllerPart2(BaseControllerTest, APITestMixin, FileTestMixin):
             assert json_data["msg"] == "success"
             assert json_data["cargo_count"] == 2
             assert json_data["cargo_list"] == transfer_map
+            assert json_data["success_list"] == [["cargo1", "WB001"], ["cargo2", "WB002"]]
+            assert json_data["success_items"] == mock_apply.return_value[0].successful
+            assert json_data["failed_list"] == []
+            assert json_data["tracking_error"] is None
+            assert mock_apply.call_args.kwargs["return_details"] is True
 
-    def test_upload_waybill_excel_success(self, employee_token):
+    def test_upload_waybill_excel_success(self, clerk_token):
         """测试成功上传Excel格式转运单"""
         waybill_data = FileFactory.create_waybill_data(2)
 
@@ -213,19 +232,19 @@ class TestCargoControllerPart2(BaseControllerTest, APITestMixin, FileTestMixin):
                 item["transfer_id"]: item["waybill_id"] for item in waybill_data
             }
             mock_parse.return_value = transfer_map
-            mock_apply.return_value = ([("cargo1", "WB001")], None)
+            mock_apply.return_value = (_waybill_result([("cargo1", "WB001")]), None)
 
             response = self.client.post(
                 f"{self.base_url}/order/upload/transfer_table",
                 data={"file": (file_obj, "waybill.xlsx"), "filename": "waybill.xlsx"},
-                headers={"Authorization": f"Bearer {employee_token}"},
+                headers={"x-token": clerk_token},
             )
 
             json_data = self.assert_api_success(
                 response, ["cargo_count", "cargo_list", "success_list"]
             )
 
-    def test_upload_waybill_17track_error(self, employee_token):
+    def test_upload_waybill_17track_error(self, clerk_token):
         """测试上传转运单时17track错误"""
         file_obj = BytesIO(b"TR001,WB001")
 
@@ -237,12 +256,12 @@ class TestCargoControllerPart2(BaseControllerTest, APITestMixin, FileTestMixin):
             # 模拟17track 502错误
             error = Exception()
             error.args = [{"code": 502, "data": ["rejected_item"]}]
-            mock_apply.return_value = ([("cargo1", "WB001")], error)
+            mock_apply.return_value = (_waybill_result([("cargo1", "WB001")]), error)
 
             response = self.client.post(
                 f"{self.base_url}/order/upload/transfer_table",
                 data={"file": (file_obj, "waybill.txt"), "filename": "waybill.txt"},
-                headers={"Authorization": f"Bearer {employee_token}"},
+                headers={"x-token": clerk_token},
             )
 
             self.assert_response_code(response, 200)
@@ -250,8 +269,12 @@ class TestCargoControllerPart2(BaseControllerTest, APITestMixin, FileTestMixin):
             assert json_data["code"] == 502
             assert "17track rejected" in json_data["msg"]
             assert "rejected_item" in json_data["rejected"]
+            assert json_data["cargo_count"] == 1
+            assert json_data["success_items"] == mock_apply.return_value[0].successful
+            assert json_data["failed_list"] == []
+            assert json_data["tracking_error"] == {"code": 502, "reason": "17track rejected"}
 
-    def test_upload_waybill_general_error(self, employee_token):
+    def test_upload_waybill_general_error(self, clerk_token):
         """测试上传转运单时一般错误"""
         file_obj = BytesIO(b"TR001,WB001")
 
@@ -262,22 +285,26 @@ class TestCargoControllerPart2(BaseControllerTest, APITestMixin, FileTestMixin):
             mock_parse.return_value = {"TR001": "WB001"}
             # 模拟一般错误
             mock_apply.return_value = (
-                [("cargo1", "WB001")],
+                _waybill_result([("cargo1", "WB001")]),
                 Exception("General Error"),
             )
 
             response = self.client.post(
                 f"{self.base_url}/order/upload/transfer_table",
                 data={"file": (file_obj, "waybill.txt"), "filename": "waybill.txt"},
-                headers={"Authorization": f"Bearer {employee_token}"},
+                headers={"x-token": clerk_token},
             )
 
             self.assert_response_code(response, 200)
             json_data = self.assert_response_json(response, ["code", "msg"])
             assert json_data["code"] == 500
             assert "Register Error" in json_data["msg"]
+            assert json_data["cargo_count"] == 1
+            assert json_data["success_items"] == mock_apply.return_value[0].successful
+            assert json_data["failed_list"] == []
+            assert json_data["tracking_error"] == {"code": 500, "reason": "Register Error"}
 
-    def test_upload_waybill_parse_value_error_returns_standard_json(self, employee_token):
+    def test_upload_waybill_parse_value_error_returns_standard_json(self, clerk_token):
         """测试解析格式错误时返回标准接口错误"""
         file_obj = BytesIO(b"bad content")
 
@@ -287,7 +314,7 @@ class TestCargoControllerPart2(BaseControllerTest, APITestMixin, FileTestMixin):
             response = self.client.post(
                 f"{self.base_url}/order/upload/transfer_table",
                 data={"file": (file_obj, "waybill.txt"), "filename": "waybill.txt"},
-                headers={"Authorization": f"Bearer {employee_token}"},
+                headers={"x-token": clerk_token},
             )
 
             self.assert_response_code(response, 400)
@@ -300,14 +327,14 @@ class TestCargoControllerPart2(BaseControllerTest, APITestMixin, FileTestMixin):
             assert json_data["success_list"] == []
             assert json_data["cargo_list"] == {}
 
-    def test_upload_waybill_missing_filename_returns_standard_json(self, employee_token):
+    def test_upload_waybill_missing_filename_returns_standard_json(self, clerk_token):
         """测试缺少filename字段时返回标准接口错误"""
         file_obj = BytesIO(b"TR001,WB001")
 
         response = self.client.post(
             f"{self.base_url}/order/upload/transfer_table",
             data={"file": (file_obj, "waybill.txt")},
-            headers={"Authorization": f"Bearer {employee_token}"},
+            headers={"x-token": clerk_token},
         )
 
         self.assert_response_code(response, 400)
@@ -320,7 +347,7 @@ class TestCargoControllerPart2(BaseControllerTest, APITestMixin, FileTestMixin):
         assert json_data["success_list"] == []
         assert json_data["cargo_list"] == {}
 
-    def test_upload_waybill_db_value_error_returns_standard_json(self, employee_token):
+    def test_upload_waybill_db_value_error_returns_standard_json(self, clerk_token):
         """测试DB/Service层业务错误时返回标准接口错误"""
         file_obj = BytesIO(b"TR001,WB001")
 
@@ -333,7 +360,7 @@ class TestCargoControllerPart2(BaseControllerTest, APITestMixin, FileTestMixin):
             response = self.client.post(
                 f"{self.base_url}/order/upload/transfer_table",
                 data={"file": (file_obj, "waybill.txt"), "filename": "waybill.txt"},
-                headers={"Authorization": f"Bearer {employee_token}"},
+                headers={"x-token": clerk_token},
             )
 
             self.assert_response_code(response, 400)
@@ -346,7 +373,7 @@ class TestCargoControllerPart2(BaseControllerTest, APITestMixin, FileTestMixin):
             assert json_data["success_list"] == []
             assert json_data["cargo_list"] == {"TR001": "WB001"}
 
-    def test_upload_waybill_unexpected_error_returns_standard_json(self, employee_token):
+    def test_upload_waybill_unexpected_error_returns_standard_json(self, clerk_token):
         """测试未知异常时返回标准接口错误"""
         file_obj = BytesIO(b"TR001,WB001")
 
@@ -356,7 +383,7 @@ class TestCargoControllerPart2(BaseControllerTest, APITestMixin, FileTestMixin):
             response = self.client.post(
                 f"{self.base_url}/order/upload/transfer_table",
                 data={"file": (file_obj, "waybill.txt"), "filename": "waybill.txt"},
-                headers={"Authorization": f"Bearer {employee_token}"},
+                headers={"x-token": clerk_token},
             )
 
             self.assert_response_code(response, 500)
@@ -369,14 +396,14 @@ class TestCargoControllerPart2(BaseControllerTest, APITestMixin, FileTestMixin):
             assert json_data["success_list"] == []
             assert json_data["cargo_list"] == {}
 
-    def test_upload_waybill_invalid_mode(self, employee_token):
+    def test_upload_waybill_invalid_mode(self, clerk_token):
         """测试无效的上传模式"""
         file_obj = BytesIO(b"test content")
 
         response = self.client.post(
             f"{self.base_url}/order/upload/invalid_mode",
             data={"file": (file_obj, "test.txt"), "filename": "test.txt"},
-            headers={"Authorization": f"Bearer {employee_token}"},
+            headers={"x-token": clerk_token},
         )
 
         self.assert_response_code(response, 404)
@@ -428,3 +455,88 @@ class TestCargoControllerPart2(BaseControllerTest, APITestMixin, FileTestMixin):
 
                 # 这些端点应该返回200或其他非401状态码
                 assert response.status_code != 401
+
+
+@pytest.mark.unit
+@pytest.mark.controller
+@pytest.mark.cargo
+class TestWaybillImportResponses(BaseControllerTest):
+    base_url = "/api"
+
+    @pytest.fixture(autouse=True)
+    def setup(self, client):
+        self.client = client
+
+    @pytest.mark.parametrize("has_success", [True, False])
+    def test_upload_waybill_reports_failed_orders(self, clerk_token, has_success):
+        """部分成功保留成功明细，全部失败则返回HTTP 400。"""
+        result = _waybill_result([("cargo1", "WB001")] if has_success else [])
+        result.failed = [{
+            "uid": "cargo2", "order_uid": "order2", "order_id": "ORDER002",
+            "transfer_id": "TR002", "waybill_id": "WB002", "code": 400,
+            "reason": "箱子与订单的客户归属不一致",
+        }]
+        transfer_map = {"TR001": "WB001", "TR002": "WB002"}
+        with patch("controllers.cargo_controller.parse_waybill_file", return_value=transfer_map), patch(
+            "controllers.cargo_controller.apply_waybill_table", return_value=(result, None)
+        ):
+            response = self.client.post(
+                f"{self.base_url}/order/upload/transfer_table",
+                data={"file": (BytesIO(b"TR001,WB001"), "waybill.txt"), "filename": "waybill.txt"},
+                headers={"x-token": clerk_token},
+            )
+        self.assert_response_code(response, 200 if has_success else 400)
+        body = self.assert_response_json(response)
+        assert body["code"] == (207 if has_success else 400)
+        assert body["cargo_count"] == int(has_success)
+        assert body["success_list"] == ([["cargo1", "WB001"]] if has_success else [])
+        assert body["success_items"] == result.successful
+        assert body["failed_list"] == result.failed
+        assert body["cargo_list"] == transfer_map
+        assert body["tracking_error"] is None
+
+    def test_upload_waybill_counts_unchanged_successes(self, clerk_token):
+        """同号重复上传计入成功，但无须重新登记追踪。"""
+        result = _waybill_result([("cargo1", "WB001")])
+        result.registered = []
+        with patch("controllers.cargo_controller.parse_waybill_file", return_value={"TR001": "WB001"}), patch(
+            "controllers.cargo_controller.apply_waybill_table", return_value=(result, None)
+        ):
+            response = self.client.post(
+                f"{self.base_url}/order/upload/transfer_table",
+                data={"file": (BytesIO(b"TR001,WB001"), "waybill.txt"), "filename": "waybill.txt"},
+                headers={"x-token": clerk_token},
+            )
+        body = self.assert_api_success(response)
+        assert body["cargo_count"] == 1
+        assert body["success_list"] == [["cargo1", "WB001"]]
+        assert body["success_items"] == result.successful
+        assert body["failed_list"] == []
+
+    @pytest.mark.parametrize("error_code", [502, 500])
+    def test_partial_import_preserves_failures_when_tracking_fails(self, clerk_token, error_code):
+        result = _waybill_result([("cargo1", "WB001")])
+        result.failed = [{
+            "uid": "cargo2", "order_uid": "order2", "order_id": "ORDER002",
+            "transfer_id": "TR002", "waybill_id": "WB002", "code": 400,
+            "reason": "箱子与订单的客户归属不一致",
+        }]
+        error = Exception({"code": 502, "data": ["rejected_item"]}) if error_code == 502 else Exception("API Error")
+        with patch("controllers.cargo_controller.parse_waybill_file", return_value={"TR001": "WB001", "TR002": "WB002"}), patch(
+            "controllers.cargo_controller.apply_waybill_table", return_value=(result, error)
+        ):
+            response = self.client.post(
+                f"{self.base_url}/order/upload/transfer_table",
+                data={"file": (BytesIO(b"TR001,WB001"), "waybill.txt"), "filename": "waybill.txt"},
+                headers={"x-token": clerk_token},
+            )
+        self.assert_response_code(response, 200)
+        body = self.assert_response_json(response)
+        assert body["code"] == error_code
+        assert body["cargo_count"] == 1
+        assert body["success_list"] == [["cargo1", "WB001"]]
+        assert body["success_items"] == result.successful
+        assert body["failed_list"] == result.failed
+        assert body["tracking_error"] == {
+            "code": error_code, "reason": "17track rejected" if error_code == 502 else "Register Error",
+        }

@@ -9,6 +9,7 @@ from datetime import date, datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import hashlib
 import json
+import logging
 import uuid
 
 from sqlalchemy import func, or_
@@ -20,9 +21,12 @@ from data.customer.Customer import CustomerTable
 from data.finance.ledger import (FinanceAccount, FinanceAllocation, FinanceDocument,
     FinanceDocumentLine, FinanceIdempotency, FinancePayment, FinanceVendor)
 from data.finance.order_settlement import FinanceOrderDocument
+from data.user.User import UserTable
+from services.message_service import send_message
 from utils.audit import record_audit
 
 
+logger = logging.getLogger(__name__)
 MONEY = Decimal("0.01")
 FOUR = Decimal("0.0001")
 ZERO = Decimal("0.00")
@@ -476,15 +480,21 @@ def update_document(document_id, body, actor):
         _version(document, body)
         if document.status != "draft":
             raise FinanceConflictError("只有草稿可以修改，已生效账单请开具贷项或冲销")
-        if "lines" in body:
-            from services.supplier_reconciliation_service import is_import_document
-            if is_import_document(session, document.id):
+        from services.supplier_reconciliation_service import is_import_document
+        imported = is_import_document(session, document.id)
+        if imported and "lines" in body:
+            fields = ("description", "quantity", "unit_price", "tax_rate", "subtotal", "tax_amount", "total_amount", "order_uid", "order_number")
+            proposed = _lines(session, body["lines"])
+            if ([tuple(getattr(line, field) for field in fields) for line in proposed]
+                != [tuple(getattr(line, field) for field in fields) for line in document.lines]):
                 raise FinanceConflictError("对账导入的费用明细不能直接编辑，请取消草稿后修正 Excel 并重新上传")
         before = document_dict(session, document)
         values = _document_values(session, body, document)
+        if imported and (values["partner_id"] != document.partner_id or values["is_opening"]):
+            raise FinanceConflictError("对账导入草稿不能变更供应商或改为期初余额")
         for field, value in values.items():
             setattr(document, field, value)
-        if "lines" in body:
+        if "lines" in body and not imported:
             lines = _lines(session, body["lines"])
             document.lines.clear()
             session.flush()
@@ -520,6 +530,23 @@ def _post_document(session, document, actor, *, allow_order_adjustment=False):
             raise ValueError("累计贷项不含税金额不能超过原账单不含税金额")
         if document.tax_amount + sum((row.tax_amount for row in credits), ZERO) > original.tax_amount:
             raise ValueError("累计贷项税额不能超过原账单税额")
+        if document.document_type == "vendor_credit":
+            from services.supplier_reconciliation_service import is_import_document
+            if is_import_document(session, original.id):
+                limits, credited = {}, {}
+                for line in original.lines:
+                    amounts = (line.subtotal, line.tax_amount, line.total_amount)
+                    previous = limits.get(line.order_uid, (ZERO, ZERO, ZERO))
+                    limits[line.order_uid] = tuple(a + b for a, b in zip(previous, amounts))
+                for credit in credits + [document]:
+                    for line in credit.lines:
+                        if not line.order_uid or line.order_uid not in limits:
+                            raise FinanceConflictError("对账应付的供应商贷项必须保留原账单的订单归属")
+                        amounts = (line.subtotal, line.tax_amount, line.total_amount)
+                        previous = credited.get(line.order_uid, (ZERO, ZERO, ZERO))
+                        credited[line.order_uid] = tuple(a + b for a, b in zip(previous, amounts))
+                if any(any(a > b for a, b in zip(amounts, limits[order_uid])) for order_uid, amounts in credited.items()):
+                    raise FinanceConflictError("同一订单的累计供应商贷项不能超过原账单中的订单费用")
     document.status = "posted"
     document.posted_at = _now()
     _touch(document)
@@ -848,6 +875,20 @@ def return_payment(payment_id, body, actor):
         payment.status, payment.reviewed_at, payment.review_remark = "draft", _now(), reason
         payment.reviewed_by_id, payment.reviewed_by_name = reviewer_id, reviewer_name
         _touch(payment)
+        if payment.partner_type == "customer" and not payment.is_opening:
+            recipient = session.get(UserTable, payment.created_by_id) if payment.created_by_id else None
+            if recipient is None or recipient.status != "approved":
+                # Legacy/deleted or inactive registrants cannot receive a task;
+                # their absence must not block an otherwise valid return.
+                logger.warning("Skipping return notice for payment %s: registrant %s is missing or unapproved",
+                    payment.id, payment.created_by_id)
+            else:
+                send_message(session, recipient_id=recipient.id,
+                    title=f"收付款 {payment.number} 被退回修改",
+                    body=f"财务已退回收付款 {payment.number}。\n\n退回原因：{reason}\n\n请修改收付款记录，核对无误后重新提交财务确认。",
+                    category="finance_return", source_name=f"财务：{reviewer_name}"[:128],
+                    action_path=f"/receipts?payment_id={payment.id}", business_type="finance_payment",
+                    business_id=payment.id, event_key=f"finance:payment:return:{payment.id}:{payment.version}")
         result = payment_dict(session, payment)
         _audit(session, actor, "finance_payment", payment.id, "return", before, result, reason)
         return result

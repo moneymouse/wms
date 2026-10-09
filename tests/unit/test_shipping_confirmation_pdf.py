@@ -60,15 +60,16 @@ def print_geometry(monkeypatch):
     return geometry
 
 
-def test_two_orders_share_a_cuttable_row_and_use_embedded_font(print_geometry):
+def test_each_order_uses_a_full_width_row_and_embedded_font(print_geometry):
     content = pdf.build_shipping_confirmation_pdf([_order(1, 1), _order(2, 4)]).getvalue()
     assert content.startswith(b"%PDF-")
     assert b"DroidSansFallback" in content
     assert b"STSong" not in content
-    left, right = print_geometry["cards"]
-    assert left[0] == right[0] == 1
-    assert left[2:] == pytest.approx(right[2:])
-    assert right[1] - (left[1] + left[3]) == pytest.approx(pdf.CUT_GAP)
+    first, second = print_geometry["cards"]
+    assert first[0] == second[0] == 1
+    assert first[1] == second[1] == pytest.approx(pdf.PAGE_MARGIN)
+    assert first[3] == second[3] == pytest.approx(pdf.A4[0] - 2 * pdf.PAGE_MARGIN)
+    assert first[2] - (second[2] + second[4]) == pytest.approx(pdf.CUT_GAP)
     printed = _content_streams(content)
     assert b"ORDER-1" in printed and b"ORDER-2" in printed
     assert b"TRACK-1-000" in printed and b"TRACK-2-003" in printed
@@ -126,7 +127,7 @@ def test_empty_order_keeps_its_identity_in_a_mixed_batch():
     assert b"TRACK-2-001" in printed
 
 
-def test_cross_cut_lines_stay_in_gaps_without_card_frames(print_geometry):
+def test_horizontal_cut_lines_stay_in_gaps_without_card_frames(print_geometry):
     pdf.build_shipping_confirmation_pdf([_order(index, 2) for index in range(20)])
     assert not print_geometry["frames"]
     cards = print_geometry["cards"]
@@ -137,16 +138,21 @@ def test_cross_cut_lines_stay_in_gaps_without_card_frames(print_geometry):
         page_cuts = [cut for cut in cuts if cut[0] == page]
         verticals = [cut for cut in page_cuts if cut[1] == cut[3]]
         horizontals = [cut for cut in page_cuts if cut[2] == cut[4]]
-        assert len(verticals) == 1
-        vertical = verticals[0]
-        assert vertical[1] == pytest.approx(pdf.A4[0] / 2)
-        assert len(horizontals) == len({card[2] for card in page_cards})
+        assert not verticals
+        assert len(horizontals) == len(page_cards)
         for horizontal in horizontals:
-            assert vertical[4] < horizontal[2] < vertical[2]
+            assert horizontal[1] < pdf.PAGE_MARGIN
+            assert horizontal[3] > pdf.A4[0] - pdf.PAGE_MARGIN
             for _, _, bottom, _, height in page_cards:
                 assert not bottom < horizontal[2] < bottom + height
-        for _, x, _, width, _ in page_cards:
-            assert not x < vertical[1] < x + width
+
+
+def test_export_embeds_the_larger_title_body_and_label_font_sizes():
+    printed = _content_streams(pdf.build_shipping_confirmation_pdf([_order(1)]).getvalue())
+    assert b"18 Tf 23 TL" in printed
+    assert b"12 Tf 16 TL" in printed
+    assert b"11 Tf 15 TL" in printed
+    assert b"10 Tf 14 TL" in printed
 
 
 def test_title_is_only_shipping_note():

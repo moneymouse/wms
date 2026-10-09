@@ -112,20 +112,24 @@ class PackingListModel:
             return normalized_mark
 
         date_suffix = datetime.now().strftime("%Y%m%d")
-        base = f"{normalized_mark}-{date_suffix}"
-        candidate = base
+        max_length = PackingListTable.list_number.type.length
+
+        def candidate_for(serial):
+            suffix = f"-{date_suffix}" + (f"-{serial}" if serial > 1 else "")
+            return f"{normalized_mark[:max_length - len(suffix)]}{suffix}"
+
+        candidate = candidate_for(1)
         serial = 2
 
         while (
             session.query(PackingListTable)
             .filter(
                 PackingListTable.list_number == candidate,
-                PackingListTable.archive == False,
             )
             .first()
             is not None
         ):
-            candidate = f"{base}-{serial}"
+            candidate = candidate_for(serial)
             serial += 1
 
         return candidate
@@ -305,10 +309,14 @@ class PackingListModel:
 
     def update(self, uid: str, data: dict) -> bool:
         """更新装箱单"""
+        from services.packing_photo_cleanup import DELETE_PHOTOS_PREFIX
+
+        if str(data.get("status") or "").startswith(DELETE_PHOTOS_PREFIX):
+            raise ValueError("status 不能使用内部删除状态")
         s = SessionFactory()
         try:
             record = s.query(PackingListTable).filter_by(uid=uid).first()
-            if record is None:
+            if record is None or (record.status or "").startswith(DELETE_PHOTOS_PREFIX):
                 return False
             original_mark = record.list_number
 
@@ -373,6 +381,12 @@ class PackingListModel:
                     from services.order_edit_policy import OrderEditConflictError
 
                     raise OrderEditConflictError("装箱单已变化，请刷新后重试")
+                if (record.status or "").startswith(DELETE_PHOTOS_PREFIX):
+                    return False
+            else:
+                record = s.query(PackingListTable).filter_by(uid=uid).populate_existing().with_for_update().first()
+                if record is None or (record.status or "").startswith(DELETE_PHOTOS_PREFIX):
+                    return False
 
             if "list_number" in data or "mark" in data:
                 next_mark = data.get("list_number")
@@ -470,13 +484,27 @@ class PackingListModel:
         finally:
             s.close()
 
-    def delete(self, uid: str) -> bool:
-        """删除装箱单；存在成本历史时保留归档记录及箱子。"""
+    def delete(self, uid: str, *, photo_folder=None) -> bool:
+        """删除装箱单及照片；成本历史保留，文件清理失败可重试。"""
+        from services.packing_photo_cleanup import DELETE_PHOTOS_PREFIX, photo_urls
+        from services import paper_photo_storage
+        from data.intake import PaperPhotoCleanupTable
+
         s = SessionFactory()
         try:
             record = s.query(PackingListTable).filter_by(uid=uid).first()
             if record is None:
+                if s.query(PaperPhotoCleanupTable.storage_path).filter_by(packing_list_uid=uid).first() is not None:
+                    s.close()
+                    return self._finish_photo_deletion(uid, photo_folder=photo_folder)
                 return False
+            if (record.status or "").startswith(DELETE_PHOTOS_PREFIX):
+                if not record.archive:
+                    from services.order_edit_policy import OrderEditConflictError
+
+                    raise OrderEditConflictError("装箱单删除状态异常，请刷新后重试")
+                s.close()
+                return self._finish_photo_deletion(uid, photo_folder=photo_folder)
             order_uids = sorted(
                 {
                     box.target_order_uid
@@ -520,12 +548,13 @@ class PackingListModel:
             )
             if record is None:
                 return False
-            from data.intake import IntakeTable
+            if (record.status or "").startswith(DELETE_PHOTOS_PREFIX):
+                if not record.archive:
+                    from services.order_edit_policy import OrderEditConflictError
 
-            if s.query(IntakeTable.uid).filter(IntakeTable.packing_list_uid == uid).first() is not None:
-                from services.order_edit_policy import OrderEditConflictError
-
-                raise OrderEditConflictError("装箱单存在纸单回传来源，不能硬删除，请归档并保留原始记录")
+                    raise OrderEditConflictError("装箱单删除状态异常，请刷新后重试")
+                s.close()
+                return self._finish_photo_deletion(uid, photo_folder=photo_folder)
             from data.order_version import (
                 new_correlation_id,
                 record_mutation,
@@ -535,9 +564,23 @@ class PackingListModel:
             has_cost_history = (
                 s.query(BoxCostRecordTable.id)
                 .filter(BoxCostRecordTable.packing_list_uid == uid)
+                .with_for_update()
                 .first()
                 is not None
             )
+            from data.intake import IntakeTable
+
+            sources = s.query(IntakeTable).filter_by(packing_list_uid=uid).with_for_update().all()
+            for source in sources:
+                # Retain uploader/check metadata, but revoke every route that
+                # could reuse the source to recreate the deleted inventory.
+                source.status = "deleted"
+                source.packing_list_uid = None
+                source.recognition_job_uid = None
+                source.recognition_started_at = None
+                paper_photo_storage.queue_photo_deletion(s, list(source.photos), packing_list_uid=uid)
+                source.photos.clear()
+            pending_files = bool(photo_urls(record.photos))
             if has_cost_history:
                 now = time.strftime("%Y-%m-%d %H:%M")
                 record.archive = True
@@ -545,8 +588,19 @@ class PackingListModel:
                 for box in locked_boxes:
                     box.archive = True
                     box.update_date = now
+            elif pending_files:
+                # Keep an invisible tombstone until disk cleanup succeeds so
+                # a failed unlink can be retried with the same DELETE URL.
+                record.archive = True
+                record.update_date = time.strftime("%Y-%m-%d %H:%M")
+                for box in locked_boxes:
+                    box.packing_list_uid = None
             else:
                 s.delete(record)
+            if pending_files:
+                record.status = DELETE_PHOTOS_PREFIX + (record.status or "draft")
+            elif has_cost_history:
+                record.photos = "[]"
             s.flush()
             correlation_id = new_correlation_id()
             for order_uid in order_uids:
@@ -560,12 +614,54 @@ class PackingListModel:
                     correlation_id=correlation_id,
                 )
             s.commit()
+            if pending_files:
+                return self._finish_photo_deletion(uid, photo_folder=photo_folder)
+            # Paper files are removed only after the metadata transaction commits.
+            from services.packing_photo_cleanup import PackingPhotoCleanupError
+            if paper_photo_storage.drain_photo_cleanup(SessionFactory, packing_list_uid=uid)["pending_files"]:
+                raise PackingPhotoCleanupError()
             return True
         except Exception:
             s.rollback()
             raise
         finally:
             s.close()
+
+    def _finish_photo_deletion(self, uid, *, photo_folder=None):
+        """Finish only photo cleanup; retries never repeat order history writes."""
+        from services.packing_photo_cleanup import (
+            DELETE_PHOTOS_PREFIX, PackingPhotoCleanupError,
+            delete_photo_files, photo_urls, unshared_photo_names,
+        )
+        from services import paper_photo_storage
+
+        if paper_photo_storage.drain_photo_cleanup(SessionFactory, packing_list_uid=uid)["pending_files"]:
+            raise PackingPhotoCleanupError()
+
+        with SessionFactory() as session:
+            try:
+                record = session.query(PackingListTable).filter_by(uid=uid).with_for_update().first()
+                if record is None:
+                    return True
+                if record.archive and not (record.status or "").startswith(DELETE_PHOTOS_PREFIX) and not photo_urls(record.photos):
+                    # Another cleanup can have finished while this request
+                    # waited for the retained history record's row lock.
+                    return True
+                if not record.archive or not (record.status or "").startswith(DELETE_PHOTOS_PREFIX):
+                    raise PackingPhotoCleanupError()
+                delete_photo_files(unshared_photo_names(session, uid, record.photos), photo_folder)
+                record.photos = "[]"
+                record.status = record.status[len(DELETE_PHOTOS_PREFIX):]
+                has_cost_history = session.query(BoxCostRecordTable.id).filter_by(packing_list_uid=uid).with_for_update().first() is not None
+                if not has_cost_history:
+                    session.delete(record)
+                session.commit()
+                return True
+            except Exception as exc:
+                session.rollback()
+                if isinstance(exc, PackingPhotoCleanupError):
+                    raise
+                raise PackingPhotoCleanupError() from exc
 
     def _to_dict(self, record: PackingListTable) -> dict:
         """转换为字典"""
@@ -692,6 +788,10 @@ class BoxModel:
                 s.query(PackingListTable).filter_by(uid=packing_list_uid).first()
             )
             if packing_list is None:
+                raise ValueError(f"PackingList {packing_list_uid} not found")
+            from services.packing_photo_cleanup import DELETE_PHOTOS_PREFIX
+
+            if (packing_list.status or "").startswith(DELETE_PHOTOS_PREFIX):
                 raise ValueError(f"PackingList {packing_list_uid} not found")
 
             # 每个装箱单内维护单调递增箱号，不复用已删除箱号

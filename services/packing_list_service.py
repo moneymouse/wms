@@ -185,7 +185,7 @@ def archive_packing_list(uid: str) -> bool:
 
 def delete_packing_list(uid: str) -> bool:
     """删除装箱单"""
-    return packing_list_model.delete(uid)
+    return packing_list_model.delete(uid, photo_folder=UPLOAD_FOLDER)
 
 
 def complete_packing_list(uid: str) -> bool:

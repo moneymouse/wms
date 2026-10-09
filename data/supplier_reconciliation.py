@@ -43,6 +43,7 @@ class SupplierReconciliationRow(Base):
         Index("ix_supplier_reconciliation_fingerprint", "fingerprint"),
         Index("ix_supplier_reconciliation_batch_status", "batch_id", "status"),
         Index("ix_supplier_reconciliation_document", "finance_document_id"),
+        Index("ix_supplier_reconciliation_cargo", "cargo_uid", "system_waybill"),
     )
     id = Column(Integer, primary_key=True)
     batch_id = Column(Integer, ForeignKey("supplier_reconciliation_batches.id"), nullable=False)
