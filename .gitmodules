@@ -1,0 +1,6 @@
+[submodule "wms_frontend"]
+	path = wms_frontend
+	url = /Users/tony/wms/wms_frontend
+[submodule "wms_backend"]
+	path = wms_backend
+	url = /Users/tony/wms/wms_backend

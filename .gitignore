@@ -1,0 +1,18 @@
+# Local reports, screenshots, verification output, and temporary files
+/output/
+/outputs/
+/tmp/
+
+# Local editor and agent settings
+/.claude/
+/.idea/
+/CLAUDE.local.md
+.DS_Store
+
+# Private runtime configuration and credentials
+.env
+*.env
+env.toml
+*.pem
+*.key
+*.log
