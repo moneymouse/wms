@@ -147,15 +147,21 @@ def test_real_formal_login_uploader_check_and_ownership_flow(formal_app):
     ready = client.get(f"/api/intakes/{record['uid']}", headers=worker).json["data"]
     confirmed = client.post(f"/api/intakes/{record['uid']}/confirm", headers=worker, json={"version": ready["version"], "reviewed": True})
     assert confirmed.status_code == 200, confirmed.json
+    assert confirmed.json["data"]["status"] == "confirmed"
     packing_uid = confirmed.json["data"]["packing_list_uid"]
     with factory() as session:
-        assert session.query(PackingListTable).filter_by(uid=packing_uid).one().creator_id == 17
+        packing_list = session.query(PackingListTable).filter_by(uid=packing_uid).one()
+        assert packing_list.creator_id == 17 and packing_list.status == "draft"
         assert session.query(IntakeTable).one().confirmed_by == 17
         assert session.query(BoxWorkerTable).one().worker_id == 17
     my_lists = client.get("/api/intakes/my-packing-lists", headers=worker).json["data"]
     assert my_lists["total"] == 1
-    assert my_lists["items"][0]["source"] == "paper" and my_lists["items"][0]["status"] == "completed"
+    assert my_lists["items"][0]["source"] == "paper" and my_lists["items"][0]["status"] == "draft"
     assert my_lists["items"][0]["packing_list_uid"] == packing_uid
+    drafts = client.get("/api/intakes/my-packing-lists?status=draft", headers=worker).json["data"]
+    assert drafts["total"] == 1 and drafts["items"][0]["packing_list_uid"] == packing_uid
+    assert client.get("/api/intakes/my-packing-lists?status=completed", headers=worker).json["data"]["total"] == 0
+    assert client.get("/api/intakes/my-packing-lists?status=uploading", headers=worker).json["data"]["total"] == 0
     assert client.get(f"/api/packing-list/{packing_uid}", headers=worker).status_code == 200
     assert client.get(f"/api/packing-list/{packing_uid}", headers=other_worker).status_code == 403
     assert client.get(record["photos"][0]["url"], headers=clerk).status_code == 200

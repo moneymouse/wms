@@ -685,7 +685,7 @@ def confirm_intake(payload, uid, version, reviewed=False, *, _mark_attempt=0):
             draft["mark"] = mark
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
             packing_uid = uuid4().hex
-            session.add(PackingListTable(uid=packing_uid, list_number=mark, creator_id=record.submitted_by, photos="[]", status="completed", create_date=timestamp, archive=False))
+            session.add(PackingListTable(uid=packing_uid, list_number=mark, creator_id=record.submitted_by, photos="[]", status="draft", create_date=timestamp, archive=False))
             try:
                 session.flush()
             except IntegrityError:

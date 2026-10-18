@@ -292,7 +292,7 @@ def test_incomplete_draft_can_save_and_stale_write_is_rejected(setup):
     assert client.post(url + "/confirm", headers=headers(2, "salesperson"), json={"version": 2, "reviewed": True}).status_code == 403
 
 
-def test_confirmation_creates_one_list_two_unassigned_boxes_and_retries(setup):
+def test_confirmation_creates_one_draft_list_two_unassigned_boxes_and_retries(setup):
     client, factory = setup
     record = save_complete(client, submit(client))
     url = f"/api/intakes/{record['uid']}/confirm"
@@ -310,7 +310,11 @@ def test_confirmation_creates_one_list_two_unassigned_boxes_and_retries(setup):
     with factory() as session:
         assert session.query(PackingListTable).count() == 1
         assert session.query(PackingListTable).one().creator_id == 1
-        assert session.query(IntakeTable).one().confirmed_by == 1
+        assert session.query(PackingListTable).one().status == "draft"
+        intake = session.query(IntakeTable).one()
+        assert intake.status == "confirmed" and intake.confirmed_by == 1
+        assert intake.confirmed_at == confirmed["confirmed_at"] and intake.confirmed_at
+        assert intake.packing_list_uid == confirmed["packing_list_uid"]
         assert_stored_png(session.query(IntakePhotoTable).one())
         boxes = session.query(CargoTable).order_by(CargoTable.box_number).all()
         assert [box.box_number for box in boxes] == [7, 9]
@@ -319,6 +323,30 @@ def test_confirmation_creates_one_list_two_unassigned_boxes_and_retries(setup):
         assert all(box.status == 0 and box.target_order_uid is None and box.waybill_id == "" for box in boxes)
         assert {(row.box_uid, row.worker_id) for row in session.query(BoxWorkerTable)} == {(box.uid, 1) for box in boxes}
     assert client.put(f"/api/intakes/{record['uid']}/draft", headers=headers(), json={"version": confirmed["version"], "draft": record["draft"]}).status_code == 409
+
+
+@pytest.mark.parametrize("existing_status", ["draft", "completed"])
+def test_confirmation_preserves_existing_lists_and_retry_keeps_their_status(setup, existing_status):
+    client, factory = setup
+    existing = save_complete(client, submit(client), mark="EXISTING-PAPER")
+    existing_url = f"/api/intakes/{existing['uid']}/confirm"
+    confirmed = client.post(existing_url, headers=headers(), json={"version": existing["version"], "reviewed": True}).json["data"]
+    with factory() as session:
+        session.query(PackingListTable).filter_by(uid=confirmed["packing_list_uid"]).one().status = existing_status
+        session.commit()
+
+    record = save_complete(client, submit(client), mark="NEW-PAPER")
+    response = client.post(f"/api/intakes/{record['uid']}/confirm", headers=headers(), json={"version": record["version"], "reviewed": True})
+    assert response.status_code == 200, response.json
+    retry = client.post(existing_url, headers=headers(), json={"version": existing["version"], "reviewed": True})
+    assert retry.status_code == 200, retry.json
+    assert retry.json["data"] == confirmed
+    with factory() as session:
+        assert session.query(PackingListTable).filter_by(uid=confirmed["packing_list_uid"]).one().status == existing_status
+        assert session.query(PackingListTable).filter_by(uid=response.json["data"]["packing_list_uid"]).one().status == "draft"
+        assert session.query(PackingListTable).count() == 2
+        assert session.query(CargoTable).count() == 4
+        assert session.query(BoxWorkerTable).count() == 4
 
 
 def test_box_remarks_survive_draft_restore_clearing_and_confirmation(setup):
