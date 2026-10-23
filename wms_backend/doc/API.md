@@ -2,7 +2,9 @@
 
 **Base URL:** `http://localhost:5001`
 
-**版本:** 1.43
+**版本:** 1.47
+
+出货草稿搜索排除已出货装箱单，非订单业务员可只读查看报价版本及各版本报价说明，见 [API v1.47](API-v1.47-shipping-search-and-quote-visibility.md)。
 
 拍照装箱单检查页支持每箱备注及批量修改备注，草稿保存与确认入库保留 `remark`，见 [API v1.43](API-v1.43-intake-box-remarks.md)。
 

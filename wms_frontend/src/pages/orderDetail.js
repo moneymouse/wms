@@ -587,14 +587,17 @@ export default function OrderDetail() {
     };
 
     const openQuoteModal = async () => {
-        if (transportationModes.length === 0) {
-            await fetchTransportationModes();
+        if (!canViewQuotes) return;
+        if (canQuote) {
+            if (transportationModes.length === 0) {
+                await fetchTransportationModes();
+            }
+            quoteForm.setFieldsValue({
+                unit_price: undefined,
+                surcharge: 0,
+                quote_remark: '',
+            });
         }
-        quoteForm.setFieldsValue({
-            unit_price: undefined,
-            surcharge: 0,
-            quote_remark: '',
-        });
         setQuoteModalOpen(true);
         fetchQuoteHistory();
     };
@@ -647,6 +650,7 @@ export default function OrderDetail() {
     }, [canQuote, currentUserId, descriptionData.order_id, forceQuoteTour, salesmanLoading]);
 
     const submitQuote = async () => {
+        if (!canQuote) return;
         try {
             const values = await quoteForm.validateFields();
             setQuoteSubmitting(true);
@@ -1369,9 +1373,9 @@ export default function OrderDetail() {
                         <Button size="middle" danger loading={salesmanSaving}
                             onClick={handleRemoveSalesman}>移除</Button>
                     )}
-                    {canQuote && !salesmanEditing && (
-                        <Button data-tour="quote-entry" size="middle" type="primary" icon={<DollarOutlined />} onClick={openQuoteModal}>
-                            报价
+                    {canViewQuotes && !salesmanEditing && (
+                        <Button data-tour="quote-entry" size="middle" type={canQuote ? 'primary' : 'default'} icon={<DollarOutlined />} onClick={openQuoteModal}>
+                            {canQuote ? '报价' : '报价版本'}
                         </Button>
                     )}
                     {canCollect && !salesmanEditing && (
@@ -1422,17 +1426,18 @@ export default function OrderDetail() {
                 </Space>
             </div>
             <Modal
-                title={`订单报价 ${descriptionData?.order_id || ''}`}
+                title={`${canQuote ? '订单报价' : '报价版本'} ${descriptionData?.order_id || ''}`}
                 open={quoteModalOpen}
                 onCancel={() => setQuoteModalOpen(false)}
-                onOk={submitQuote}
+                onOk={canQuote ? submitQuote : undefined}
                 confirmLoading={quoteSubmitting}
                 okText="提交报价"
                 cancelText="取消"
                 width={760}
                 okButtonProps={{ 'data-tour': 'quote-submit' }}
+                footer={canQuote ? undefined : <Button onClick={() => setQuoteModalOpen(false)}>关闭</Button>}
             >
-                <Form form={quoteForm} layout="vertical">
+                {canQuote && <Form form={quoteForm} layout="vertical">
                     <Descriptions data-tour="quote-summary" size="small" bordered style={{ marginBottom: 16 }}>
                         <Descriptions.Item label="当前运输方式">
                             {currentTransportation || '-'}
@@ -1461,7 +1466,7 @@ export default function OrderDetail() {
                             <Input.TextArea rows={3} />
                         </Form.Item>
                     </div>
-                </Form>
+                </Form>}
                 <Space style={{ marginBottom: 12 }}>
                     <Typography.Text type={finalQuote ? 'success' : 'secondary'}>
                         {finalQuote
@@ -1484,6 +1489,7 @@ export default function OrderDetail() {
                         rowKey="id"
                         dataSource={quoteHistory}
                         pagination={false}
+                        scroll={{ x: 1250 }}
                         columns={[
                             { title: '版本', dataIndex: 'version_no', key: 'version_no', width: 70 },
                             { title: '渠道', dataIndex: 'transportation_name', key: 'transportation_name' },
@@ -1497,6 +1503,10 @@ export default function OrderDetail() {
                                 render: v => <Tag color={v === 'effective' ? 'green' : v === 'rejected' ? 'red' : 'blue'}>{({ effective: '有效', pending: '待审核', rejected: '已驳回', superseded: '已替代' })[v] || v}</Tag>
                             },
                             { title: '报价人', dataIndex: 'quoter_name', key: 'quoter_name', width: 100 },
+                            {
+                                title: '报价说明', dataIndex: 'quote_remark', key: 'quote_remark', width: 220,
+                                render: value => <span style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{value || '-'}</span>,
+                            },
                         ]}
                     />
                 </div>

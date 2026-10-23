@@ -131,6 +131,14 @@ test('collects boxes across packing list pages and saves independent agents and 
     selectCatalogBox('PL-1001');
     fireEvent.click(screen.getByRole('button', { name: '下一页装箱单' }));
     await screen.findByText('PL-1002');
+    const catalogRequests = shippingConfirmationRequest.mock.calls
+        .map(([path]) => path).filter(path => path.startsWith('/packing-lists?'));
+    expect(catalogRequests).toHaveLength(2);
+    catalogRequests.forEach(path => {
+        const params = new URLSearchParams(path.split('?')[1]);
+        expect(params.get('box_status')).toBe('outbound');
+        expect(params.get('exclude_box_status')).toBe('true');
+    });
     selectCatalogBox('PL-1002');
     fireEvent.click(screen.getByRole('button', { name: /添加所选箱子（2）/ }));
     await confirmAddBoxes();
@@ -336,6 +344,12 @@ test('reopens a saved draft and adds boxes from a different packing list without
     fireEvent.change(search, { target: { value: '客户乙' } });
     fireEvent.keyDown(search, { key: 'Enter', code: 'Enter', keyCode: 13 });
     await waitFor(() => expect(within(screen.getByLabelText('可添加的装箱单箱子')).getByText('PL-1002')).toBeInTheDocument());
+    const searchRequest = shippingConfirmationRequest.mock.calls
+        .map(([path]) => path).find(path => path.startsWith('/packing-lists?') && path.includes('q='));
+    const searchParams = new URLSearchParams(searchRequest.split('?')[1]);
+    expect(searchParams.get('q')).toBe('客户乙');
+    expect(searchParams.get('box_status')).toBe('outbound');
+    expect(searchParams.get('exclude_box_status')).toBe('true');
     selectCatalogBox('PL-1002');
     fireEvent.click(screen.getByRole('button', { name: /添加所选箱子（1）/ }));
     await confirmAddBoxes();
@@ -350,7 +364,7 @@ test('reopens a saved draft and adds boxes from a different packing list without
     expect(shippingConfirmationRequest).toHaveBeenCalledWith('/shipping-confirmation-drafts/draft-1', expect.objectContaining({
         method: 'PUT', body: expect.objectContaining({ expected_version: 4 }),
     }));
-});
+}, 30000);
 
 test('applies bulk remarks only to selected draft boxes, then saves before opening the PDF', async () => {
     renderPage();

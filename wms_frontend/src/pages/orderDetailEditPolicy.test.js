@@ -104,7 +104,8 @@ test('ordinary salesperson permissions still protect another salespersons transp
     renderOrder();
     const transportation = await screen.findByText('DHL');
     expect(transportation.parentElement.querySelector('.ant-typography-edit')).toBeNull();
-    expect(screen.queryByRole('button', { name: /报\s*价/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /dollar\s*报价$/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /报价版本/ })).toBeInTheDocument();
 });
 
 test.each([

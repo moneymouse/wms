@@ -1,5 +1,8 @@
 """创建订单时的首版报价测试。"""
 
+import pytest
+
+from Auth import create_jwt
 from data.database import SessionFactory
 from data.DB import OrderQuoteVersionTable, OrderTable
 from data.user.User import UserTable
@@ -114,3 +117,60 @@ def test_regular_quote_endpoint_still_requires_current_salesman(
     )
     assert accepted.status_code == 200
     assert accepted.get_json()["data"]["quoter_id"] == 3
+
+
+@pytest.mark.parametrize("roles", [
+    ["salesperson"],
+    ["admin"],
+    ["store_manager"],
+    ["finance"],
+    ["admin", "salesperson"],
+])
+def test_non_owner_can_read_quote_versions_and_remarks_but_cannot_submit(
+    client, salesperson_token, roles
+):
+    _create_salesman()
+    with SessionFactory() as session:
+        session.add(OrderTable(
+            uid="shared-quote-order",
+            order_id="ORDER-SHARED-QUOTE",
+            transportation="未维护渠道",
+            salesman_id=3,
+            archive=False,
+            create_date="2026-10-23 10:00",
+        ))
+        session.commit()
+
+    path = "/api/orders/shared-quote-order/quotes"
+    remarks = ["首版报价\n含包装费", "调整附加费后的报价"]
+    for version, remark in enumerate(remarks, start=1):
+        created = client.post(
+            path,
+            headers={"x-token": salesperson_token},
+            json={"unit_price": 12.5, "surcharge": version, "quote_remark": remark},
+        )
+        assert created.status_code == 200
+        assert created.get_json()["data"]["version_no"] == version
+
+    reader_headers = {"x-token": create_jwt({
+        "user_id": 99,
+        "name": "非订单所有者",
+        "roles": roles,
+    })}
+    history = client.get(path, headers=reader_headers)
+    assert history.status_code == 200
+    versions = history.get_json()["data"]
+    assert [row["version_no"] for row in versions] == [2, 1]
+    assert [row["quote_remark"] for row in versions] == list(reversed(remarks))
+
+    denied = client.post(
+        path,
+        headers=reader_headers,
+        json={"unit_price": 99, "surcharge": 0, "quote_remark": "不应保存"},
+    )
+    assert denied.status_code == 403
+    assert client.get(path, headers=reader_headers).get_json()["data"] == versions
+
+    pdf = client.get("/api/orders/shared-quote-order/quote-pdf", headers=reader_headers)
+    assert pdf.status_code == 200
+    assert pdf.get_json()["mime_type"] == "application/pdf"

@@ -157,7 +157,10 @@ export default function ShippingConfirmationDrafts() {
         const controller = new AbortController();
         setCatalogLoading(true);
         setCatalogError('');
-        const params = new URLSearchParams({ p: String(page), s: '10', ...(query ? { q: query } : {}) });
+        const params = new URLSearchParams({
+            p: String(page), s: '10', box_status: 'outbound', exclude_box_status: 'true',
+            ...(query ? { q: query } : {}),
+        });
         shippingConfirmationRequest(`/packing-lists?${params}`, { signal: controller.signal }).then(result => {
             if (requestSequence.current === sequence) setCatalog({ items: result?.items || [], total: Number(result?.total || 0) });
         }).catch(requestError => {
