@@ -1,0 +1,123 @@
+name: Deploy pre
+
+on:
+  push:
+    branches: [pre]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-pre
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      PRE_SSH_HOST: ${{ vars.PRE_SSH_HOST || '8.166.137.88' }}
+      PRE_SSH_USER: ${{ vars.PRE_SSH_USER || 'agent' }}
+      PRE_SSH_PORT: ${{ vars.PRE_SSH_PORT || '22' }}
+      PRE_DEPLOY_DIR: ${{ vars.PRE_DEPLOY_DIR || '/home/tony/wms_pre' }}
+    steps:
+      - name: Check deployment configuration
+        env:
+          PRE_SSH_PRIVATE_KEY: ${{ secrets.PRE_SSH_PRIVATE_KEY }}
+          PRE_SSH_KNOWN_HOSTS: ${{ secrets.PRE_SSH_KNOWN_HOSTS }}
+        run: |
+          for name in PRE_SSH_PRIVATE_KEY PRE_SSH_KNOWN_HOSTS PRE_DEPLOY_DIR; do
+            if [[ -z "${!name}" ]]; then
+              echo "::error::Missing Actions configuration: $name. See docs/deploy-pre-actions.md."
+              exit 1
+            fi
+          done
+          [[ "$PRE_SSH_HOST" =~ ^[a-zA-Z0-9][a-zA-Z0-9.-]*$ ]] || { echo '::error::Invalid PRE_SSH_HOST'; exit 1; }
+          [[ "$PRE_SSH_USER" =~ ^[a-z_][a-zA-Z0-9_-]*$ ]] || { echo '::error::Invalid PRE_SSH_USER'; exit 1; }
+          [[ "$PRE_SSH_PORT" =~ ^[0-9]{1,5}$ ]] && (( 10#$PRE_SSH_PORT >= 1 && 10#$PRE_SSH_PORT <= 65535 )) || { echo '::error::Invalid PRE_SSH_PORT'; exit 1; }
+          # deploy_pre.sh embeds this path in a remote shell command. Require a
+          # dedicated pre directory, without whitespace or shell metacharacters.
+          [[ "$PRE_DEPLOY_DIR" =~ ^/[a-zA-Z0-9_/-]+/wms_pre$ ]] || { echo '::error::PRE_DEPLOY_DIR must be an absolute path ending in /wms_pre'; exit 1; }
+
+      - name: Check out pushed commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: wms_frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: wms_frontend
+        run: npm ci
+
+      - name: Configure SSH
+        env:
+          PRE_SSH_PRIVATE_KEY: ${{ secrets.PRE_SSH_PRIVATE_KEY }}
+          PRE_SSH_KNOWN_HOSTS: ${{ secrets.PRE_SSH_KNOWN_HOSTS }}
+        run: |
+          umask 077
+          ssh_dir="$RUNNER_TEMP/wms-pre-ssh"
+          mkdir -p "$ssh_dir" "$HOME/.ssh"
+          printf '%s\n' "$PRE_SSH_PRIVATE_KEY" | tr -d '\r' > "$ssh_dir/identity"
+          printf '%s\n' "$PRE_SSH_KNOWN_HOSTS" > "$ssh_dir/known_hosts"
+          ssh-keygen -y -P '' -f "$ssh_dir/identity" > /dev/null
+          cat > "$HOME/.ssh/config" <<EOF
+          Host wms-pre
+            HostName $PRE_SSH_HOST
+            User $PRE_SSH_USER
+            Port $PRE_SSH_PORT
+            IdentityFile $ssh_dir/identity
+            UserKnownHostsFile $ssh_dir/known_hosts
+            IdentitiesOnly yes
+            BatchMode yes
+            StrictHostKeyChecking yes
+            ConnectTimeout 15
+            ServerAliveInterval 15
+            ServerAliveCountMax 3
+          EOF
+
+      - name: Check server before syncing files
+        run: |
+          command -v rsync
+          ssh wms-pre "bash -s -- '$PRE_DEPLOY_DIR'" <<'REMOTE_CHECK'
+          set -euo pipefail
+          deploy_dir="$1"
+          test -d "$deploy_dir"
+          test -w "$deploy_dir"
+          cd "$deploy_dir"
+          for file in PRE_DB.env PRE_BK.env env.toml; do
+            test -r "wms_backend/$file" || { echo "Missing server configuration: wms_backend/$file" >&2; exit 1; }
+          done
+          # An inaccessible existing TLS directory must not be mistaken for an
+          # HTTP-only installation when deploying as a different SSH user.
+          tls_dir="$(dirname -- "$deploy_dir")/wms_pre_tls"
+          if [[ -e "$tls_dir" ]]; then
+            certificate_dir="$tls_dir/letsencrypt/live/wms-pre-ip"
+            test -d "$certificate_dir" &&
+              test -f "$certificate_dir/fullchain.pem" &&
+              test -f "$certificate_dir/privkey.pem" || {
+                echo 'Existing TLS certificates are incomplete or inaccessible to the deploy user; stopping before sync.' >&2
+                exit 1
+              }
+          fi
+          command -v rsync
+          docker compose version
+          docker info > /dev/null
+          REMOTE_CHECK
+
+      - name: Deploy with deploy_pre.sh
+        env:
+          # Keep the existing manual CRA build behavior: warnings are not errors.
+          CI: 'false'
+        run: bash deploy_pre.sh --host wms-pre --remote-dir "$PRE_DEPLOY_DIR"
+
+      - name: Remove SSH credentials
+        if: always()
+        run: |
+          rm -rf -- "$RUNNER_TEMP/wms-pre-ssh"
+          rm -f -- "$HOME/.ssh/config"

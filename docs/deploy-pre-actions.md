@@ -1,0 +1,68 @@
+# pre 分支自动部署
+
+推送到 `pre` 分支后，`.github/workflows/deploy-pre.yml` 在 GitHub Ubuntu runner
+上检出该次提交、安装 Node.js 22 和前端依赖，通过公网 SSH 连接
+`agent@8.166.137.88:22`，然后在仓库根目录执行：
+
+```bash
+bash deploy_pre.sh --host wms-pre --remote-dir "$PRE_DEPLOY_DIR"
+```
+
+`deploy_pre.sh` 在 runner 构建前端，经 rsync 同步到服务器，再通过 SSH 执行
+Docker Compose。默认不迁移数据库，保留脚本已有的预发 TLS/MCP 检测逻辑。
+部署任务串行执行，新推送不会中断正在运行的部署；连续多次推送时 GitHub
+可能以最新任务替换尚未开始的排队任务。
+
+## 首次配置
+
+在仓库 **Settings → Secrets and variables → Actions** 中配置以下项目。
+ChatGPT 云环境中的密钥不会自动同步到 GitHub Actions。
+
+### Repository secrets
+
+| 名称 | 内容 |
+| --- | --- |
+| `PRE_SSH_PRIVATE_KEY` | `agent` 用户的完整、无口令 SSH 私钥；使用实际私钥，不是代理占位符 |
+| `PRE_SSH_KNOWN_HOSTS` | 已核验的服务器 SSH 主机公钥，采用 OpenSSH `known_hosts` 格式 |
+
+可以从已核验服务器身份的电脑取得 `known_hosts` 记录：
+
+```bash
+ssh-keygen -F 8.166.137.88 -f ~/.ssh/known_hosts
+```
+
+把有效的主机公钥记录存入 `PRE_SSH_KNOWN_HOSTS`。非默认端口的记录应对应
+`[8.166.137.88]:端口`。工作流开启严格主机校验，不会自动信任临时扫描到的公钥。
+
+### Repository variables
+
+| 名称 | 默认值 / 要求 |
+| --- | --- |
+| `PRE_DEPLOY_DIR` | 默认 `/home/tony/wms_pre`，可设置为其他已有预发目录的绝对路径 |
+| `PRE_SSH_HOST` | 默认 `8.166.137.88`（公网地址，无需 VPN） |
+| `PRE_SSH_USER` | 默认 `agent` |
+| `PRE_SSH_PORT` | 默认 `22` |
+
+目录必须以 `/wms_pre` 结尾，且只包含字母、数字、下划线、连字符和斜杠。
+默认沿用现有预发目录 `/home/tony/wms_pre`；改用 `agent` 登录不会改变已有部署
+的位置。请确保 `agent` 能进入 `/home/tony`、读写预发目录并运行 Docker。
+
+## 服务器要求
+
+- 已存在预发目录，SSH 登录用户对其有读写权限。
+- `wms_backend/PRE_DB.env`、`PRE_BK.env` 和 `env.toml` 已配置且可读。
+- 已安装 rsync、Docker 和 Docker Compose，SSH 登录用户可非交互运行 Docker。
+- 使用 TLS overlay 时，Docker Compose 需支持 `!override`（2.24.4 或以上）。
+- 沿用 `/home/tony/wms_pre_tls` 时，`agent` 必须能遍历证书路径并确认两个证书文件存在；
+  原目录可能仅允许 `tony` 访问，需为部署用户配置适当的目录访问权限。
+- SSH 公钥已加入登录用户的 `authorized_keys`。
+- 公网 SSH 端口允许 GitHub runner 访问（默认 TCP 22）。
+
+工作流在 rsync 之前检查目录、配置文件与 Docker 权限；配置缺失时提前失败。
+已有 TLS 状态目录但证书不完整或不可访问时也会停止，防止误判为 HTTP 环境。
+私钥仅写入 runner 临时目录，不进入仓库，也不会被部署脚本同步到服务器。
+构建沿用手动执行脚本的行为：CRA 警告不会被 `CI=true` 提升为错误，实际构建错误
+仍会中止部署。
+
+配置完成后推送到 `pre`，在仓库 **Actions → Deploy pre** 查看结果。
+不要向 `main` 推送来触发部署：此工作流仅监听 `pre`。
