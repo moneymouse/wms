@@ -36,3 +36,66 @@
 .my-text-button:hover {
     background-color: transparent !important;
 }
+
+.financeSection {
+    min-width: 0;
+    margin-bottom: 24px;
+    padding-top: 16px;
+    border-top: 1px solid #f0f0f0;
+}
+
+.financeSection .financeTitle {
+    margin: 0 0 8px;
+    font-size: 18px;
+}
+
+.financeCollapse :global(.ant-collapse-item) {
+    border-bottom: 1px solid #f0f0f0;
+}
+
+.financeCollapse :global(.ant-collapse-header) {
+    padding: 10px 0 !important;
+}
+
+.financeCollapse :global(.ant-collapse-content-box) {
+    padding: 4px 0 16px !important;
+}
+
+.pageHeader {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px 24px;
+    min-width: 0;
+    padding-top: 24px;
+    margin-bottom: 32px;
+}
+
+.pageHeader .pageTitle {
+    min-width: 0;
+    margin: 0;
+    overflow-wrap: anywhere;
+}
+
+.pageActions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    flex: 0 0 auto;
+    gap: 8px;
+    max-width: 100%;
+    margin-left: auto;
+}
+
+.pageActions > * {
+    flex-shrink: 0;
+}
+
+@media (max-width: 767px) {
+    .pageHeader {
+        padding-top: 0;
+        margin-bottom: 24px;
+    }
+}

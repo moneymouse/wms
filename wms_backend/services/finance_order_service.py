@@ -132,6 +132,78 @@ def list_orders(actor, **filters):
                 **(packing_references or {})}
 
 
+def list_order_payments(order_uid, actor, *, page=1, page_size=30):
+    """Read visible cash references and separately total explicit order allocations."""
+    from data.DB import CargoTable
+
+    actor_id, _ = ledger._payment_actor(actor)
+    order_uid = ledger._text(order_uid, "订单UID", 32, required=True)
+    all_visible = ledger._payment_finance(actor)
+    with ledger.SessionFactory() as session:
+        order = session.query(OrderTable).filter_by(uid=order_uid).first()
+        if order is None:
+            raise LookupError("订单不存在")
+        query = session.query(FinancePayment).filter_by(partner_type="customer")
+        if not all_visible:
+            query = query.filter(FinancePayment.created_by_id == actor_id,
+                FinancePayment.is_opening.is_(False))
+        payments = query.order_by(FinancePayment.id.desc()).all()
+
+        document_ids = [row.document_id for row in session.query(FinanceOrderDocument).filter_by(order_uid=order_uid)]
+        # A reviewed legacy invoice can be allocated before it joins the managed
+        # order flow; its explicit mapping is equally reliable, even after reversal.
+        document_ids.extend(row.document_id for row in session.query(FinanceLegacyLink).filter_by(order_uid=order_uid)
+            if row.document_id)
+        allocations = session.query(FinanceAllocation).filter(
+            FinanceAllocation.document_id.in_(document_ids),
+            FinanceAllocation.payment_id.is_not(None)).all() if document_ids and payments else []
+        allocated, allocation_payment_ids = {}, set()
+        for allocation in allocations:
+            allocation_payment_ids.add(allocation.payment_id)
+            if allocation.status == "active":
+                allocated[allocation.payment_id] = allocated.get(allocation.payment_id, ledger.ZERO) + allocation.amount
+
+        boxes = {box.uid for box in session.query(CargoTable).filter(
+            CargoTable.target_order_uid == order_uid, CargoTable.archive.is_(False))} if not order.archive else set()
+        customer_ids = {row.id for row in order.customers}
+        money_fields = ("received_amount", "refunded_amount", "net_received_amount",
+            "related_received_amount", "related_refunded_amount")
+        summary = {field: ledger.ZERO for field in money_fields}
+        summary.update(draft_count=0, pending_count=0)
+        items = []
+        fields = ("id", "number", "payment_date", "direction", "is_opening", "status", "account_name",
+            "reference", "memo", "created_by_name")
+        for payment in payments:
+            references = json.loads(payment.reference_orders_json or "[]")
+            packing = json.loads(payment.reference_packing_boxes_json or "[]")
+            same_customer = payment.partner_id in customer_ids if customer_ids else payment.partner_name == order.customer_name
+            relations = []
+            if any(reference["order_uid"] == order_uid for reference in references):
+                relations.append("reference")
+            if same_customer and any(reference["box_uid"] in boxes for reference in packing):
+                relations.append("packing")
+            if payment.id in allocation_payment_ids:
+                relations.append("allocation")
+            if not relations:
+                continue
+            amount = allocated.get(payment.id, ledger.ZERO) if payment.status == "posted" else ledger.ZERO
+            items.append({**{field: getattr(payment, field) for field in fields},
+                "amount": ledger._str(payment.amount), "relation_types": relations,
+                "order_allocated_amount": ledger._str(amount)})
+            if payment.status == "posted":
+                incoming = payment.direction == "incoming"
+                summary["related_received_amount" if incoming else "related_refunded_amount"] += payment.amount
+                summary["received_amount" if incoming else "refunded_amount"] += amount
+            elif payment.status in {"draft", "pending"}:
+                summary[payment.status + "_count"] += 1
+        summary["net_received_amount"] = summary["received_amount"] - summary["refunded_amount"]
+        for field in money_fields:
+            summary[field] = ledger._str(summary[field])
+        return {**ledger._page(items, page, page_size), "order_uid": order.uid,
+            "order_number": order.order_id or order.uid, "visibility": "all" if all_visible else "own",
+            "summary": summary}
+
+
 def reconciliation_count(session, date_to):
     count = 0
     for state in session.query(FinanceOrderSettlement).filter(FinanceOrderSettlement.created_at < date_to + " 99"):

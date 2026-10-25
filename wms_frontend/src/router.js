@@ -25,6 +25,7 @@ import AuditLogs from "./pages/auditLogs";
 import Receipts from "./pages/receipts";
 import { PaperIntakeUploadDetail } from "./pages/intakes";
 import ShippingConfirmationDrafts from "./pages/shippingConfirmationDrafts";
+import OrderExceptions from "./pages/orderExceptions";
 
 // 移除 LogsRoute 组件，因为权限检查逻辑已经移到 Logs 组件内部
 
@@ -33,6 +34,8 @@ const router = createBrowserRouter([{
         path: "", element: <NewOrder />, index: true
     }, {
         path: 'orders', element: <OrderList />
+    }, {
+        path: 'order-exceptions', element: <OrderExceptions />
     }, {
         path: 'orders/:order_id', element: <OrderDetail />
     }, {

@@ -26,6 +26,8 @@ from controllers.finance_revenue_controller import finance_revenue_bp
 from controllers.supplier_reconciliation_controller import supplier_reconciliation_bp
 from controllers.storage_management_controller import storage_management_bp
 from controllers.message_controller import message_bp
+from controllers.order_exception_controller import order_exception_bp
+from controllers.tracking_webhook_controller import tracking_webhook_bp
 from services.auth_service import init_admin_user
 from controllers.oauth_controller import init_oauth
 
@@ -72,6 +74,8 @@ app.register_blueprint(finance_revenue_bp)
 app.register_blueprint(supplier_reconciliation_bp)
 app.register_blueprint(storage_management_bp)
 app.register_blueprint(message_bp)
+app.register_blueprint(order_exception_bp)
+app.register_blueprint(tracking_webhook_bp)
 init_oauth(app)
 
 

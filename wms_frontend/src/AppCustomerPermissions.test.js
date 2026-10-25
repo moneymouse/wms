@@ -3,6 +3,8 @@ import { render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import App from './App';
 
+jest.mock('./components/MessageInbox', () => () => null);
+
 jest.mock('./common/featureTourState', () => ({
     ...jest.requireActual('./common/featureTourState'),
     shouldAutoShowFeatureTour: () => false,
@@ -21,7 +23,7 @@ beforeEach(() => {
     window.localStorage.clear();
     window.sessionStorage.clear();
     Object.defineProperty(window, 'matchMedia', { writable: true, value: query => ({
-        matches: true, media: query, onchange: null,
+        matches: query.includes('min-width') && !query.includes('1600'), media: query, onchange: null,
         addListener: () => {}, removeListener: () => {}, addEventListener: () => {},
         removeEventListener: () => {}, dispatchEvent: () => false,
     }) });
@@ -35,7 +37,8 @@ test.each([
     { role: 'salesperson' },
 ])('%j sees the customer menu and can enter its route', async payload => {
     renderCustomers(payload);
-    expect(await screen.findByText('客户管理')).toBeInTheDocument();
+    expect(await screen.findByRole('menuitem', { name: /客户管理/ })).toHaveAttribute('aria-expanded', 'true');
+    expect(await screen.findByRole('menuitem', { name: /客户列表/ })).toHaveClass('ant-menu-item-selected');
     expect(screen.getByTestId('current-path')).toHaveTextContent('/customers');
 });
 

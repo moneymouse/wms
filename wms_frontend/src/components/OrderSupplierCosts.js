@@ -3,7 +3,7 @@ import { Alert, Button, Card, Descriptions, Space, Table, Tag, Typography } from
 import { FINANCE_STATUS, money } from '../common/financeApi';
 import { reconciliationRequest } from '../common/supplierReconciliationApi';
 
-export default function OrderSupplierCosts({ orderUid, refreshKey = 0 }) {
+export default function OrderSupplierCosts({ orderUid, refreshKey = 0, embedded = false }) {
     const [reload, setReload] = useState(0);
     const [result, setResult] = useState({ orderUid: null, data: null, error: '', loading: true });
     useEffect(() => {
@@ -33,7 +33,8 @@ export default function OrderSupplierCosts({ orderUid, refreshKey = 0 }) {
         { title: '状态', dataIndex: 'status', render: value => <Tag color={FINANCE_STATUS[value]?.color}>{FINANCE_STATUS[value]?.label || value}</Tag> },
         { title: '对账来源', render: (_, row) => row.source_batch_id ? `批次 ${row.source_batch_id} / Excel 第 ${row.source_row} 行` : '财务登记' },
     ];
-    return <Card title="第三方成本" style={{ margin: '16px 0' }} extra={<Button size="small" loading={current.loading} onClick={() => setReload(value => value + 1)}>刷新成本</Button>}>
+    const refreshButton = <Button size="small" loading={current.loading} onClick={() => setReload(value => value + 1)}>刷新成本</Button>;
+    const content = <>
         {current.error && <Alert type="error" showIcon message={current.error} />}
         {current.loading && <Typography.Text type="secondary">正在加载第三方成本…</Typography.Text>}
         {data && <>
@@ -48,5 +49,9 @@ export default function OrderSupplierCosts({ orderUid, refreshKey = 0 }) {
                 {data.total > (data.items?.length || 0) && <Typography.Text type="secondary">仅展示最近 {data.items.length} 条，汇总金额包含全部费用。</Typography.Text>}
             </Space>
         </>}
-    </Card>;
+    </>;
+    return embedded ? <section aria-label="本单第三方成本">
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 16 }}>{refreshButton}</div>
+        {content}
+    </section> : <Card title="第三方成本" style={{ margin: '16px 0' }} extra={refreshButton}>{content}</Card>;
 }

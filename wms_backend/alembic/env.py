@@ -18,6 +18,8 @@ from data.database import Base
 from data import mcp  # noqa: F401
 from data import oauth  # noqa: F401
 from data import message  # noqa: F401
+from data import order_exception  # noqa: F401
+from data import parcel_tracking  # noqa: F401
 from data.finance import accounting  # noqa: F401
 from data.intake import IntakeTable, IntakePhotoTable  # noqa: F401
 from data.DB import OrderTable, CargoTable  # noqa: F401

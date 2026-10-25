@@ -158,7 +158,7 @@ def _template_requires_valid_quote(mode):
         return bool(record and record.requires_valid_quote)
 
 
-# 获取订单下的货物列表（含实时物流状态）
+# 获取订单下的货物列表（含已保存的 webhook 物流状态，不触发外部查询）
 @cargo_bp.get("/orders/<string:uid>/cargo")
 @verify
 @allow()

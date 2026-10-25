@@ -16,6 +16,7 @@ from data.DB import (
     OrderTable,
 )
 from utils.l7track import getTrackInfo, registerTrack
+from services.parcel_tracking_service import cached_tracking_for_cargos
 
 logger = logging.getLogger(__name__)
 
@@ -132,59 +133,22 @@ def _apply_weight_adjustment(cargo_items: list) -> list:
 
 
 def get_cargo_with_tracking(uid: str, order_model, cargo_model):
-    """
-    获取订单下所有货物并查询最新物流状态。
-    返回 (cargo_list, error_msg)。error_msg 不为 None 时表示查询物流时出错，
-    但 cargo_list 仍返回本地数据。
+    """Read order parcels and their persisted push snapshots, without HTTP.
+
+    Keep the established (cargo_list, error_msg) facade used by the controller.
+    Missing tracking is pending data, not a failed order detail request.
     """
     order = order_model.read(uid)
     if order is None:
         return None, "Order Not Found"
-
-    data: dict = {}
-    waybill_ids: list = []
+    cargos = []
     for cargo_uid in order["cargo_uid_list"]:
         cargo = cargo_model.read(cargo_uid)
-        if cargo is None:
-            continue
-        data[cargo_uid] = cargo
-        if cargo.get("waybill_id"):
-            waybill_ids.append(cargo["waybill_id"])
-
-    try:
-        for track_infos in getTrackInfo(waybill_ids):
-            track_info = track_infos["track_info"]
-            if track_info["latest_status"]["status"] == "NotFound":
-                continue
-            tag = str(track_infos["tag"])
-            if tag not in data:
-                # Ignore records that are not part of current order payload.
-                continue
-
-            latest_sub_status = track_info["latest_status"]["sub_status"]
-
-            # Packing-list boxes use status as business state (0 pending outbound / 1 outbound).
-            # Do not overwrite it with 17track sub status text.
-            # if not data[tag].get("packing_list_uid"):
-            # cargo_model.update(tag, {"status": latest_sub_status})
-            data[tag].update(
-                {
-                    **(
-                        {"status": latest_sub_status}
-                        if not data[tag].get("packing_list_uid")
-                        else {}
-                    ),
-                    "track_status": latest_sub_status,
-                    "desc": track_info["latest_status"]["sub_status_descr"],
-                    "events": track_info["tracking"]["providers"][0]["events"],
-                    "track_info": track_info,
-                }
-            )
-    except Exception as e:
-        logger.error("get_cargo_with_tracking: %s", e)
-        return list(data.values()), "Get Track Error"
-
-    return list(data.values()), None
+        # A parcel can move or be archived between the order list and row read.
+        if cargo is not None and cargo.get("target_order_uid") == uid and not cargo.get("archive"):
+            cargos.append(cargo)
+    tracking = cached_tracking_for_cargos(cargos)
+    return [dict(cargo, **tracking[cargo["uid"]]) for cargo in cargos], None
 
 
 def generate_excel(

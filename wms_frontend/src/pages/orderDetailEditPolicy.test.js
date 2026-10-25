@@ -179,3 +179,52 @@ test('ordinary outbound cargo can still change its original number despite ident
         expect(JSON.parse(updateCall[1].body)).toEqual({ transfer_id: 'ORIGINAL-NEW' });
     });
 });
+
+test.each([0, '0', '0.00'])('zero declared value %s starts blank and remains unchanged when saved without input', async price => {
+    mockFetch(buildOrder(), { ...cargo, price });
+    renderOrder();
+    const row = (await screen.findByText('OLD-1')).closest('tr');
+    fireEvent.click(within(row).getByRole('button', { name: /编\s*辑/ }));
+
+    const priceInput = within(row).getAllByRole('cell')[7].querySelector('input');
+    expect(priceInput).toHaveValue('');
+    fireEvent.click(within(row).getByRole('button', { name: /保\s*存/ }));
+
+    await waitFor(() => expect(within(row).getByRole('button', { name: /编\s*辑/ })).toBeEnabled());
+    expect(global.fetch.mock.calls.some(([, options]) => options?.method === 'PUT')).toBe(false);
+    expect(within(row).getAllByRole('cell')[7]).toHaveTextContent(String(price));
+});
+
+test('editing another cargo field leaves the blank zero declared value out of the update', async () => {
+    mockFetch(buildOrder(), { ...cargo, price: 0 });
+    renderOrder();
+    const row = (await screen.findByText('OLD-1')).closest('tr');
+    fireEvent.click(within(row).getByRole('button', { name: /编\s*辑/ }));
+    fireEvent.change(within(row).getByDisplayValue('WB-1'), { target: { value: 'WB-NEW' } });
+    fireEvent.click(within(row).getByRole('button', { name: /保\s*存/ }));
+
+    await waitFor(() => {
+        const updateCall = global.fetch.mock.calls.find(([url, options]) => String(url).endsWith('/cargo/cargo-1') && options?.method === 'PUT');
+        expect(updateCall).toBeDefined();
+        expect(JSON.parse(updateCall[1].body)).toEqual({ waybill_id: 'WB-NEW' });
+    });
+});
+
+test.each([0, '25.50'])('declared value %s can be edited and saves the entered decimal amount', async price => {
+    mockFetch(buildOrder(), { ...cargo, price });
+    renderOrder();
+    const row = (await screen.findByText('OLD-1')).closest('tr');
+    fireEvent.click(within(row).getByRole('button', { name: /编\s*辑/ }));
+
+    const priceInput = within(row).getAllByRole('cell')[7].querySelector('input');
+    expect(priceInput).toHaveValue(price === 0 ? '' : price);
+    fireEvent.change(priceInput, { target: { value: '0.5' } });
+    fireEvent.keyDown(priceInput, { key: 'Enter', code: 'Enter', keyCode: 13 });
+
+    await waitFor(() => {
+        const updateCall = global.fetch.mock.calls.find(([url, options]) => String(url).endsWith('/cargo/cargo-1') && options?.method === 'PUT');
+        expect(updateCall).toBeDefined();
+        expect(JSON.parse(updateCall[1].body)).toEqual({ price: '0.5' });
+    });
+    expect(await within(row).findByText('0.5')).toBeInTheDocument();
+});

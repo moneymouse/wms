@@ -20,13 +20,15 @@ import {
     AuditOutlined,
     TransactionOutlined,
     DatabaseOutlined,
-    QuestionCircleOutlined
+    QuestionCircleOutlined,
+    WarningOutlined
 } from '@ant-design/icons';
 import { Avatar, Button, Layout, Menu, theme, Tooltip, Drawer, Grid, Modal, Popover, Space, Tour } from 'antd';
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import { LogIcon } from "./pages/logs";
 import MessageInbox from './components/MessageInbox';
 import { menuPermissions, routePermissions, hasPermission, getUserRoles, getLandingPage, ROLE_LABEL_MAP } from "./common/roleConfig";
+import { buildMenuItems, getSelectedMenuGroup, getSelectedMenuKey } from "./common/menuConfig";
 import {
     COST_QUOTE_RECEIPT_TOUR,
     getCostQuoteReceiptChapter,
@@ -53,6 +55,7 @@ function App() {
     const [drawerVisible, setDrawerVisible] = useState(false);
 
     const [collapsed, setCollapsed] = useState(true);
+    const [openMenuKeys, setOpenMenuKeys] = useState([]);
     const [userRoles, setUserRoles] = useState([]);
     const [username, setUsername] = useState('');
     const [featurePromptOpen, setFeaturePromptOpen] = useState(false);
@@ -71,25 +74,14 @@ function App() {
 
     useEffect(() => {
         const handleTourFlowChange = (event) => {
-            if (isMobile && event.detail?.stage === 'receipt-navigation') {
-                setDrawerVisible(true);
-            }
+            if (event.detail?.stage !== 'receipt-navigation' || !hasPermission(userRoles, menuPermissions.receipts)) return;
+            setOpenMenuKeys(keys => keys.includes('finance-center') ? keys : [...keys, 'finance-center']);
+            if (isMobile) setDrawerVisible(true);
+            else setCollapsed(false);
         };
         window.addEventListener(FEATURE_TOUR_FLOW_EVENT, handleTourFlowChange);
         return () => window.removeEventListener(FEATURE_TOUR_FLOW_EVENT, handleTourFlowChange);
-    }, [isMobile]);
-
-    const getSelectedMenuKey = () => {
-        const currentPath = pathname.replace(/^\//, '');
-        if (currentPath === '') return '';
-        if (currentPath.startsWith('orders/')) return 'orders';
-        if (currentPath.startsWith('packing-list/')) return 'packing-list/new';
-        if (currentPath.startsWith('packing-lists/')) return 'packing-lists';
-        if (currentPath === 'shipping-confirmation-drafts' || currentPath.startsWith('shipping-confirmation-drafts/')) return 'packing-lists';
-        if (currentPath.startsWith('bonus-estimate')) return 'bonus';
-        if (currentPath.startsWith('bonus')) return 'bonus';
-        return currentPath;
-    };
+    }, [isMobile, userRoles]);
 
     useEffect(() => {
         // 从 localStorage 获取 JWT 并检查用户角色
@@ -202,6 +194,11 @@ function App() {
             label: '订单列表',
         },
         {
+            key: 'order-exceptions',
+            icon: <WarningOutlined />,
+            label: '异常订单',
+        },
+        {
             key: 'upload',
             icon: <UploadOutlined />,
             label: '上传明细'
@@ -209,7 +206,7 @@ function App() {
         {
             key: 'customers',
             icon: <TeamOutlined />,
-            label: '客户管理',
+            label: '客户列表',
         },
         {
             key: 'packing-list/new',
@@ -274,10 +271,22 @@ function App() {
         }
     ];
 
-    // 根据用户角色过滤菜单项
-    const menuItems = allMenuItems.filter(item =>
-        menuPermissions[item.key] && hasPermission(userRoles, menuPermissions[item.key])
-    );
+    const menuItems = buildMenuItems(allMenuItems, userRoles, {
+        'order-management': <UnorderedListOutlined />,
+        'warehouse-management': <ContainerOutlined />,
+        'customer-management': <TeamOutlined />,
+        'finance-center': <AccountBookOutlined />,
+        'log-center': <AuditOutlined />,
+        'management-center': <ToolOutlined />,
+        'personal-center': <UserOutlined />,
+    });
+    const selectedMenuKey = getSelectedMenuKey(pathname);
+    const selectedMenuGroup = getSelectedMenuGroup(menuItems, selectedMenuKey);
+
+    useEffect(() => {
+        if (!selectedMenuGroup || (!isMobile && collapsed)) return;
+        setOpenMenuKeys(keys => keys.includes(selectedMenuGroup) ? keys : [...keys, selectedMenuGroup]);
+    }, [selectedMenuGroup, pathname, isMobile, collapsed]);
 
     const siderContent = (
         <>
@@ -285,6 +294,7 @@ function App() {
                 <Header style={{ padding: 0 }}>
                     <Button
                         type="link"
+                        aria-label={collapsed ? '展开菜单' : '收起菜单'}
                         icon={collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
                         onClick={() => setCollapsed(!collapsed)}
                         style={{
@@ -300,14 +310,16 @@ function App() {
             <Menu
                 theme="dark"
                 mode="inline"
-                selectedKeys={[getSelectedMenuKey()]}
+                selectedKeys={[selectedMenuKey]}
+                openKeys={openMenuKeys}
+                onOpenChange={setOpenMenuKeys}
                 onClick={({ key }) => {
                     if (key === 'receipts') {
                         const { userId } = getCurrentTourUser();
                         const flow = readFeatureTourFlow(userId);
                         if (flow?.campaignId === COST_QUOTE_RECEIPT_TOUR.id) clearFeatureTourFlow(userId);
                     }
-                    navigate(key);
+                    navigate(key ? `/${key}` : '/');
                     if (isMobile) setDrawerVisible(false);
                 }}
                 style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}
@@ -488,6 +500,7 @@ function App() {
                     }}>
                         <Button
                             type="text"
+                            aria-label="打开菜单"
                             icon={<MenuOutlined style={{ color: 'white', fontSize: '18px' }} />}
                             onClick={() => setDrawerVisible(true)}
                             style={{ padding: 0, width: 40, height: 40, display: 'flex', alignItems: 'center', justifyContent: 'center' }}

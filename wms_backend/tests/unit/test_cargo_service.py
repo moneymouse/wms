@@ -28,11 +28,11 @@ class TestCargoService(BaseServiceTest, FileTestMixin):
     """货物服务测试"""
 
     def test_get_cargo_with_tracking_success(self):
-        """测试成功获取货物追踪信息"""
+        """本地缓存返回物流信息，仓库业务状态保持整数。"""
         mock_order = OrderFactory.create_order_data(cargo_uid_list=["cargo1", "cargo2"])
         mock_cargos = [
-            CargoFactory.create_cargo_data(waybill_id="WB001"),
-            CargoFactory.create_cargo_data(waybill_id="WB002"),
+            CargoFactory.create_cargo_data(uid="cargo1", target_order_uid="test_uid", waybill_id="WB001", status=1),
+            CargoFactory.create_cargo_data(uid="cargo2", target_order_uid="test_uid", waybill_id="WB002", status=0),
         ]
 
         mock_order_model = Mock()
@@ -40,28 +40,17 @@ class TestCargoService(BaseServiceTest, FileTestMixin):
         mock_order_model.read.return_value = mock_order
         mock_cargo_model.read.side_effect = mock_cargos
 
-        with patch("services.cargo_service.getTrackInfo") as mock_track:
-            mock_track.return_value = [
-                {
-                    "tag": "cargo1",
-                    "track_info": {
-                        "latest_status": {
-                            "status": "Delivered",
-                            "sub_status": "delivered",
-                            "sub_status_descr": "已送达",
-                        },
-                        "tracking": {
-                            "providers": [
-                                {
-                                    "events": [
-                                        {"date": "2023-01-01", "description": "已送达"}
-                                    ]
-                                }
-                            ]
-                        },
-                    },
-                }
-            ]
+        with patch("services.cargo_service.cached_tracking_for_cargos") as mock_cache:
+            mock_cache.return_value = {
+                "cargo1": {
+                    "track_status": "Delivered_Other", "desc": "已送达",
+                    "events": [{"time_utc": "2026-10-11T10:00:00Z", "description": "已送达"}],
+                    "track_info": {"latest_status": {"status": "Delivered"}},
+                    "tracking_received_at": "2026-10-11T10:00:01Z", "tracking_pending": False,
+                },
+                "cargo2": {"track_status": None, "desc": None, "events": [], "track_info": None,
+                           "tracking_received_at": None, "tracking_pending": True},
+            }
 
             cargo_list, error = get_cargo_with_tracking(
                 "test_uid", mock_order_model, mock_cargo_model
@@ -69,10 +58,15 @@ class TestCargoService(BaseServiceTest, FileTestMixin):
 
             assert error is None
             assert len(cargo_list) == 2
-            # 验证第一个货物包含追踪信息
-            assert cargo_list[0]["status"] == "delivered"
+            assert cargo_list[0]["status"] == 1
+            assert cargo_list[0]["track_status"] == "Delivered_Other"
             assert cargo_list[0]["desc"] == "已送达"
-            assert "events" in cargo_list[0]
+            assert len(cargo_list[0]["events"]) == 1
+            assert cargo_list[0]["tracking_pending"] is False
+            assert cargo_list[1]["status"] == 0
+            assert cargo_list[1]["tracking_pending"] is True
+            mock_cache.assert_called_once_with(mock_cargos)
+            mock_cargo_model.update.assert_not_called()
 
     def test_get_cargo_with_tracking_order_not_found(self):
         """测试订单不存在"""
@@ -90,15 +84,19 @@ class TestCargoService(BaseServiceTest, FileTestMixin):
     def test_get_cargo_with_tracking_no_waybill(self):
         """测试货物没有运单号"""
         mock_order = OrderFactory.create_order_data(cargo_uid_list=["cargo1"])
-        mock_cargo = CargoFactory.create_cargo_data(waybill_id=None)
+        mock_cargo = CargoFactory.create_cargo_data(uid="cargo1", target_order_uid="test_uid", waybill_id=None)
 
         mock_order_model = Mock()
         mock_cargo_model = Mock()
         mock_order_model.read.return_value = mock_order
         mock_cargo_model.read.return_value = mock_cargo
 
-        with patch("services.cargo_service.getTrackInfo") as mock_track:
-            mock_track.return_value = []
+        with patch("services.cargo_service.cached_tracking_for_cargos") as mock_cache, patch(
+            "requests.sessions.Session.request", side_effect=AssertionError("outbound HTTP")
+        ) as mock_network:
+            mock_cache.return_value = {"cargo1": {"track_status": None, "desc": None, "events": [],
+                                                  "track_info": None, "tracking_received_at": None,
+                                                  "tracking_pending": True}}
 
             cargo_list, error = get_cargo_with_tracking(
                 "test_uid", mock_order_model, mock_cargo_model
@@ -106,13 +104,14 @@ class TestCargoService(BaseServiceTest, FileTestMixin):
 
             assert error is None
             assert len(cargo_list) == 1
-            # 验证没有运单号的货物不会查询追踪信息
-            mock_track.assert_called_once_with([])
+            assert cargo_list[0]["tracking_pending"] is True
+            assert cargo_list[0]["status"] == 0
+            mock_network.assert_not_called()
 
-    def test_get_cargo_with_tracking_api_error(self):
-        """测试追踪API错误"""
+    def test_get_cargo_with_tracking_cache_error(self):
+        """缓存读取错误交由调用者处理，不能伪装成无物流数据。"""
         mock_order = OrderFactory.create_order_data(cargo_uid_list=["cargo1"])
-        mock_cargo = CargoFactory.create_cargo_data(waybill_id="WB001")
+        mock_cargo = CargoFactory.create_cargo_data(uid="cargo1", target_order_uid="test_uid", waybill_id="WB001")
 
         mock_order_model = Mock()
         mock_cargo_model = Mock()
@@ -120,32 +119,30 @@ class TestCargoService(BaseServiceTest, FileTestMixin):
         mock_cargo_model.read.return_value = mock_cargo
 
         with patch(
-            "services.cargo_service.getTrackInfo", side_effect=Exception("API Error")
+            "services.cargo_service.cached_tracking_for_cargos", side_effect=Exception("Cache Error")
         ):
-            cargo_list, error = get_cargo_with_tracking(
-                "test_uid", mock_order_model, mock_cargo_model
-            )
+            with pytest.raises(Exception, match="Cache Error"):
+                get_cargo_with_tracking("test_uid", mock_order_model, mock_cargo_model)
 
-            assert error == "Get Track Error"
-            assert len(cargo_list) == 1  # 仍然返回本地数据
+            assert mock_cargo["status"] == 0
+            mock_cargo_model.update.assert_not_called()
 
     def test_get_cargo_with_tracking_not_found_status(self):
-        """测试追踪状态为NotFound"""
+        """未找到物流的缓存也不会写入或覆盖仓库业务状态。"""
         mock_order = OrderFactory.create_order_data(cargo_uid_list=["cargo1"])
-        mock_cargo = CargoFactory.create_cargo_data(waybill_id="WB001")
+        mock_cargo = CargoFactory.create_cargo_data(uid="cargo1", target_order_uid="test_uid", waybill_id="WB001")
 
         mock_order_model = Mock()
         mock_cargo_model = Mock()
         mock_order_model.read.return_value = mock_order
         mock_cargo_model.read.return_value = mock_cargo
 
-        with patch("services.cargo_service.getTrackInfo") as mock_track:
-            mock_track.return_value = [
-                {
-                    "tag": "cargo1",
-                    "track_info": {"latest_status": {"status": "NotFound"}},
-                }
-            ]
+        with patch("services.cargo_service.cached_tracking_for_cargos") as mock_cache:
+            mock_cache.return_value = {"cargo1": {
+                "track_status": "NotFound", "desc": "查询不到", "events": [],
+                "track_info": {"latest_status": {"status": "NotFound"}},
+                "tracking_received_at": "2026-10-11T10:00:01Z", "tracking_pending": False,
+            }}
 
             cargo_list, error = get_cargo_with_tracking(
                 "test_uid", mock_order_model, mock_cargo_model
@@ -153,7 +150,8 @@ class TestCargoService(BaseServiceTest, FileTestMixin):
 
             assert error is None
             assert len(cargo_list) == 1
-            # 验证NotFound状态不会更新货物信息
+            assert cargo_list[0]["status"] == 0
+            assert cargo_list[0]["track_status"] == "NotFound"
             mock_cargo_model.update.assert_not_called()
 
     def _mock_template(self, mode_key, template_type, config, single_order_only=False, template_file=None):

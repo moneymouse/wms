@@ -1,7 +1,9 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import dayjs from 'dayjs';
 import {
     Badge,
     Button,
+    Collapse,
     Descriptions,
     Form,
     Grid,
@@ -36,7 +38,9 @@ import { normalizeOrderEditPolicy } from "../common/orderEditPolicy";
 import { isBoxOriginalNumberEditable, isCargoOutboundOrLater } from "../common/cargoStatus";
 import OrderHistoryDrawer from "../components/OrderHistoryDrawer";
 import OrderReceiptButton from "../components/OrderReceiptButton";
+import OrderPayments from "../components/OrderPayments";
 import OrderSupplierCosts from "../components/OrderSupplierCosts";
+import OrderExceptionRegistration from "../components/OrderExceptionRegistration";
 import { buildCustomsCodeOptions } from "../common/customsCodeLookup";
 import FeatureTour from "../components/FeatureTour";
 import { COST_QUOTE_RECEIPT_TOUR, getCostQuoteReceiptChapter } from "../common/featureTourConfig";
@@ -50,6 +54,7 @@ import {
 import { calculateOrderBillingWeight, calculateReceivable } from "../common/receivable";
 
 const passHash = '18667b982b1c774d3c096422e457906afb227cfc7f956d3f4fc1f9bc07b98862';
+const formatTrackingTime = value => value && dayjs(value).isValid() ? dayjs(value).format('YYYY-MM-DD HH:mm') : '—';
 const quoteTourChapter = getCostQuoteReceiptChapter('quote');
 const workflowStartTourChapter = getCostQuoteReceiptChapter('workflowStart');
 const quoteTourTargets = {
@@ -202,7 +207,9 @@ export default function OrderDetail() {
     const orderDetailRequestId = useRef(0);
     const [jwtPayload, setJwtPayload] = useState({});
     const [historyOpen, setHistoryOpen] = useState(false);
+    const [exceptionRegistrationOpen, setExceptionRegistrationOpen] = useState(false);
     const [historyRefreshKey, setHistoryRefreshKey] = useState(0);
+    const [paymentsRefreshKey, setPaymentsRefreshKey] = useState(0);
     const [salesman, setSalesman] = useState(null);
     const [salesmanOptions, setSalesmanOptions] = useState([]);
     const [salesmanEditorValue, setSalesmanEditorValue] = useState(undefined);
@@ -441,6 +448,8 @@ export default function OrderDetail() {
     }, [canViewCustomerContact, customerContactId, customerContactKey, order_id]);
     const canQuote = hasPermission(userRoles, ['salesperson']) && isCurrentSalesman;
     const canViewOrderHistory = hasPermission(userRoles, ['admin', 'store_manager']);
+    const canRegisterException = String(descriptionData.uid || '') === String(order_id)
+        && (hasPermission(userRoles, ['admin', 'clerk']) || (userRoles.includes('salesperson') && isCurrentSalesman));
     const canUndoOutbound = hasPermission(userRoles, ['admin', 'store_manager']);
     const [undoingCargoUid, setUndoingCargoUid] = useState(null);
     const cargoRemovalBlocked = record => record?.removal_allowed === false
@@ -563,6 +572,8 @@ export default function OrderDetail() {
     ) : null;
     const finalQuote = quoteHistory.find(item => item.is_final);
     const canCollect = String(descriptionData.uid || '') === String(order_id) && hasPermission(userRoles, ['admin', 'salesperson', 'finance']);
+    const canViewSupplierCosts = String(descriptionData.uid || '') === String(order_id)
+        && hasPermission(userRoles, ['admin', 'clerk', 'finance']);
     const currentTransportation = (descriptionData.transportation || '').trim();
     const currentQuoteMode = transportationModes.find(item => item.name === currentTransportation);
     const currentMinPrice = currentQuoteMode ? Number(currentQuoteMode.min_price || 0) : 0;
@@ -797,12 +808,14 @@ export default function OrderDetail() {
     const fetchCargoData = useCallback(async () => {
         const requestId = ++cargoRequestId.current;
         try {
-            const { code, data } = await (await fetch(`${endpoint}/orders/${order_id}/cargo?time=${(new Date()).getTime()}`, { headers: getSafeHeader() })).json();
+            const response = await fetch(`${endpoint}/orders/${order_id}/cargo?time=${(new Date()).getTime()}`, { headers: getSafeHeader() });
+            const result = await response.json();
             if (requestId !== cargoRequestId.current) return;
-            if (code === 500) {
-                message.error("17Track 获取订单跟踪信息失败")
+            if (!response.ok || result.code !== 200 || !Array.isArray(result.data)) {
+                message.error(result.msg || result.message || '获取包裹详情失败');
+                return;
             }
-            setCargoData((data || []).map(v => ({ ...v, key: v['uid'] })));
+            setCargoData(result.data.map(v => ({ ...v, key: v['uid'] })));
         } catch (error) {
             if (requestId !== cargoRequestId.current) return;
             console.error('获取包裹详情失败:', error);
@@ -825,6 +838,7 @@ export default function OrderDetail() {
         if (!canEditCargoRecord(record)) return;
         form.setFieldsValue({
             ...record,
+            price: Number(record.price) === 0 ? '' : record.price,
         });
         setEditingKey(record.uid);
     };
@@ -850,6 +864,9 @@ export default function OrderDetail() {
             if (key) {
                 const item = newData[index];
                 if (!item) return;
+                if (row.price === '' && Number(item.price) === 0) {
+                    row.price = item.price;
+                }
                 const changedRow = Object.fromEntries(
                     Object.entries(row).filter(([field, value]) => (
                         canEditCargoField(item, field)
@@ -1019,19 +1036,18 @@ export default function OrderDetail() {
             width: 220,
             dataIndex: 'status',
             render(statusText, record, i) {
-                // 装箱单包裹在未出库时显示业务状态；已出库后切换为第三方轨迹状态。
-                let effectiveStatusText = statusText;
+                // 仓库状态独立保存；物流状态来自 webhook 的本地缓存。
                 if (record?.packing_list_uid) {
                     const cargoStatus = Number(record?.status || 0);
                     if (cargoStatus !== 1) {
                         return <Tooltip title="待出库"><Badge status={'processing'} text={'待出库'} /></Tooltip>;
                     }
-
-                    // For shipped packing-list boxes, prefer latest 17track status when available.
-                    if (record?.track_status) {
-                        effectiveStatusText = record.track_status;
-                    }
                 }
+
+                if (record.tracking_pending && !record.track_status) {
+                    return <Tooltip title="尚未收到该运单的物流推送"><Badge status="processing" text="等待物流推送" /></Tooltip>;
+                }
+                const effectiveStatusText = record.track_status || statusText;
 
                 const _trackStatus = trackStatus[effectiveStatusText] || {
                     status: 'default',
@@ -1044,20 +1060,23 @@ export default function OrderDetail() {
                         window.open("https://t.17track.net/zh-cn#nums=" + record['waybill_id'])
                     }} />;
                 return _trackStatus.detail ?
-                    <Popover trigger="hover" content={
+                    <Popover trigger="hover" content={<>
+                        {record.tracking_received_at && <Typography.Text type="secondary">最近物流推送：{formatTrackingTime(record.tracking_received_at)}</Typography.Text>}
                         <Timeline style={{ paddingTop: '1rem' }} reverse={false}
                             items={(record['events'] || []).map((item, i) => {
                                 return {
                                     children:
                                         <Space>
-                                            <div>{item?.time_raw?.date} {item?.time_raw?.time}</div>
+                                            <div>{item?.time_raw?.date
+                                                ? `${item.time_raw.date} ${item.time_raw.time || ''}`
+                                                : item?.time_utc ? formatTrackingTime(item.time_utc) : ''}</div>
                                             <div>{item?.location}, {item?.description}</div>
                                         </Space>,
                                     color: i === 0 ? _trackStatus.status === 'error' ? 'red' : '#1668dc' : 'gray'
                                 }
                             })}>
                         </Timeline>
-                    } title={<Typography.Text level={5}>{_trackStatus.title}</Typography.Text>} placement="top">
+                    </>} title={<Typography.Text level={5}>{_trackStatus.title}</Typography.Text>} placement="top">
                         <Button type={"text"} style={{ padding: "unset", background: "transparent" }}><MyBadge /></Button>
                     </Popover>
                     : (<Tooltip title={_trackStatus.badgeText} styles={{ body: fieldTooltipStyle }}><span><MyBadge /></span></Tooltip>)
@@ -1300,19 +1319,22 @@ export default function OrderDetail() {
     return (
         <>
             {messageComponent}
-            <Space style={{ marginBottom: '2rem', width: '100%', justifyContent: 'space-between' }} align="center" wrap>
-                <Space align="center" wrap>
-                    <Typography.Title level={4}>订单详情/Order Detail</Typography.Title>
-                    {/* {descriptionData.current_version > 0 && <Tag color="blue">V{descriptionData.current_version}</Tag>} */}
-                </Space>
-                <Space align="center" wrap>
+            <div className={styles.pageHeader}>
+                <Typography.Title className={styles.pageTitle} level={4}>订单详情/Order Detail</Typography.Title>
+                <div className={styles.pageActions}>
+                    {canRegisterException && <Button onClick={() => setExceptionRegistrationOpen(true)}>登记异常</Button>}
                     {canViewOrderHistory && (
                         <Button type={"text"} icon={<HistoryOutlined />} onClick={() => setHistoryOpen(true)}>
                             修改历史
                         </Button>
                     )}
-                </Space>
-            </Space>
+                </div>
+            </div>
+            <OrderExceptionRegistration key={`exception-${order_id}`} open={exceptionRegistrationOpen}
+                order={descriptionData} onCancel={() => setExceptionRegistrationOpen(false)} onCreated={() => {
+                    setExceptionRegistrationOpen(false);
+                    messageX.success('异常已登记，已通知对应业务员');
+                }} />
             <div>
                 <Space style={{ marginBottom: '1rem' }} align="center" wrap size="small">
                     <Typography.Text strong>业务员：</Typography.Text>
@@ -1385,6 +1407,7 @@ export default function OrderDetail() {
                             orderNumber={descriptionData.order_id}
                             customerId={descriptionData.customer_ids?.[0] || descriptionData.customer_id}
                             customerName={descriptionData.customer_name}
+                            onSaved={() => setPaymentsRefreshKey(value => value + 1)}
                         />
                     )}
                     {canQuote && !salesmanEditing && (
@@ -1734,10 +1757,19 @@ export default function OrderDetail() {
                     </>
                 )}
             </Descriptions>
-            {String(descriptionData.uid || '') === String(order_id)
-                && hasPermission(userRoles, ['admin', 'clerk', 'finance']) && (
-                <OrderSupplierCosts orderUid={order_id} refreshKey={historyRefreshKey} />
-            )}
+            {(canCollect || canViewSupplierCosts) && <section className={styles.financeSection} aria-label="费用与收付款">
+                <Typography.Title level={4} className={styles.financeTitle}>费用与收付款</Typography.Title>
+                <Collapse key={order_id} ghost className={styles.financeCollapse} items={[
+                    ...(canCollect ? [{
+                        key: 'payments', label: '收付款记录',
+                        children: <OrderPayments embedded orderUid={order_id} refreshKey={paymentsRefreshKey} />,
+                    }] : []),
+                    ...(canViewSupplierCosts ? [{
+                        key: 'costs', label: '第三方成本',
+                        children: <OrderSupplierCosts embedded orderUid={order_id} refreshKey={historyRefreshKey} />,
+                    }] : []),
+                ]} />
+            </section>}
             <Typography.Title level={4} style={{ marginBottom: '2rem' }}>包裹详情/Cargo Detail</Typography.Title>
             <Typography.Title level={5}>添加包装箱</Typography.Title>
             <Space size='small' style={{ marginBottom: '2rem' }} align={'center'}>

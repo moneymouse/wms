@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import OrderDetail from './orderDetail';
 
@@ -29,6 +29,7 @@ afterEach(() => jest.restoreAllMocks());
 test.each(['admin', 'clerk', 'finance'])('%s can see supplier costs on the loaded order', async role => {
     localStorage.setItem('jwt', `header.${btoa(JSON.stringify({ role, user_id: 7 }))}.signature`);
     render(<MemoryRouter initialEntries={['/orders/order-uid']}><Routes><Route path="/orders/:order_id" element={<OrderDetail />} /></Routes></MemoryRouter>);
+    fireEvent.click(await screen.findByRole('button', { name: /第三方成本/, expanded: false }));
     expect(await screen.findByTestId('supplier-costs')).toHaveTextContent('成本归属 order-uid');
 });
 

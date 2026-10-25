@@ -1,0 +1,23 @@
+.page {
+    min-width: 0;
+    padding: 24px 0;
+}
+
+.header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-bottom: 16px;
+}
+
+.header .title {
+    margin: 0;
+}
+
+@media (max-width: 767px) {
+    .page {
+        padding: 16px 0;
+    }
+}
