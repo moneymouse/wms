@@ -1,0 +1,173 @@
+name: Upload pre files
+
+on:
+  push:
+    branches: [codex/upload-pre-files]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: upload-pre-files
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      PRE_SSH_HOST: ${{ vars.PRE_SSH_HOST || '8.166.137.88' }}
+      PRE_SSH_USER: ${{ vars.PRE_SSH_USER || 'agent' }}
+      PRE_SSH_PORT: ${{ vars.PRE_SSH_PORT || '22' }}
+      PRE_DEPLOY_DIR: /home/agent/wms_pre
+      PRE_SSH_KNOWN_HOSTS: '8.166.137.88 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBXErLADhs9qFOVZpnMQ3KO7vuPsjnK8mR/BZ1zrjHKo'
+    steps:
+      - name: Check deployment configuration
+        env:
+          PRE_SSH_PRIVATE_KEY: ${{ secrets.PRE_SSH_PRIVATE_KEY }}
+        run: |
+          for name in PRE_SSH_PRIVATE_KEY PRE_DEPLOY_DIR; do
+            if [[ -z "${!name}" ]]; then
+              echo "::error::Missing Actions configuration: $name. See docs/deploy-pre-actions.md."
+              exit 1
+            fi
+          done
+          [[ "$PRE_SSH_HOST" =~ ^[a-zA-Z0-9][a-zA-Z0-9.-]*$ ]] || { echo '::error::Invalid PRE_SSH_HOST'; exit 1; }
+          [[ "$PRE_SSH_USER" =~ ^[a-z_][a-zA-Z0-9_-]*$ ]] || { echo '::error::Invalid PRE_SSH_USER'; exit 1; }
+          [[ "$PRE_SSH_PORT" =~ ^[0-9]{1,5}$ ]] && (( 10#$PRE_SSH_PORT >= 1 && 10#$PRE_SSH_PORT <= 65535 )) || { echo '::error::Invalid PRE_SSH_PORT'; exit 1; }
+          # deploy_pre.sh embeds this path in a remote shell command. Require a
+          # dedicated pre directory, without whitespace or shell metacharacters.
+          [[ "$PRE_DEPLOY_DIR" =~ ^/[a-zA-Z0-9_/-]+/wms_pre$ ]] || { echo '::error::PRE_DEPLOY_DIR must be an absolute path ending in /wms_pre'; exit 1; }
+
+      - name: Check out pushed commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: wms_frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: wms_frontend
+        run: npm ci
+
+      - name: Restore SSH host key
+        id: restore-host-key
+        if: env.PRE_SSH_KNOWN_HOSTS == ''
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ runner.temp }}/wms-pre-host-key/known_hosts
+          key: wms-pre-host-key-v1-${{ env.PRE_SSH_HOST }}-${{ env.PRE_SSH_PORT }}
+
+      - name: Configure SSH
+        env:
+          PRE_SSH_PRIVATE_KEY: ${{ secrets.PRE_SSH_PRIVATE_KEY }}
+          HOST_KEY_CACHE_HIT: ${{ steps.restore-host-key.outputs.cache-hit }}
+        run: |
+          umask 077
+          ssh_dir="$RUNNER_TEMP/wms-pre-ssh"
+          known_hosts="$RUNNER_TEMP/wms-pre-host-key/known_hosts"
+          mkdir -p "$ssh_dir" "$(dirname -- "$known_hosts")" "$HOME/.ssh"
+          printf '%s\n' "$PRE_SSH_PRIVATE_KEY" | tr -d '\r' > "$ssh_dir/identity"
+          ssh-keygen -y -P '' -f "$ssh_dir/identity" > /dev/null
+          host_key_checking=yes
+          if [[ -n "$PRE_SSH_KNOWN_HOSTS" ]]; then
+            printf '%s\n' "$PRE_SSH_KNOWN_HOSTS" > "$known_hosts"
+          elif [[ "$HOST_KEY_CACHE_HIT" != 'true' ]]; then
+            host_key_checking=accept-new
+            echo '::notice::No saved SSH host key. Trusting the first connection; the public host key will be cached after server checks pass.'
+          fi
+          if [[ "$host_key_checking" == yes ]]; then
+            host="$PRE_SSH_HOST"
+            port=$(( 10#$PRE_SSH_PORT ))
+            if (( port != 22 )); then
+              host="[$PRE_SSH_HOST]:$port"
+            fi
+            ssh-keygen -F "$host" -f "$known_hosts" > /dev/null || {
+              echo '::error::Saved SSH host key is missing or does not match the configured host and port.'
+              exit 1
+            }
+          fi
+          cat > "$HOME/.ssh/config" <<EOF
+          Host wms-pre
+            HostName $PRE_SSH_HOST
+            User $PRE_SSH_USER
+            Port $PRE_SSH_PORT
+            IdentityFile $ssh_dir/identity
+            UserKnownHostsFile $known_hosts
+            IdentitiesOnly yes
+            BatchMode yes
+            StrictHostKeyChecking $host_key_checking
+            UpdateHostKeys no
+            ConnectTimeout 15
+            ServerAliveInterval 15
+            ServerAliveCountMax 3
+          EOF
+
+      - name: Prepare upload directory
+        run: |
+          ssh wms-pre "bash -s -- '$PRE_DEPLOY_DIR'" <<'REMOTE_PREPARE'
+          set -euo pipefail
+          mkdir -p -- "$1"
+          test -w "$1"
+          stat -c '%A %U:%G %n' "$1"
+          REMOTE_PREPARE
+
+      - name: Show SSH host key fingerprint
+        run: ssh-keygen -lf "$RUNNER_TEMP/wms-pre-host-key/known_hosts"
+
+      - name: Save SSH host key
+        if: env.PRE_SSH_KNOWN_HOSTS == '' && steps.restore-host-key.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ runner.temp }}/wms-pre-host-key/known_hosts
+          key: ${{ steps.restore-host-key.outputs.cache-primary-key }}
+
+      - name: Build frontend
+        working-directory: wms_frontend
+        env:
+          CI: 'false'
+        run: npm run build
+
+      - name: Upload files without starting services
+        run: |
+          rsync -avz --no-owner --no-group --no-perms --omit-dir-times \
+            --exclude='.git' \
+            --exclude='*.env' \
+            --exclude='env.toml' \
+            --exclude='backups/' \
+            --exclude='.pytest_cache/' \
+            --exclude='__pycache__/' \
+            --exclude='node_modules/' \
+            --exclude='wms_backend/log/' \
+            --exclude='wms_backend/log_pre/' \
+            --exclude='wms_backend/excels/' \
+            --exclude='wms_backend/excels_pre/' \
+            --exclude='wms_backend/uploads/' \
+            --exclude='wms_backend/uploads_pre/' \
+            --exclude='wms_backend/data/history/' \
+            --exclude='wms_backend/data/history_pre/' \
+            . "wms-pre:$PRE_DEPLOY_DIR"
+
+      - name: Verify uploaded files
+        run: |
+          sha256sum deploy_pre.sh wms_frontend/package-lock.json wms_frontend/build/index.html
+          ssh wms-pre "bash -s -- '$PRE_DEPLOY_DIR'" <<'REMOTE_VERIFY'
+          set -euo pipefail
+          cd "$1"
+          test -f wms_backend/docker-compose.pre.yml
+          test -f wms_frontend/build/index.html
+          sha256sum deploy_pre.sh wms_frontend/package-lock.json wms_frontend/build/index.html
+          du -sh .
+          printf 'Files uploaded only; services and databases were not changed.\n'
+          REMOTE_VERIFY
+
+      - name: Remove SSH credentials
+        if: always()
+        run: |
+          rm -rf -- "$RUNNER_TEMP/wms-pre-ssh"
+          rm -f -- "$HOME/.ssh/config"
