@@ -63,8 +63,8 @@ if [[ "$SKIP_BUILD" != "true" ]]; then
 	cd - >/dev/null
 fi
 
-# Runner ownership does not apply to the server's deploy user or shared group.
-rsync -avz --no-owner --no-group --delete \
+# Keep shared server ownership, permissions and directory timestamps intact.
+rsync -avz --no-owner --no-group --no-perms --omit-dir-times --delete \
 	--exclude='wms_frontend/src/' \
 	--exclude='*.env' \
 	--exclude='*/env.toml' \
