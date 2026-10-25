@@ -23,8 +23,21 @@ ChatGPT 云环境中的密钥不会自动同步到 GitHub Actions。
 | 名称 | 内容 |
 | --- | --- |
 | `PRE_SSH_PRIVATE_KEY` | `agent` 用户的完整、无口令 SSH 私钥；使用实际私钥，不是代理占位符 |
-| `PRE_SSH_KNOWN_HOSTS` | 已核验的服务器 SSH 主机公钥，采用 OpenSSH `known_hosts` 格式 |
+| `PRE_SSH_KNOWN_HOSTS` | 可选：已核验的服务器 SSH 主机公钥，采用 OpenSSH `known_hosts` 格式 |
 
+默认只需配置 `PRE_SSH_PRIVATE_KEY`。没有配置 `PRE_SSH_KNOWN_HOSTS` 时，
+工作流通过 `StrictHostKeyChecking=accept-new` 自动信任首次连接的主机公钥，
+服务器预检成功后，将 `known_hosts` 单独保存到 Actions 缓存。后续部署按主机和端口
+恢复同一份记录，并使用严格主机校验；指纹发生变化时停止部署，不自动覆盖旧记录。
+私钥和 SSH 配置不会进入缓存。每次预检成功后都会在 Actions 日志中输出主机指纹。
+
+GitHub runner 本身不会跨任务保留文件；这里的持久化依赖 Actions 缓存。缓存被清理、
+过期或主机/端口改变后，会重新进行首次信任，因此这种方式不能替代预先核验服务器身份。
+服务器合法更换主机公钥后，先通过可信渠道核验新指纹，再在仓库的
+**Actions → Caches** 中删除对应的 `wms-pre-host-key-v1-主机-端口` 缓存后重新运行。
+
+若希望从第一次连接就校验已知公钥，仍可配置可选的 `PRE_SSH_KNOWN_HOSTS`；
+配置后直接使用它进行严格校验，不读取或写入上述缓存。
 可以从已核验服务器身份的电脑取得 `known_hosts` 记录：
 
 ```bash
@@ -32,7 +45,7 @@ ssh-keygen -F 8.166.137.88 -f ~/.ssh/known_hosts
 ```
 
 把有效的主机公钥记录存入 `PRE_SSH_KNOWN_HOSTS`。非默认端口的记录应对应
-`[8.166.137.88]:端口`。工作流开启严格主机校验，不会自动信任临时扫描到的公钥。
+`[8.166.137.88]:端口`。此时即使缓存不存在，也不会自动信任未知公钥。
 
 ### Repository variables
 
