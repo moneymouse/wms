@@ -63,12 +63,13 @@ if [[ "$SKIP_BUILD" != "true" ]]; then
 	cd - >/dev/null
 fi
 
-rsync -avz --delete \
+# Runner ownership does not apply to the server's deploy user or shared group.
+rsync -avz --no-owner --no-group --delete \
 	--exclude='wms_frontend/src/' \
 	--exclude='*.env' \
 	--exclude='*/env.toml' \
 	--exclude='backups/' \
-	--exclude='*/.git/' \
+	--exclude='.git/' \
 	--exclude='*/.pytest_cache/' \
 	--exclude='*/__pycache__/' \
 	--exclude='wms_frontend/node_modules/' \
