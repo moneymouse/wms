@@ -19,7 +19,7 @@ jobs:
       PRE_SSH_HOST: ${{ vars.PRE_SSH_HOST || '8.166.137.88' }}
       PRE_SSH_USER: ${{ vars.PRE_SSH_USER || 'agent' }}
       PRE_SSH_PORT: ${{ vars.PRE_SSH_PORT || '22' }}
-      PRE_DEPLOY_DIR: ${{ vars.PRE_DEPLOY_DIR || '/home/tony/wms_pre' }}
+      PRE_DEPLOY_DIR: ${{ vars.PRE_DEPLOY_DIR || '/home/agent/wms_pre' }}
       PRE_SSH_KNOWN_HOSTS: ${{ secrets.PRE_SSH_KNOWN_HOSTS }}
     steps:
       - name: Check deployment configuration

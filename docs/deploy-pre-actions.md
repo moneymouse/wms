@@ -51,14 +51,22 @@ ssh-keygen -F 8.166.137.88 -f ~/.ssh/known_hosts
 
 | 名称 | 默认值 / 要求 |
 | --- | --- |
-| `PRE_DEPLOY_DIR` | 默认 `/home/tony/wms_pre`，可设置为其他已有预发目录的绝对路径 |
+| `PRE_DEPLOY_DIR` | 默认 `/home/agent/wms_pre`，可设置为其他已有预发目录的绝对路径 |
 | `PRE_SSH_HOST` | 默认 `8.166.137.88`（公网地址，无需 VPN） |
 | `PRE_SSH_USER` | 默认 `agent` |
 | `PRE_SSH_PORT` | 默认 `22` |
 
 目录必须以 `/wms_pre` 结尾，且只包含字母、数字、下划线、连字符和斜杠。
-默认沿用现有预发目录 `/home/tony/wms_pre`；改用 `agent` 登录不会改变已有部署
-的位置。请确保 `agent` 能进入 `/home/tony`、读写预发目录并运行 Docker。
+默认部署到 `agent` 用户的 `/home/agent/wms_pre`。请确保 `agent` 能读写该目录并运行
+Docker。仓库变量优先于默认值；若 `PRE_DEPLOY_DIR` 仍指向旧目录
+`/home/tony/wms_pre`，需将其改为新目录，或删除该变量以使用默认值。
+
+从旧目录迁移时，先由管理员完成预发环境重置、运行时配置和数据同步、目录权限调整，
+再合入新默认目录的变更或向 `pre` 推送，避免在新目录尚未准备好时触发部署。
+仅上传源码和 `wms_frontend/build` 不会切换运行中的服务，也不会搬迁或重置数据库。
+MySQL 使用 Compose 项目 `wms_pre` 的命名卷；是否保留或重置数据由管理员处理。
+`PRE_DB.env`、`PRE_BK.env`、`env.toml` 以及日志、上传文件、历史数据和备份不会由
+代码同步覆盖，需按需迁移到新目录。
 
 ## 服务器要求
 
@@ -66,13 +74,17 @@ ssh-keygen -F 8.166.137.88 -f ~/.ssh/known_hosts
 - `wms_backend/PRE_DB.env`、`PRE_BK.env` 和 `env.toml` 已配置且可读。
 - 已安装 rsync、Docker 和 Docker Compose，SSH 登录用户可非交互运行 Docker。
 - 使用 TLS overlay 时，Docker Compose 需支持 `!override`（2.24.4 或以上）。
-- 沿用 `/home/tony/wms_pre_tls` 时，`agent` 必须能遍历证书路径并确认两个证书文件存在；
-  原目录可能仅允许 `tony` 访问，需为部署用户配置适当的目录访问权限。
+- TLS 状态保存在部署目录同级的 `wms_pre_tls`，默认是 `/home/agent/wms_pre_tls`。
+  迁移时需同步旧 `/home/tony/wms_pre_tls` 中的证书、ACME 状态及续期配置，并更新
+  续期任务中的绝对路径。`agent` 必须能遍历证书路径并确认 `fullchain.pem`、`privkey.pem`
+  存在；证书目录放在部署树外，避免被代码同步删除。
 - SSH 公钥已加入登录用户的 `authorized_keys`。
 - 公网 SSH 端口允许 GitHub runner 访问（默认 TCP 22）。
 
 工作流在 rsync 之前检查目录、配置文件与 Docker 权限；配置缺失时提前失败。
 已有 TLS 状态目录但证书不完整或不可访问时也会停止，防止误判为 HTTP 环境。
+新目录同级没有 `wms_pre_tls` 时部署脚本会使用 HTTP 配置；需要 HTTPS/MCP 的环境
+应先准备好该目录，旧用户目录中的证书不会自动沿用。
 私钥仅写入 runner 临时目录，不进入仓库，也不会被部署脚本同步到服务器。
 构建沿用手动执行脚本的行为：CRA 警告不会被 `CI=true` 提升为错误，实际构建错误
 仍会中止部署。
