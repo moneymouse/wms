@@ -1,4 +1,4 @@
-name: Upload pre files
+name: Check pre runtime files
 
 on:
   push:
@@ -38,22 +38,6 @@ jobs:
           # deploy_pre.sh embeds this path in a remote shell command. Require a
           # dedicated pre directory, without whitespace or shell metacharacters.
           [[ "$PRE_DEPLOY_DIR" =~ ^/[a-zA-Z0-9_/-]+/wms_pre$ ]] || { echo '::error::PRE_DEPLOY_DIR must be an absolute path ending in /wms_pre'; exit 1; }
-
-      - name: Check out pushed commit
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          persist-credentials: false
-
-      - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: '22'
-          cache: npm
-          cache-dependency-path: wms_frontend/package-lock.json
-
-      - name: Install frontend dependencies
-        working-directory: wms_frontend
-        run: npm ci
 
       - name: Restore SSH host key
         id: restore-host-key
@@ -108,63 +92,46 @@ jobs:
             ServerAliveCountMax 3
           EOF
 
-      - name: Prepare upload directory
+      - name: Inspect configuration paths and permissions
         run: |
-          ssh wms-pre "bash -s -- '$PRE_DEPLOY_DIR'" <<'REMOTE_PREPARE'
+          ssh wms-pre "bash -s" <<'REMOTE_INSPECT'
           set -euo pipefail
-          mkdir -p -- "$1"
-          test -w "$1"
-          stat -c '%A %U:%G %n' "$1"
-          REMOTE_PREPARE
-
-      - name: Show SSH host key fingerprint
-        run: ssh-keygen -lf "$RUNNER_TEMP/wms-pre-host-key/known_hosts"
-
-      - name: Save SSH host key
-        if: env.PRE_SSH_KNOWN_HOSTS == '' && steps.restore-host-key.outputs.cache-hit != 'true'
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: ${{ runner.temp }}/wms-pre-host-key/known_hosts
-          key: ${{ steps.restore-host-key.outputs.cache-primary-key }}
-
-      - name: Build frontend
-        working-directory: wms_frontend
-        env:
-          CI: 'false'
-        run: npm run build
-
-      - name: Upload files without starting services
-        run: |
-          rsync -avz --no-owner --no-group --no-perms --omit-dir-times \
-            --exclude='.git' \
-            --exclude='*.env' \
-            --exclude='env.toml' \
-            --exclude='backups/' \
-            --exclude='.pytest_cache/' \
-            --exclude='__pycache__/' \
-            --exclude='node_modules/' \
-            --exclude='wms_backend/log/' \
-            --exclude='wms_backend/log_pre/' \
-            --exclude='wms_backend/excels/' \
-            --exclude='wms_backend/excels_pre/' \
-            --exclude='wms_backend/uploads/' \
-            --exclude='wms_backend/uploads_pre/' \
-            --exclude='wms_backend/data/history/' \
-            --exclude='wms_backend/data/history_pre/' \
-            . "wms-pre:$PRE_DEPLOY_DIR"
-
-      - name: Verify uploaded files
-        run: |
-          sha256sum deploy_pre.sh wms_frontend/package-lock.json wms_frontend/build/index.html
-          ssh wms-pre "bash -s -- '$PRE_DEPLOY_DIR'" <<'REMOTE_VERIFY'
-          set -euo pipefail
-          cd "$1"
-          test -f wms_backend/docker-compose.pre.yml
-          test -f wms_frontend/build/index.html
-          sha256sum deploy_pre.sh wms_frontend/package-lock.json wms_frontend/build/index.html
-          du -sh .
-          printf 'Files uploaded only; services and databases were not changed.\n'
-          REMOTE_VERIFY
+          id
+          for directory in /home/agent/wms_pre/wms_backend /home/agent/wms_pre /home/tony/wms_pre/wms_backend; do
+            printf 'Directory: %s\n' "$directory"
+            for file in PRE_DB.env PRE_BK.env env.toml; do
+              path="$directory/$file"
+              if [[ -e "$path" || -L "$path" ]]; then
+                stat -Lc '%F %a %U:%G %n' -- "$path" || true
+                if [[ -r "$path" ]]; then
+                  printf 'Readable by agent: %s\n' "$path"
+                else
+                  printf 'Not readable by agent: %s\n' "$path"
+                fi
+              else
+                printf 'Missing or inaccessible: %s\n' "$path"
+              fi
+            done
+          done
+          if command -v namei > /dev/null; then
+            namei -l /home/agent/wms_pre/wms_backend/PRE_DB.env || true
+          fi
+          for directory in /home/agent/wms_pre_tls /home/tony/wms_pre_tls; do
+            if [[ -e "$directory" ]]; then
+              stat -c '%F %a %U:%G %n' -- "$directory"
+              for file in fullchain.pem privkey.pem; do
+                path="$directory/letsencrypt/live/wms-pre-ip/$file"
+                if [[ -r "$path" ]]; then
+                  printf 'Readable TLS file: %s\n' "$path"
+                else
+                  printf 'Missing or unreadable TLS file: %s\n' "$path"
+                fi
+              done
+            else
+              printf 'Missing or inaccessible TLS directory: %s\n' "$directory"
+            fi
+          done
+          REMOTE_INSPECT
 
       - name: Remove SSH credentials
         if: always()
