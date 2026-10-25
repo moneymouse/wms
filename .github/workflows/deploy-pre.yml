@@ -20,13 +20,13 @@ jobs:
       PRE_SSH_USER: ${{ vars.PRE_SSH_USER || 'agent' }}
       PRE_SSH_PORT: ${{ vars.PRE_SSH_PORT || '22' }}
       PRE_DEPLOY_DIR: ${{ vars.PRE_DEPLOY_DIR || '/home/tony/wms_pre' }}
+      PRE_SSH_KNOWN_HOSTS: ${{ secrets.PRE_SSH_KNOWN_HOSTS }}
     steps:
       - name: Check deployment configuration
         env:
           PRE_SSH_PRIVATE_KEY: ${{ secrets.PRE_SSH_PRIVATE_KEY }}
-          PRE_SSH_KNOWN_HOSTS: ${{ secrets.PRE_SSH_KNOWN_HOSTS }}
         run: |
-          for name in PRE_SSH_PRIVATE_KEY PRE_SSH_KNOWN_HOSTS PRE_DEPLOY_DIR; do
+          for name in PRE_SSH_PRIVATE_KEY PRE_DEPLOY_DIR; do
             if [[ -z "${!name}" ]]; then
               echo "::error::Missing Actions configuration: $name. See docs/deploy-pre-actions.md."
               exit 1
@@ -55,27 +55,54 @@ jobs:
         working-directory: wms_frontend
         run: npm ci
 
+      - name: Restore SSH host key
+        id: restore-host-key
+        if: env.PRE_SSH_KNOWN_HOSTS == ''
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ runner.temp }}/wms-pre-host-key/known_hosts
+          key: wms-pre-host-key-v1-${{ env.PRE_SSH_HOST }}-${{ env.PRE_SSH_PORT }}
+
       - name: Configure SSH
         env:
           PRE_SSH_PRIVATE_KEY: ${{ secrets.PRE_SSH_PRIVATE_KEY }}
-          PRE_SSH_KNOWN_HOSTS: ${{ secrets.PRE_SSH_KNOWN_HOSTS }}
+          HOST_KEY_CACHE_HIT: ${{ steps.restore-host-key.outputs.cache-hit }}
         run: |
           umask 077
           ssh_dir="$RUNNER_TEMP/wms-pre-ssh"
-          mkdir -p "$ssh_dir" "$HOME/.ssh"
+          known_hosts="$RUNNER_TEMP/wms-pre-host-key/known_hosts"
+          mkdir -p "$ssh_dir" "$(dirname -- "$known_hosts")" "$HOME/.ssh"
           printf '%s\n' "$PRE_SSH_PRIVATE_KEY" | tr -d '\r' > "$ssh_dir/identity"
-          printf '%s\n' "$PRE_SSH_KNOWN_HOSTS" > "$ssh_dir/known_hosts"
           ssh-keygen -y -P '' -f "$ssh_dir/identity" > /dev/null
+          host_key_checking=yes
+          if [[ -n "$PRE_SSH_KNOWN_HOSTS" ]]; then
+            printf '%s\n' "$PRE_SSH_KNOWN_HOSTS" > "$known_hosts"
+          elif [[ "$HOST_KEY_CACHE_HIT" != 'true' ]]; then
+            host_key_checking=accept-new
+            echo '::notice::No saved SSH host key. Trusting the first connection; the public host key will be cached after server checks pass.'
+          fi
+          if [[ "$host_key_checking" == yes ]]; then
+            host="$PRE_SSH_HOST"
+            port=$(( 10#$PRE_SSH_PORT ))
+            if (( port != 22 )); then
+              host="[$PRE_SSH_HOST]:$port"
+            fi
+            ssh-keygen -F "$host" -f "$known_hosts" > /dev/null || {
+              echo '::error::Saved SSH host key is missing or does not match the configured host and port.'
+              exit 1
+            }
+          fi
           cat > "$HOME/.ssh/config" <<EOF
           Host wms-pre
             HostName $PRE_SSH_HOST
             User $PRE_SSH_USER
             Port $PRE_SSH_PORT
             IdentityFile $ssh_dir/identity
-            UserKnownHostsFile $ssh_dir/known_hosts
+            UserKnownHostsFile $known_hosts
             IdentitiesOnly yes
             BatchMode yes
-            StrictHostKeyChecking yes
+            StrictHostKeyChecking $host_key_checking
+            UpdateHostKeys no
             ConnectTimeout 15
             ServerAliveInterval 15
             ServerAliveCountMax 3
@@ -109,6 +136,16 @@ jobs:
           docker compose version
           docker info > /dev/null
           REMOTE_CHECK
+
+      - name: Show SSH host key fingerprint
+        run: ssh-keygen -lf "$RUNNER_TEMP/wms-pre-host-key/known_hosts"
+
+      - name: Save SSH host key
+        if: env.PRE_SSH_KNOWN_HOSTS == '' && steps.restore-host-key.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ runner.temp }}/wms-pre-host-key/known_hosts
+          key: ${{ steps.restore-host-key.outputs.cache-primary-key }}
 
       - name: Deploy with deploy_pre.sh
         env:
