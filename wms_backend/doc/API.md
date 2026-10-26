@@ -2,7 +2,9 @@
 
 **Base URL:** `http://localhost:5001`
 
-**版本:** 1.48
+**版本:** 1.49
+
+装箱单批量生成原单号支持一票多件及自动追加，收付款参考订单和装箱单支持详情跳转，见 [API v1.49](API-v1.49-multi-piece-original-numbers.md)。
 
 收付款草稿及待财务确认记录支持撤销，保留原记录和完整修改历史，见 [API v1.48](API-v1.48-payment-cancellation.md)。
 

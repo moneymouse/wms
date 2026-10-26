@@ -3,6 +3,9 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, Route, Routes, useNavigate } from 'react-router-dom';
 import PackingListDetail from './packingListDetail';
 import { ORDER_EDIT_POLICY_KEYS } from '../common/orderEditPolicy';
+import { Modal } from 'antd';
+
+jest.mock('../components/PackingListReceiptButton', () => () => null);
 
 const policy = Object.fromEntries(ORDER_EDIT_POLICY_KEYS.map(key => [key, true]));
 const boxes = [
@@ -54,7 +57,10 @@ beforeEach(() => {
         removeEventListener: () => {}, dispatchEvent: () => false,
     }) });
 });
-afterEach(() => jest.restoreAllMocks());
+afterEach(async () => {
+    await act(async () => { Modal.destroyAll(); });
+    jest.restoreAllMocks();
+});
 
 test('only an explicit click generates selected unassigned boxes and preserves other originals', async () => {
     setup();
@@ -65,6 +71,9 @@ test('only an explicit click generates selected unassigned boxes and preserves o
     expect(generationCalls()).toHaveLength(0);
     fireEvent.click(screen.getByRole('checkbox', { name: '箱子 1' }));
     fireEvent.click(button);
+    expect(await screen.findByRole('checkbox', { name: '一票多件' })).not.toBeChecked();
+    expect(generationCalls()).toHaveLength(0);
+    fireEvent.click(await screen.findByRole('button', { name: '确认生成' }));
     expect(await screen.findByText('D800000001L')).toBeInTheDocument();
     expect(screen.getByText('OLD-2')).toBeInTheDocument();
     expect(screen.getByText('OUTBOUND-3')).toBeInTheDocument();
@@ -91,6 +100,44 @@ test('existing original numbers require replacement confirmation and include all
     expect(screen.getByText('OUTBOUND-3')).toBeInTheDocument();
 });
 
+test('one-ticket checkbox creates a shared master for empty selected boxes', async () => {
+    setup({ overrides: { boxes: boxes.slice(0, 2).map(box => ({ ...box, transfer_id: null })) },
+        onGenerate: () => response({ generated_count: 2, boxes: [
+            { uid: 'box-1', transfer_id: 'D800000001L-1' },
+            { uid: 'box-2', transfer_id: 'D800000001L-2' },
+        ] }) });
+    renderDetail();
+    await screen.findByText('MARK-1');
+    fireEvent.click(screen.getByRole('checkbox', { name: '箱子 1' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: '箱子 2' }));
+    fireEvent.click(screen.getByRole('button', { name: '生成原单号' }));
+    fireEvent.click(await screen.findByRole('checkbox', { name: '一票多件' }));
+    fireEvent.click(await screen.findByRole('button', { name: '确认生成' }));
+    expect(await screen.findByText('D800000001L-2')).toBeInTheDocument();
+    expect(JSON.parse(generationCalls()[0][1].body)).toMatchObject({
+        multi_piece: true, box_uids: ['box-1', 'box-2'],
+    });
+});
+
+test('one-ticket append preserves existing originals and displays server conflicts without replacing boxes', async () => {
+    setup({ overrides: { boxes: boxes.slice(0, 2).map(box => ({ ...box,
+        transfer_id: box.uid === 'box-1' ? 'D800000001L-1' : null })) },
+        onGenerate: () => response(null, 409, '所选箱子属于不同主单号，请选择同一票的箱子') });
+    renderDetail();
+    await screen.findByText('MARK-1');
+    fireEvent.click(screen.getByRole('checkbox', { name: '箱子 1' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: '箱子 2' }));
+    fireEvent.click(screen.getByRole('button', { name: '生成原单号' }));
+    fireEvent.click(await screen.findByRole('checkbox', { name: '一票多件' }));
+    await waitFor(() => expect(screen.queryByText(/其中 1 箱已有的原单号将被替换/)).not.toBeInTheDocument());
+    fireEvent.click(await screen.findByRole('button', { name: '确认生成' }));
+    expect(await screen.findByText('所选箱子属于不同主单号，请选择同一票的箱子')).toBeInTheDocument();
+    expect(screen.getByText('D800000001L-1')).toBeInTheDocument();
+    expect(JSON.parse(generationCalls()[0][1].body)).toEqual({
+        box_uids: ['box-1', 'box-2'], expected_values: { 'box-1': 'D800000001L-1', 'box-2': null }, multi_piece: true,
+    });
+});
+
 test('selecting an outbound or restricted box disables batch generation for the complete selection', async () => {
     setup({ overrides: { boxes: boxes.map(box => box.uid === 'box-2'
         ? { ...box, edit_policy: { ...policy, tracking_numbers: false } } : box) } });
@@ -114,6 +161,7 @@ test('pending requests block repeat generation and conflicts preserve saved orig
     fireEvent.click(screen.getByRole('checkbox', { name: '箱子 1' }));
     const button = screen.getByRole('button', { name: '生成原单号' });
     fireEvent.click(button);
+    fireEvent.click(await screen.findByRole('button', { name: '确认生成' }));
     fireEvent.click(button);
     expect(button).toBeDisabled();
     expect(generationCalls()).toHaveLength(1);
@@ -139,6 +187,7 @@ test('a late batch response cannot write originals into the next packing list', 
     await screen.findByText('MARK-1');
     fireEvent.click(screen.getByRole('checkbox', { name: '箱子 1' }));
     fireEvent.click(screen.getByRole('button', { name: '生成原单号' }));
+    fireEvent.click(await screen.findByRole('button', { name: '确认生成' }));
     fireEvent.click(screen.getByRole('button', { name: '切换装箱单' }));
     await screen.findByText('MARK-2');
     await act(async () => { resolve(await response({ boxes: [{ uid: 'box-1', transfer_id: 'D800000001L' }] })); });

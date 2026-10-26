@@ -709,3 +709,104 @@ def test_mysql_failed_release_invalidates_connection_and_preserves_write_failure
     assert events.index("business.rollback") < events.index("release_lock")
     assert events.index("release_lock") < events.index("connection.invalidate")
     assert events[-1] == "connection.close"
+
+
+def test_multi_piece_new_master_is_stable_and_retry_does_not_renumber(world, monkeypatch):
+    with world['factory'].begin() as session:
+        for uid in ['box', 'second-box']:
+            session.get(CargoTable, uid).transfer_id = None
+    monkeypatch.setattr(number_generation_service.secrets, 'randbelow', Mock(return_value=42))
+    request = {'box_uids': ['second-box', 'box'], 'multi_piece': True,
+               'expected_values': {'box': None, 'second-box': None}}
+    response = world['client'].post(PACKING_ROUTE, headers=headers(), json=request)
+    assert response.status_code == 200, response.json
+    result = response.json['data']
+    assert result['generated_count'] == 2
+    assert [(box['uid'], box['transfer_id']) for box in result['boxes']] == [
+        ('second-box', 'D800000042L-2'), ('box', 'D800000042L-1')]
+    before, history = rows(world), versions(world)
+    assert world['client'].post(PACKING_ROUTE, headers=headers(), json=request).status_code == 409
+    request['expected_values'] = {box['uid']: box['transfer_id'] for box in result['boxes']}
+    again = world['client'].post(PACKING_ROUTE, headers=headers(), json=request)
+    assert again.status_code == 200
+    assert again.json['data']['generated_count'] == 0
+    assert rows(world) == before
+    assert versions(world) == history
+
+
+def test_multi_piece_append_uses_global_max_including_unselected_archived_and_order_numbers(world):
+    master = 'D800000042L'
+    with world['factory'].begin() as session:
+        session.get(CargoTable, 'box').transfer_id = master + '-1'
+        session.get(CargoTable, 'second-box').transfer_id = None
+        session.add(CargoTable(uid='unselected-child', packing_list_uid='packing', box_number=4,
+            transfer_id=master + '-4', status=0, archive=True))
+        session.add(OrderTable(uid='suffix-order', order_id=master + '-6', archive=True))
+    before = rows(world)
+    response = world['client'].post(PACKING_ROUTE, headers=headers(), json={
+        'box_uids': ['box', 'second-box'], 'multi_piece': True,
+        'expected_values': {'box': master + '-1', 'second-box': None}})
+    assert response.status_code == 200, response.json
+    assert response.json['data']['generated_count'] == 1
+    assert [box['transfer_id'] for box in response.json['data']['boxes']] == [master + '-1', master + '-7']
+    assert_only_number_changed(before, rows(world), 'cargos', 'second-box', 'transfer_id', master + '-7')
+
+
+@pytest.mark.parametrize('invalid', ['ordinary', 'mixed', 'outbound', 'stale', 'other-packing'])
+def test_multi_piece_rejects_invalid_selection_atomically(world, monkeypatch, invalid):
+    with world['factory'].begin() as session:
+        box, second = session.get(CargoTable, 'box'), session.get(CargoTable, 'second-box')
+        box.transfer_id, second.transfer_id = 'D800000042L-1', None
+        if invalid == 'ordinary':
+            box.transfer_id = 'OLD-1'
+        elif invalid == 'mixed':
+            second.transfer_id = 'D800000043L-1'
+        elif invalid == 'outbound':
+            second.status = 1
+        elif invalid == 'other-packing':
+            second.packing_list_uid = None
+    before, history = rows(world), versions(world)
+    expected = {uid: before['cargos'][uid]['transfer_id'] for uid in ['box', 'second-box']}
+    if invalid == 'stale':
+        expected['second-box'] = 'old'
+    random = Mock()
+    monkeypatch.setattr(number_generation_service.secrets, 'randbelow', random)
+    response = world['client'].post(PACKING_ROUTE, headers=headers(), json={
+        'box_uids': ['box', 'second-box'], 'expected_values': expected, 'multi_piece': True})
+    assert response.status_code == 409, response.json
+    assert rows(world) == before
+    assert versions(world) == history
+    random.assert_not_called()
+
+
+@pytest.mark.parametrize('bad_flag', ['true', 1, None, [], {}])
+def test_multi_piece_flag_is_strictly_boolean(world, bad_flag):
+    response = world['client'].post(PACKING_ROUTE, headers=headers(), json={
+        'box_uids': ['box'], 'multi_piece': bad_flag})
+    assert response.status_code == 400
+
+
+def test_generated_master_does_not_reuse_existing_child_prefix(world, monkeypatch):
+    with world['factory'].begin() as session:
+        session.add(CargoTable(uid='existing-child', transfer_id='D800000042L-1', archive=True))
+    monkeypatch.setattr(number_generation_service.secrets, 'randbelow', Mock(side_effect=[42, 43]))
+    response = world['client'].post(ORDER_ROUTE, headers=headers(), json={})
+    assert response.status_code == 200, response.json
+    assert response.json['data']['order_id'] == 'D800000043L'
+
+
+def test_concurrent_multi_piece_appends_allocate_different_suffixes(world):
+    with world['factory'].begin() as session:
+        session.get(CargoTable, 'box').transfer_id = 'D800000042L-1'
+        session.add_all([CargoTable(uid=uid, packing_list_uid='packing', box_number=index,
+            transfer_id=None, status=0, archive=False) for index, uid in enumerate(['append-a', 'append-b'], start=4)])
+    start = threading.Barrier(2)
+
+    def append(uid):
+        start.wait(timeout=5)
+        return number_generation_service.generate_packing_original_numbers('packing', ['box', uid], ACTOR,
+            multi_piece=True, expected_values={'box': 'D800000042L-1', uid: None})
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = [future.result(timeout=15) for future in [executor.submit(append, uid) for uid in ['append-a', 'append-b']]]
+    assert {result['boxes'][1]['transfer_id'] for result in results} == {'D800000042L-2', 'D800000042L-3'}

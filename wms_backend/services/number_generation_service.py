@@ -1,6 +1,7 @@
 """Generate and save internal tracking numbers only on an explicit action."""
 
 import secrets
+import re
 import time
 from contextlib import contextmanager
 
@@ -22,6 +23,7 @@ GENERATION_ROLES = {"admin", "store_manager", "salesperson", "clerk"}
 MAX_GENERATION_ATTEMPTS = 100
 GENERATION_LOCK_NAME = "wms:auto-generated-number:v1"
 _UNSET = object()
+MULTI_PIECE_NUMBER = re.compile(r"^(D8[0-9]{8}L)-([1-9][0-9]*)$")
 
 
 class NumberGenerationError(ValueError):
@@ -43,8 +45,11 @@ def generation_options(body):
 
 def packing_generation_options(body):
     """Validate a batch selection and optional optimistic concurrency values."""
-    if not isinstance(body, dict) or set(body) - {"box_uids", "expected_values"}:
-        raise NumberGenerationError(400, "请求只能包含 box_uids 和 expected_values")
+    if not isinstance(body, dict) or set(body) - {"box_uids", "expected_values", "multi_piece"}:
+        raise NumberGenerationError(400, "请求只能包含 box_uids、expected_values 和 multi_piece")
+    multi_piece = body.get("multi_piece", False)
+    if not isinstance(multi_piece, bool):
+        raise NumberGenerationError(400, "multi_piece 必须为布尔值")
     box_uids = body.get("box_uids")
     if not isinstance(box_uids, list) or not box_uids or any(
         not isinstance(uid, str) or not uid.strip() for uid in box_uids
@@ -59,7 +64,7 @@ def packing_generation_options(body):
         or any(value is not None and not isinstance(value, str) for value in expected.values())
     ):
         raise NumberGenerationError(400, "expected_values 必须包含每个所选箱子的字符串或 null 原单号")
-    return {"box_uids": box_uids, "expected_values": expected}
+    return {"box_uids": box_uids, "expected_values": expected, "multi_piece": multi_piece}
 
 
 @contextmanager
@@ -142,6 +147,11 @@ def _unused_number(session):
             continue
         if session.query(CargoTable.uid).filter_by(transfer_id=candidate).first():
             continue
+        # A multi-piece master remains reserved while any of its children exist.
+        if session.query(CargoTable.uid).filter(CargoTable.transfer_id.startswith(candidate + "-", autoescape=True)).first():
+            continue
+        if session.query(OrderTable.uid).filter(OrderTable.order_id.startswith(candidate + "-", autoescape=True)).first():
+            continue
         return candidate
     raise NumberGenerationError(503, "暂时无法生成未使用的号码，请重试")
 
@@ -198,7 +208,7 @@ def generate_original_number(order_uid, cargo_uid, operator_payload, *, expected
 
 
 def generate_packing_original_numbers(
-    packing_uid, box_uids, operator_payload, *, expected_values=None,
+    packing_uid, box_uids, operator_payload, *, expected_values=None, multi_piece=False,
 ):
     """Generate only the selected boxes, including boxes not yet in an order.
 
@@ -207,7 +217,7 @@ def generate_packing_original_numbers(
     transaction so an invalid or stale box cannot leave a partial result.
     """
     _authorize(operator_payload)
-    body = {"box_uids": box_uids}
+    body = {"box_uids": box_uids, "multi_piece": multi_piece}
     if expected_values is not None:
         body["expected_values"] = expected_values
     options = packing_generation_options(body)
@@ -238,11 +248,16 @@ def generate_packing_original_numbers(
             if options["expected_values"] is not None:
                 _check_expected(box.transfer_id, options["expected_values"][box.uid])
 
-        before = {order_uid: snapshot_order(session, order_uid) for order_uid in order_uids}
+        new_numbers = _multi_piece_numbers(session, boxes) if multi_piece else None
+        changed_order_uids = {box.target_order_uid for box in boxes
+                              if new_numbers is None or box.uid in new_numbers}
+        before = {order_uid: snapshot_order(session, order_uid) for order_uid in order_uids
+                  if order_uid in changed_order_uids}
         generated = {}
         for box in boxes:
-            box.transfer_id = _unused_number(session)
-            box.update_date = time.strftime("%Y-%m-%d %H:%M")
+            if new_numbers is None or box.uid in new_numbers:
+                box.transfer_id = _unused_number(session) if new_numbers is None else new_numbers[box.uid]
+                box.update_date = time.strftime("%Y-%m-%d %H:%M")
             # This session disables autoflush; each candidate must see earlier
             # numbers in the same batch before checking for collisions.
             session.flush()
@@ -250,16 +265,43 @@ def generate_packing_original_numbers(
                 "uid": box.uid, "order_uid": box.target_order_uid,
                 "transfer_id": box.transfer_id,
             }
-        for order_uid in order_uids:
+        for order_uid in before:
             version = record_mutation(
                 session, order_uid, before=before[order_uid],
                 after=snapshot_order(session, order_uid), action="original_number_generated",
-                summary="批量自动生成装箱单原单号", operator_payload=operator_payload,
+                summary="生成一票多件原单号" if multi_piece else "批量自动生成装箱单原单号", operator_payload=operator_payload,
             )
             for box in boxes:
                 if box.target_order_uid == order_uid:
                     generated[box.uid]["current_version"] = version.version_no
         return {
-            "packing_list_uid": packing_uid, "generated_count": len(boxes),
+            "packing_list_uid": packing_uid, "generated_count": len(boxes) if new_numbers is None else len(new_numbers),
             "boxes": [generated[box_uid] for box_uid in options["box_uids"]],
         }
+
+
+def _multi_piece_numbers(session, boxes):
+    """Infer one existing master and append without replacing saved identities."""
+    masters = set()
+    for box in boxes:
+        if not str(box.transfer_id or "").strip():
+            continue
+        match = MULTI_PIECE_NUMBER.fullmatch(box.transfer_id)
+        if match is None:
+            raise NumberGenerationError(409, "所选箱子包含普通原单号，不能直接生成一票多件")
+        masters.add(match[1])
+    if len(masters) > 1:
+        raise NumberGenerationError(409, "所选箱子属于不同主单号，请选择同一票的箱子")
+    empty = [box for box in boxes if not str(box.transfer_id or "").strip()]
+    if not empty:
+        return {}
+    master = next(iter(masters)) if masters else _unused_number(session)
+    # Include unselected and archived boxes and the shared order-number pool.
+    used = [value for (value,) in session.query(CargoTable.transfer_id).filter(
+        CargoTable.transfer_id.startswith(master + "-", autoescape=True)).all()]
+    used += [value for (value,) in session.query(OrderTable.order_id).filter(
+        OrderTable.order_id.startswith(master + "-", autoescape=True)).all()]
+    last = max((int(match[2]) for value in used
+                if (match := MULTI_PIECE_NUMBER.fullmatch(value))), default=0)
+    return {box.uid: f"{master}-{last + index}"
+            for index, box in enumerate(sorted(empty, key=lambda box: (box.box_number or 0, box.uid)), start=1)}

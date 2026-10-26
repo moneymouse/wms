@@ -1,5 +1,6 @@
 import React from 'react';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { AllocationDialog, DocumentEditor, FinanceDocuments, FinancePayments, PaymentEditor, RecordDetail } from './financeWorkspace';
 
 jest.mock('./financeAccounting', () => () => null);
@@ -33,6 +34,26 @@ beforeEach(() => {
     });
 });
 afterEach(() => { jest.restoreAllMocks(); });
+
+test.each([
+    ['ORDER-REF', '/orders/order-ref', '订单详情已打开'],
+    ['MARK-REF / 箱 2', '/packing-lists/packing-ref', '装箱单详情已打开'],
+    ['ORDER-CURRENT', '/orders/order-current', '当前订单详情已打开'],
+])('payment reference %s links directly to its detail page', async (label, path, destination) => {
+    global.fetch.mockImplementation(() => response({ ...payment,
+        reference_orders: [{ order_uid: 'order-ref', order_number: 'ORDER-REF' }],
+        reference_packing_boxes: [{ box_uid: 'box-ref', packing_list_uid: 'packing-ref', list_number: 'MARK-REF', box_number: 2 }],
+        packing_order_references: [{ order_uid: 'order-current', order_number: 'ORDER-CURRENT' }],
+    }));
+    render(<MemoryRouter initialEntries={['/payment']}><Routes>
+        <Route path="/payment" element={<RecordDetail entity="payments" recordId={8} onClose={() => {}} />} />
+        <Route path={path} element={<div>{destination}</div>} />
+    </Routes></MemoryRouter>);
+    const link = await screen.findByRole('link', { name: label });
+    expect(link).toHaveAttribute('href', path);
+    fireEvent.click(link);
+    expect(await screen.findByText(destination)).toBeInTheDocument();
+});
 
 test.each([true, false])('pending payment can be cancelled with a reason and retained history (business=%s)', async business => {
     let current = { ...payment, status: 'pending', allocated_amount: '0.00', unallocated_amount: '0.00' };

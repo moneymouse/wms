@@ -490,9 +490,16 @@ export function RecordDetail({ entity, recordId, business = false, onClose, onCh
                                 { key: 'submitted', label: '提交时间', children: record.submitted_at || '—' },
                                 { key: 'reviewer', label: '财务处理人', children: record.reviewed_by_name || '—' },
                                 { key: 'reviewed', label: '财务处理时间', children: record.reviewed_at || '—' },
-                                { key: 'references', label: '参考订单', span: 3, children: record.reference_orders?.map(row => row.order_number || row.order_uid).join('、') || '未指定（独立收付款）' },
-                                { key: 'packingBoxes', label: '备注装箱单箱子', span: 3, children: record.reference_packing_boxes?.map(row => `${row.list_number} / 箱 ${row.box_number ?? row.box_uid}`).join('、') || '未指定' },
-                                ...(record.reference_packing_boxes?.length ? [{ key: 'packingOrders', label: '箱子当前所属订单', span: 3, children: record.packing_order_references?.map(row => row.order_number).join('、') || '尚无可核销订单' }] : []),
+                                { key: 'references', label: '参考订单', span: 3, children: record.reference_orders?.length ? <Space wrap split="、">{record.reference_orders.map((row, index) => row.order_uid
+                                    ? <Link key={row.order_uid} to={`/orders/${encodeURIComponent(row.order_uid)}`}>{row.order_number || row.order_uid}</Link>
+                                    : <span key={index}>{row.order_number || '—'}</span>)}</Space> : '未指定（独立收付款）' },
+                                { key: 'packingBoxes', label: '备注装箱单箱子', span: 3, children: record.reference_packing_boxes?.length ? <Space wrap split="、">{record.reference_packing_boxes.map((row, index) => {
+                                    const label = `${row.list_number || row.packing_list_uid || '—'} / 箱 ${row.box_number ?? row.box_uid}`;
+                                    return row.packing_list_uid ? <Link key={row.box_uid || index} to={`/packing-lists/${encodeURIComponent(row.packing_list_uid)}`}>{label}</Link> : <span key={row.box_uid || index}>{label}</span>;
+                                })}</Space> : '未指定' },
+                                ...(record.reference_packing_boxes?.length ? [{ key: 'packingOrders', label: '箱子当前所属订单', span: 3, children: record.packing_order_references?.length ? <Space wrap split="、">{record.packing_order_references.map((row, index) => row.order_uid
+                                    ? <Link key={row.order_uid} to={`/orders/${encodeURIComponent(row.order_uid)}`}>{row.order_number || row.order_uid}</Link>
+                                    : <span key={index}>{row.order_number || '—'}</span>)}</Space> : '尚无可核销订单' }] : []),
                             ] : []),
                         ]} />
                         {record.memo && <Typography.Paragraph style={{ marginTop: 16, marginBottom: 0 }}>备注：{record.memo}</Typography.Paragraph>}

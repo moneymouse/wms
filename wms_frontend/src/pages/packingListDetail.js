@@ -45,6 +45,21 @@ import PackingListReceiptButton from '../components/PackingListReceiptButton';
 const { Title, Text } = Typography;
 const { Option } = Select;
 
+function OriginalNumberOptions({ total, existingCount, onChange }) {
+    const [multiPiece, setMultiPiece] = useState(false);
+    return <Space direction="vertical">
+        <Checkbox checked={multiPiece} onChange={event => {
+            setMultiPiece(event.target.checked);
+            onChange(event.target.checked);
+        }}>一票多件</Checkbox>
+        <Typography.Paragraph style={{ marginBottom: 0 }}>
+            {multiPiece
+                ? '空号箱子生成同一主单号加序号；已有同一票编号时保留原号，仅为新箱子追加编号。请选择同一票的已有箱子和要追加的空号箱子。'
+                : `将为所选 ${total} 箱随机生成并保存原单号${existingCount ? `，其中 ${existingCount} 箱已有的原单号将被替换` : ''}。`}
+        </Typography.Paragraph>
+    </Space>;
+}
+
 const BOX_STATUS = {
     PENDING_ASSIGN: 'pending_assign',
     PENDING_OUTBOUND: 'pending_outbound',
@@ -174,6 +189,7 @@ export default function PackingListDetail() {
     const [batchDeleting, setBatchDeleting] = useState(false);
     const [generatingOriginalNumbers, setGeneratingOriginalNumbers] = useState(false);
     const originalGenerationPending = useRef(false);
+    const originalGenerationDialog = useRef(null);
     const activePackingUid = useRef(uid);
     activePackingUid.current = uid;
     const [selectedBatchAction, setSelectedBatchAction] = useState('archive');
@@ -234,6 +250,7 @@ export default function PackingListDetail() {
         mountedRef.current = true;
         return () => {
             mountedRef.current = false;
+            originalGenerationDialog.current?.destroy();
             boxEditSessionRef.current += 1;
             detailRequestRef.current += 1;
             editorPositionRef.current = null;
@@ -241,6 +258,8 @@ export default function PackingListDetail() {
     }, []);
 
     useEffect(() => {
+        originalGenerationDialog.current?.destroy();
+        originalGenerationDialog.current = null;
         boxEditSessionRef.current += 1;
         editorPositionRef.current = null;
         boxEditorOpenRef.current = false;
@@ -905,7 +924,7 @@ export default function PackingListDetail() {
     };
 
     const handleGenerateSelectedOriginalNumbers = () => {
-        if (!currentDetail?.uid || originalGenerationPending.current) return;
+        if (!currentDetail?.uid || originalGenerationPending.current || originalGenerationDialog.current) return;
         const selectedBoxes = (currentDetail.boxes || []).filter(box => selectedShipBoxUids.includes(box.uid));
         if (!selectedBoxes.length) {
             messageApi.warning('请先选择要生成原单号的箱子');
@@ -942,7 +961,7 @@ export default function PackingListDetail() {
                     boxes: (previous.boxes || []).map(box => numbers.has(box.uid)
                         ? { ...box, transfer_id: numbers.get(box.uid) } : box),
                 } : previous);
-                messageApi.success(`已为 ${numbers.size} 箱生成原单号`);
+                messageApi.success(`已为 ${data.data?.generated_count ?? numbers.size} 箱生成原单号`);
             } catch (error) {
                 if (activePackingUid.current === packingUid) messageApi.error('生成原单号失败');
                 console.error(error);
@@ -952,15 +971,17 @@ export default function PackingListDetail() {
             }
         };
         const existingCount = selectedBoxes.filter(box => String(box.transfer_id || '').trim()).length;
-        if (existingCount) {
-            Modal.confirm({
-                title: '确认生成原单号？',
-                content: `将为所选 ${selectedBoxes.length} 箱随机生成并保存原单号，其中 ${existingCount} 箱已有的原单号将被替换。`,
-                okText: '生成并替换', cancelText: '取消', onOk: generate,
-            });
-        } else {
-            generate();
-        }
+        const dialog = Modal.confirm({
+            title: '确认生成原单号？',
+            content: <OriginalNumberOptions total={selectedBoxes.length} existingCount={existingCount} onChange={checked => {
+                if (checked) requestBody.multi_piece = true;
+                else delete requestBody.multi_piece;
+                dialog.update({ okText: checked || !existingCount ? '确认生成' : '生成并替换' });
+            }} />,
+            okText: existingCount ? '生成并替换' : '确认生成', cancelText: '取消', onOk: generate,
+            afterClose: () => { if (originalGenerationDialog.current === dialog) originalGenerationDialog.current = null; },
+        });
+        originalGenerationDialog.current = dialog;
     };
 
     const handleDeleteSelectedBoxes = () => {
