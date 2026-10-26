@@ -69,7 +69,7 @@ test('only an explicit click generates selected unassigned boxes and preserves o
     fireEvent.click(button);
     expect(await screen.findByRole('checkbox', { name: '一票多件' })).not.toBeChecked();
     expect(generationCalls()).toHaveLength(0);
-    fireEvent.click(await screen.findByRole('button', { name: '确认生成' }));
+    fireEvent.click(await screen.findByRole('button', { name: '生成' }));
     expect(await screen.findByText('D800000001L')).toBeInTheDocument();
     expect(screen.getByText('OLD-2')).toBeInTheDocument();
     expect(screen.getByText('OUTBOUND-3')).toBeInTheDocument();
@@ -79,21 +79,31 @@ test('only an explicit click generates selected unassigned boxes and preserves o
     expect(JSON.parse(generationCalls()[0][1].body)).toEqual({ box_uids: ['box-1'], expected_values: { 'box-1': null } });
 });
 
-test('existing original numbers require replacement confirmation and include all selected expected values', async () => {
+test('existing originals disable ordinary generation and cannot be replaced', async () => {
     setup();
     renderDetail();
     await screen.findByText('MARK-1');
     fireEvent.click(screen.getByRole('checkbox', { name: '箱子 1' }));
     fireEvent.click(screen.getByRole('checkbox', { name: '箱子 2' }));
     fireEvent.click(screen.getByRole('button', { name: '生成原单号' }));
-    expect(await screen.findByText(/其中 1 箱已有的原单号将被替换/)).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: '生成' })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: '生成并替换' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '生成' }));
     expect(generationCalls()).toHaveLength(0);
-    fireEvent.click(screen.getByRole('button', { name: '生成并替换' }));
-    await screen.findByText('D800000002L');
-    expect(JSON.parse(generationCalls()[0][1].body)).toEqual({
-        box_uids: ['box-1', 'box-2'], expected_values: { 'box-1': null, 'box-2': 'OLD-2' },
-    });
-    expect(screen.getByText('OUTBOUND-3')).toBeInTheDocument();
+    expect(screen.getByText('OLD-2')).toBeInTheDocument();
+});
+
+test('all numbered boxes disable generation even with one-ticket checked', async () => {
+    setup({ overrides: { boxes: boxes.slice(0, 2).map((box, index) => ({ ...box, transfer_id: `D800000001L-${index + 1}` })) } });
+    renderDetail();
+    await screen.findByText('MARK-1');
+    fireEvent.click(screen.getByRole('checkbox', { name: '箱子 1' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: '箱子 2' }));
+    fireEvent.click(screen.getByRole('button', { name: '生成原单号' }));
+    expect(await screen.findByRole('button', { name: '生成' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('checkbox', { name: '一票多件' }));
+    expect(screen.getByRole('button', { name: '生成' })).toBeDisabled();
+    expect(generationCalls()).toHaveLength(0);
 });
 
 test('one-ticket checkbox creates a shared master for empty selected boxes', async () => {
@@ -108,7 +118,7 @@ test('one-ticket checkbox creates a shared master for empty selected boxes', asy
     fireEvent.click(screen.getByRole('checkbox', { name: '箱子 2' }));
     fireEvent.click(screen.getByRole('button', { name: '生成原单号' }));
     fireEvent.click(await screen.findByRole('checkbox', { name: '一票多件' }));
-    fireEvent.click(await screen.findByRole('button', { name: '确认生成' }));
+    fireEvent.click(await screen.findByRole('button', { name: '生成' }));
     expect(await screen.findByText('D800000001L-2')).toBeInTheDocument();
     expect(JSON.parse(generationCalls()[0][1].body)).toMatchObject({
         multi_piece: true, box_uids: ['box-1', 'box-2'],
@@ -124,9 +134,11 @@ test('one-ticket append preserves existing originals and displays server conflic
     fireEvent.click(screen.getByRole('checkbox', { name: '箱子 1' }));
     fireEvent.click(screen.getByRole('checkbox', { name: '箱子 2' }));
     fireEvent.click(screen.getByRole('button', { name: '生成原单号' }));
+    expect(await screen.findByRole('button', { name: '生成' })).toBeDisabled();
     fireEvent.click(await screen.findByRole('checkbox', { name: '一票多件' }));
+    expect(screen.getByRole('button', { name: '生成' })).not.toBeDisabled();
     await waitFor(() => expect(screen.queryByText(/其中 1 箱已有的原单号将被替换/)).not.toBeInTheDocument());
-    fireEvent.click(await screen.findByRole('button', { name: '确认生成' }));
+    fireEvent.click(await screen.findByRole('button', { name: '生成' }));
     expect(await screen.findByText('所选箱子属于不同主单号，请选择同一票的箱子')).toBeInTheDocument();
     expect(screen.getByText('D800000001L-1')).toBeInTheDocument();
     expect(JSON.parse(generationCalls()[0][1].body)).toEqual({
@@ -157,7 +169,7 @@ test('pending requests block repeat generation and conflicts preserve saved orig
     fireEvent.click(screen.getByRole('checkbox', { name: '箱子 1' }));
     const button = screen.getByRole('button', { name: '生成原单号' });
     fireEvent.click(button);
-    fireEvent.click(await screen.findByRole('button', { name: '确认生成' }));
+    fireEvent.click(await screen.findByRole('button', { name: '生成' }));
     fireEvent.click(button);
     expect(button).toBeDisabled();
     expect(generationCalls()).toHaveLength(1);
@@ -183,7 +195,7 @@ test('a late batch response cannot write originals into the next packing list', 
     await screen.findByText('MARK-1');
     fireEvent.click(screen.getByRole('checkbox', { name: '箱子 1' }));
     fireEvent.click(screen.getByRole('button', { name: '生成原单号' }));
-    fireEvent.click(await screen.findByRole('button', { name: '确认生成' }));
+    fireEvent.click(await screen.findByRole('button', { name: '生成' }));
     fireEvent.click(screen.getByRole('button', { name: '切换装箱单' }));
     await screen.findByText('MARK-2');
     await act(async () => { resolve(await response({ boxes: [{ uid: 'box-1', transfer_id: 'D800000001L' }] })); });

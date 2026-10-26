@@ -248,6 +248,8 @@ def generate_packing_original_numbers(
             if options["expected_values"] is not None:
                 _check_expected(box.transfer_id, options["expected_values"][box.uid])
 
+        if not multi_piece and any(str(box.transfer_id or "").strip() for box in boxes):
+            raise NumberGenerationError(409, "所选箱子已有原单号，不能替换；一票多件请勾选后仅为空号箱子追加")
         new_numbers = _multi_piece_numbers(session, boxes) if multi_piece else None
         changed_order_uids = {box.target_order_uid for box in boxes
                               if new_numbers is None or box.uid in new_numbers}

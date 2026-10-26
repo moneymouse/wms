@@ -461,6 +461,8 @@ def test_concurrent_generation_on_different_orders_shares_collision_pool(world, 
 
 def test_packing_batch_generates_assigned_and_unassigned_boxes_and_only_selected_fields(world, monkeypatch):
     with world["factory"].begin() as session:
+        for uid in ("box", "second-box"):
+            session.get(CargoTable, uid).transfer_id = None
         session.add(CargoTable(
             uid="unassigned-box", packing_list_uid="packing", box_number=3,
             target_order_uid=None, transfer_id=None, status=0, archive=False, weight=5,
@@ -500,6 +502,9 @@ def test_packing_batch_generates_assigned_and_unassigned_boxes_and_only_selected
 
 
 def test_packing_batch_records_one_version_for_multiple_boxes_in_same_order(world):
+    with world["factory"].begin() as session:
+        for uid in ("box", "second-box"):
+            session.get(CargoTable, uid).transfer_id = None
     response = world["client"].post(PACKING_ROUTE, headers=headers(), json={
         "box_uids": ["box", "second-box"],
     })
@@ -572,6 +577,8 @@ def test_packing_batch_requires_generation_role(world, role, status):
 
 def test_packing_batch_rolls_back_all_numbers_and_history_on_late_collision_exhaustion(world, monkeypatch):
     with world["factory"].begin() as session:
+        for uid in ("box", "second-box"):
+            session.get(CargoTable, uid).transfer_id = None
         session.add(CargoTable(uid="reserved", transfer_id="D800000007L", archive=True))
     monkeypatch.setattr(number_generation_service.secrets, "randbelow", Mock(side_effect=[42] + [7] * 100))
     before = rows(world)
@@ -582,6 +589,8 @@ def test_packing_batch_rolls_back_all_numbers_and_history_on_late_collision_exha
 
 
 def test_concurrent_original_generators_preserve_unique_formatted_numbers(world, monkeypatch):
+    with world["factory"].begin() as session:
+        session.get(CargoTable, "box").transfer_id = None
     values = iter([77, 77, 78])
     start = threading.Barrier(2)
     monkeypatch.setattr(number_generation_service.secrets, "randbelow", lambda upper: next(values))
@@ -810,3 +819,19 @@ def test_concurrent_multi_piece_appends_allocate_different_suffixes(world):
     with ThreadPoolExecutor(max_workers=2) as executor:
         results = [future.result(timeout=15) for future in [executor.submit(append, uid) for uid in ['append-a', 'append-b']]]
     assert {result['boxes'][1]['transfer_id'] for result in results} == {'D800000042L-2', 'D800000042L-3'}
+
+
+@pytest.mark.parametrize('existing', ['MANUAL-OLD', 'D800000042L-1'])
+def test_ordinary_packing_generation_never_overwrites_existing_numbers(world, monkeypatch, existing):
+    with world['factory'].begin() as session:
+        session.get(CargoTable, 'box').transfer_id = existing
+        session.get(CargoTable, 'second-box').transfer_id = None
+    before = rows(world)
+    random = Mock()
+    monkeypatch.setattr(number_generation_service.secrets, 'randbelow', random)
+    response = world['client'].post(PACKING_ROUTE, headers=headers(), json={
+        'box_uids': ['box', 'second-box'], 'expected_values': {'box': existing, 'second-box': None}})
+    assert response.status_code == 409
+    assert rows(world) == before
+    assert versions(world) == []
+    random.assert_not_called()

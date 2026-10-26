@@ -53,7 +53,7 @@ function OriginalNumberOptions({ total, existingCount, multiPiece, disabled, onC
         <Typography.Paragraph style={{ marginBottom: 0 }}>
             {multiPiece
                 ? '空号箱子生成同一主单号加序号；已有同一票编号时保留原号，仅为新箱子追加编号。请选择同一票的已有箱子和要追加的空号箱子。'
-                : `将为所选 ${total} 箱随机生成并保存原单号${existingCount ? `，其中 ${existingCount} 箱已有的原单号将被替换` : ''}。`}
+                : existingCount ? '所选箱子包含已有原单号，不能替换。一票多件请勾选后仅为空号箱子追加。' : `将为所选 ${total} 箱随机生成并保存原单号。`}
         </Typography.Paragraph>
     </Space>;
 }
@@ -1120,7 +1120,10 @@ export default function PackingListDetail() {
         <div ref={pageRef} aria-busy={loading} style={{ padding: screens.md ? '24px' : '12px' }}>
             {contextHolder}
             <Modal title="确认生成原单号？" open={Boolean(originalGenerationDialog)}
-                okText={originalGenerationDialog?.multiPiece || !originalGenerationDialog?.existingCount ? '确认生成' : '生成并替换'}
+                okText="生成" okButtonProps={{ autoInsertSpace: false, disabled: Boolean(originalGenerationDialog && (
+                    originalGenerationDialog.existingCount === originalGenerationDialog.total
+                    || (!originalGenerationDialog.multiPiece && originalGenerationDialog.existingCount > 0)
+                )) }}
                 cancelText="取消" confirmLoading={generatingOriginalNumbers} destroyOnHidden
                 closable={!generatingOriginalNumbers} maskClosable={!generatingOriginalNumbers} keyboard={!generatingOriginalNumbers}
                 cancelButtonProps={{ disabled: generatingOriginalNumbers }}
@@ -1128,6 +1131,7 @@ export default function PackingListDetail() {
                 onOk={async () => {
                     const dialog = originalGenerationDialog;
                     if (!dialog) return;
+                    if (dialog.existingCount === dialog.total || (!dialog.multiPiece && dialog.existingCount > 0)) return;
                     await dialog.generate();
                     if (mountedRef.current) setOriginalGenerationDialog(previous => previous === dialog ? null : previous);
                 }}>
