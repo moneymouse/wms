@@ -45,11 +45,9 @@ import PackingListReceiptButton from '../components/PackingListReceiptButton';
 const { Title, Text } = Typography;
 const { Option } = Select;
 
-function OriginalNumberOptions({ total, existingCount, onChange }) {
-    const [multiPiece, setMultiPiece] = useState(false);
+function OriginalNumberOptions({ total, existingCount, multiPiece, disabled, onChange }) {
     return <Space direction="vertical">
-        <Checkbox checked={multiPiece} onChange={event => {
-            setMultiPiece(event.target.checked);
+        <Checkbox checked={multiPiece} disabled={disabled} onChange={event => {
             onChange(event.target.checked);
         }}>一票多件</Checkbox>
         <Typography.Paragraph style={{ marginBottom: 0 }}>
@@ -189,7 +187,7 @@ export default function PackingListDetail() {
     const [batchDeleting, setBatchDeleting] = useState(false);
     const [generatingOriginalNumbers, setGeneratingOriginalNumbers] = useState(false);
     const originalGenerationPending = useRef(false);
-    const originalGenerationDialog = useRef(null);
+    const [originalGenerationDialog, setOriginalGenerationDialog] = useState(null);
     const activePackingUid = useRef(uid);
     activePackingUid.current = uid;
     const [selectedBatchAction, setSelectedBatchAction] = useState('archive');
@@ -250,7 +248,6 @@ export default function PackingListDetail() {
         mountedRef.current = true;
         return () => {
             mountedRef.current = false;
-            originalGenerationDialog.current?.destroy();
             boxEditSessionRef.current += 1;
             detailRequestRef.current += 1;
             editorPositionRef.current = null;
@@ -258,8 +255,7 @@ export default function PackingListDetail() {
     }, []);
 
     useEffect(() => {
-        originalGenerationDialog.current?.destroy();
-        originalGenerationDialog.current = null;
+        setOriginalGenerationDialog(null);
         boxEditSessionRef.current += 1;
         editorPositionRef.current = null;
         boxEditorOpenRef.current = false;
@@ -924,7 +920,7 @@ export default function PackingListDetail() {
     };
 
     const handleGenerateSelectedOriginalNumbers = () => {
-        if (!currentDetail?.uid || originalGenerationPending.current || originalGenerationDialog.current) return;
+        if (!currentDetail?.uid || originalGenerationPending.current || originalGenerationDialog) return;
         const selectedBoxes = (currentDetail.boxes || []).filter(box => selectedShipBoxUids.includes(box.uid));
         if (!selectedBoxes.length) {
             messageApi.warning('请先选择要生成原单号的箱子');
@@ -971,17 +967,7 @@ export default function PackingListDetail() {
             }
         };
         const existingCount = selectedBoxes.filter(box => String(box.transfer_id || '').trim()).length;
-        const dialog = Modal.confirm({
-            title: '确认生成原单号？',
-            content: <OriginalNumberOptions total={selectedBoxes.length} existingCount={existingCount} onChange={checked => {
-                if (checked) requestBody.multi_piece = true;
-                else delete requestBody.multi_piece;
-                dialog.update({ okText: checked || !existingCount ? '确认生成' : '生成并替换' });
-            }} />,
-            okText: existingCount ? '生成并替换' : '确认生成', cancelText: '取消', onOk: generate,
-            afterClose: () => { if (originalGenerationDialog.current === dialog) originalGenerationDialog.current = null; },
-        });
-        originalGenerationDialog.current = dialog;
+        setOriginalGenerationDialog({ total: selectedBoxes.length, existingCount, requestBody, generate, multiPiece: false });
     };
 
     const handleDeleteSelectedBoxes = () => {
@@ -1133,6 +1119,25 @@ export default function PackingListDetail() {
     return (
         <div ref={pageRef} aria-busy={loading} style={{ padding: screens.md ? '24px' : '12px' }}>
             {contextHolder}
+            <Modal title="确认生成原单号？" open={Boolean(originalGenerationDialog)}
+                okText={originalGenerationDialog?.multiPiece || !originalGenerationDialog?.existingCount ? '确认生成' : '生成并替换'}
+                cancelText="取消" confirmLoading={generatingOriginalNumbers} destroyOnHidden
+                closable={!generatingOriginalNumbers} maskClosable={!generatingOriginalNumbers} keyboard={!generatingOriginalNumbers}
+                cancelButtonProps={{ disabled: generatingOriginalNumbers }}
+                onCancel={() => { if (!originalGenerationPending.current) setOriginalGenerationDialog(null); }}
+                onOk={async () => {
+                    const dialog = originalGenerationDialog;
+                    if (!dialog) return;
+                    await dialog.generate();
+                    if (mountedRef.current) setOriginalGenerationDialog(previous => previous === dialog ? null : previous);
+                }}>
+                {originalGenerationDialog && <OriginalNumberOptions {...originalGenerationDialog} disabled={generatingOriginalNumbers} onChange={checked => {
+                    const requestBody = originalGenerationDialog.requestBody;
+                    if (checked) requestBody.multi_piece = true;
+                    else delete requestBody.multi_piece;
+                    setOriginalGenerationDialog(previous => previous ? { ...previous, multiPiece: checked } : previous);
+                }} />}
+            </Modal>
             <div style={{ marginBottom: 16, display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px' }}>
                 <Space align="center" style={{ flexShrink: 0 }}>
                     <Button

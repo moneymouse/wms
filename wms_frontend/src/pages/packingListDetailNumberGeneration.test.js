@@ -3,7 +3,6 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, Route, Routes, useNavigate } from 'react-router-dom';
 import PackingListDetail from './packingListDetail';
 import { ORDER_EDIT_POLICY_KEYS } from '../common/orderEditPolicy';
-import { Modal } from 'antd';
 
 jest.mock('../components/PackingListReceiptButton', () => () => null);
 
@@ -57,10 +56,7 @@ beforeEach(() => {
         removeEventListener: () => {}, dispatchEvent: () => false,
     }) });
 });
-afterEach(async () => {
-    await act(async () => { Modal.destroyAll(); });
-    jest.restoreAllMocks();
-});
+afterEach(() => jest.restoreAllMocks());
 
 test('only an explicit click generates selected unassigned boxes and preserves other originals', async () => {
     setup();
