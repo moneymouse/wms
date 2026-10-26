@@ -937,9 +937,9 @@ def cancel_payment(payment_id, body, actor):
         payment = _lock_financial_row(session, FinancePayment, payment_id)
         _payment_access(payment, actor)
         _version(payment, body)
-        if payment.status != "draft":
-            raise FinanceConflictError("仅草稿可以取消；生效资金请先撤销核销再冲销")
-        reason = _text(body.get("reason"), "取消原因", 2000, required=True)
+        if payment.status not in {"draft", "pending"}:
+            raise FinanceConflictError("仅财务确认前的收付款可以撤销；生效资金请先撤销核销再冲销")
+        reason = _text(body.get("reason"), "撤销原因", 2000, required=True)
         before = payment_dict(session, payment)
         payment.status, payment.cancelled_at, payment.cancellation_reason = "cancelled", _now(), reason
         _touch(payment)

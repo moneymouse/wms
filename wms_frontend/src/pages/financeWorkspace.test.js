@@ -1,7 +1,8 @@
 import React from 'react';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { AllocationDialog, DocumentEditor, FinanceDocuments, FinancePayments, PaymentEditor } from './financeWorkspace';
+import { AllocationDialog, DocumentEditor, FinanceDocuments, FinancePayments, PaymentEditor, RecordDetail } from './financeWorkspace';
 
+jest.mock('./financeAccounting', () => () => null);
 jest.mock('../components/FinanceHistoryDrawer', () => function History({ open, historyUrl }) {
     return open ? <div>历史路径 {historyUrl}</div> : null;
 });
@@ -32,6 +33,38 @@ beforeEach(() => {
     });
 });
 afterEach(() => { jest.restoreAllMocks(); });
+
+test.each([true, false])('pending payment can be cancelled with a reason and retained history (business=%s)', async business => {
+    let current = { ...payment, status: 'pending', allocated_amount: '0.00', unallocated_amount: '0.00' };
+    global.fetch.mockImplementation((url, options) => {
+        if (String(url).endsWith('/payments/8/cancel')) {
+            current = { ...current, status: 'cancelled', version: 5, cancellation_reason: '金额登记错误' };
+            return response(current);
+        }
+        return response(current);
+    });
+    render(<RecordDetail entity="payments" recordId={8} business={business} onClose={() => {}} />);
+    fireEvent.click(await screen.findByRole('button', { name: '撤销收付款' }));
+    const dialog = screen.getAllByRole('dialog').find(item => within(item).queryByLabelText('操作原因'));
+    fireEvent.click(within(dialog).getByRole('button', { name: '撤销收付款' }));
+    expect(await within(dialog).findByText('请填写原因，供后续审计核对')).toBeInTheDocument();
+    expect(global.fetch.mock.calls.some(([, options]) => options?.method === 'POST')).toBe(false);
+    fireEvent.change(within(dialog).getByLabelText('操作原因'), { target: { value: '金额登记错误' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: '撤销收付款' }));
+    await screen.findByText('收付款已撤销，原收据无效。撤销原因：金额登记错误');
+    const [, options] = global.fetch.mock.calls.find(([url]) => String(url).endsWith('/payments/8/cancel'));
+    expect(JSON.parse(options.body)).toMatchObject({ version: 4, reason: '金额登记错误', idempotency_key: expect.any(String) });
+    expect(screen.queryByRole('button', { name: '撤销收付款' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /修改历史/ }));
+    expect(await screen.findByText('历史路径 /finance/v2/payments/8/history')).toBeInTheDocument();
+});
+
+test.each(['posted', 'reversed', 'cancelled'])('%s payments cannot be cancelled from the detail page', async status => {
+    global.fetch.mockImplementation(() => response({ ...payment, status }));
+    render(<RecordDetail entity="payments" recordId={8} onClose={() => {}} />);
+    await screen.findByText('PAY-0008');
+    expect(screen.queryByRole('button', { name: '撤销收付款' })).not.toBeInTheDocument();
+});
 
 test('unsettled documents default to every date and pagination requests the server', async () => {
     global.fetch.mockImplementation(url => response(list([{ ...doc, status: 'posted' }], 45, Number(new URL(String(url), 'https://test').searchParams.get('p')))));

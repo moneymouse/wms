@@ -459,8 +459,11 @@ export function RecordDetail({ entity, recordId, business = false, onClose, onCh
                                 <Button onClick={() => setEditing(true)}>编辑草稿</Button>
                                 {payment && (business || record.requires_submission) ? <Button autoInsertSpace={false} type="primary" onClick={() => setRecordAction('submit', '提交', '提交后由另一位财务人员核对实际收付款。参考订单不会自动核销。')}>提交</Button>
                                     : <Button type="primary" icon={<CheckCircleOutlined />} onClick={() => setRecordAction('post', '确认生效', payment ? '请核对实际资金收付和账户。确认后生成会计凭证，资金金额锁定，可继续分配核销。' : '请核对往来单位、日期和费用明细。确认后生成会计凭证，账单金额锁定。')}>确认生效</Button>}
-                                <Button danger onClick={() => setRecordAction('cancel', '取消草稿', '取消后的草稿保留记录，不影响资金余额。')}>取消草稿</Button>
+                                {!payment && <Button danger onClick={() => setRecordAction('cancel', '取消草稿', '取消后的草稿保留记录，不影响资金余额。')}>取消草稿</Button>}
                             </>}
+                            {payment && ['draft', 'pending'].includes(record.status) && (!business || !record.is_opening) && (
+                                <Button danger onClick={() => setRecordAction('cancel', '撤销收付款', '撤销后保留原记录和编号，撤销人、时间和原因记入修改历史。原收据作废，需要更正时请重新登记。')}>撤销收付款</Button>
+                            )}
                             {payment && record.status === 'pending' && !business && <>
                                 <Button type="primary" disabled={selfReview} onClick={() => setRecordAction('post', '确认收付款', '请核对实际资金收付和账户。确认后在本记录生成会计凭证，随后可独立核销。')}>确认收付款</Button>
                                 <Button disabled={selfReview} onClick={() => setRecordAction('return', '退回修改', '退回为草稿，登记人修改后可重新提交；退回原因保留在历史中。')}>退回修改</Button>
@@ -474,6 +477,7 @@ export function RecordDetail({ entity, recordId, business = false, onClose, onCh
                         {payment && record.status === 'pending' && selfReview && !business && <Alert style={{ marginBottom: 16 }} type="info" message="不能审核本人登记的收付款，请由另一位财务人员处理。" />}
                         {business && record.is_opening && <Alert style={{ marginBottom: 16 }} type="info" message="期初余额请在财务工作台维护，不作为本期实际收付款登记。" />}
                         {payment && record.review_remark && <Alert style={{ marginBottom: 16 }} type="warning" message={`${record.status === 'draft' ? '退回原因' : '财务处理意见'}：${record.review_remark}`} />}
+                        {payment && record.status === 'cancelled' && <Alert style={{ marginBottom: 16 }} type="warning" message={`收付款已撤销，原收据无效。撤销原因：${record.cancellation_reason || '请查看修改历史'}`} />}
                         <Descriptions size="small" column={{ xs: 1, sm: 2, md: 3 }} items={[
                             { key: 'date', label: payment ? '资金日期' : '账单日期', children: payment ? record.payment_date : record.document_date },
                             { key: 'due', label: payment ? '资金账户' : '到期日', children: payment ? record.account_name : record.due_date || '—' },

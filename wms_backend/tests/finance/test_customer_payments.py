@@ -24,6 +24,52 @@ OTHER_SALES = {"id": 703, "user_id": 703, "name": "另一业务员", "roles": ["
 OTHER_FINANCE = {"id": 704, "user_id": 704, "name": "第二财务", "roles": ["finance"]}
 
 
+@pytest.mark.parametrize("direction", ["incoming", "outgoing"])
+@pytest.mark.parametrize("actor", [SALES, ACTOR, {"id": 705, "name": "管理员", "roles": ["admin"]}])
+def test_pending_payment_cancellation_preserves_record_and_history(finance, direction, actor):
+    created = ledger.create_payment(body(finance, direction=direction), SALES)
+    pending = ledger.submit_payment(created["id"], {"version": created["version"]}, SALES)
+    request = {"version": pending["version"], "reason": "金额登记错误", "idempotency_key": "cancel-pending"}
+    cancelled = ledger.cancel_payment(created["id"], request, actor)
+    assert cancelled["status"] == "cancelled"
+    assert cancelled["number"] == created["number"]
+    assert cancelled["amount"] == created["amount"]
+    assert cancelled["submitted_at"] == pending["submitted_at"]
+    assert cancelled["cancelled_at"]
+    assert cancelled["cancellation_reason"] == request["reason"]
+    assert ledger.cancel_payment(created["id"], request, actor) == cancelled
+    events = ledger.history("payments", created["id"], actor)
+    cancellations = [event for event in events["items"] if event["action"] == "cancel"]
+    assert len(cancellations) == 1
+    assert cancellations[0]["remark"] == request["reason"]
+    assert cancellations[0]["operator_id"] == actor.get("user_id", actor["id"])
+    assert cancellations[0]["before_data"]["status"] == "pending"
+    assert cancellations[0]["after_data"]["status"] == "cancelled"
+    with TestSessionFactory() as session:
+        assert session.get(FinancePayment, created["id"]).status == "cancelled"
+        assert session.query(FinanceAllocation).count() == 0
+        assert session.query(FinanceJournalEntry).count() == 0
+    with pytest.raises(ledger.FinanceConflictError):
+        ledger.post_payment(created["id"], {"version": pending["version"]}, ACTOR)
+    with pytest.raises(ledger.FinanceConflictError):
+        ledger.submit_payment(created["id"], {"version": cancelled["version"]}, SALES)
+
+
+def test_pending_cancellation_requires_owner_reason_and_current_version(finance):
+    created = ledger.create_payment(body(finance), SALES)
+    pending = ledger.submit_payment(created["id"], {"version": created["version"]}, SALES)
+    with pytest.raises(PermissionError):
+        ledger.cancel_payment(created["id"], {"version": pending["version"], "reason": "错误"}, OTHER_SALES)
+    with pytest.raises(ValueError):
+        ledger.cancel_payment(created["id"], {"version": pending["version"], "reason": "  "}, SALES)
+    with pytest.raises(ledger.FinanceConflictError):
+        ledger.cancel_payment(created["id"], {"version": created["version"], "reason": "错误"}, SALES)
+    posted = ledger.post_payment(created["id"], {"version": pending["version"]}, ACTOR)
+    with pytest.raises(ledger.FinanceConflictError):
+        ledger.cancel_payment(created["id"], {"version": posted["version"], "reason": "错误"}, SALES)
+    assert ledger.get_payment(created["id"], SALES)["status"] == "posted"
+
+
 def body(finance, **extra):
     return {"partner_type": "customer", "partner_id": finance["customer"], "direction": "incoming",
         "account_id": finance["account"]["id"], "payment_date": "2026-01-10", "amount": "100.00", **extra}

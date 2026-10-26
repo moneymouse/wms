@@ -2,7 +2,9 @@
 
 **Base URL:** `http://localhost:5001`
 
-**版本:** 1.47
+**版本:** 1.48
+
+收付款草稿及待财务确认记录支持撤销，保留原记录和完整修改历史，见 [API v1.48](API-v1.48-payment-cancellation.md)。
 
 出货草稿搜索排除已出货装箱单，非订单业务员可只读查看报价版本及各版本报价说明，见 [API v1.47](API-v1.47-shipping-search-and-quote-visibility.md)。
 
