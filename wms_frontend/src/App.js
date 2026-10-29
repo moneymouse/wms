@@ -29,6 +29,7 @@ import { LogIcon } from "./pages/logs";
 import MessageInbox from './components/MessageInbox';
 import { menuPermissions, routePermissions, hasPermission, getUserRoles, getLandingPage, ROLE_LABEL_MAP } from "./common/roleConfig";
 import { buildMenuItems, getSelectedMenuGroup, getSelectedMenuKey } from "./common/menuConfig";
+import { getListNavigationUser, getRememberedListUrl, rememberListLocation } from './common/listNavigation';
 import {
     COST_QUOTE_RECEIPT_TOUR,
     getCostQuoteReceiptChapter,
@@ -66,11 +67,16 @@ function App() {
         token: { colorBgContainer },
     } = theme.useToken();
 
-    const { pathname } = useLocation();
+    const location = useLocation();
+    const { pathname } = location;
     const isFinancePage = pathname === '/finance' || pathname === '/receipts';
     const navigate = useNavigate();
     const { userId: tourUserId } = getCurrentTourUser();
     const onboardingFlow = COST_QUOTE_RECEIPT_TOUR.enabled ? getCostQuoteReceiptOnboardingFlow(userRoles) : null;
+
+    useEffect(() => {
+        rememberListLocation(location, getListNavigationUser());
+    }, [location]);
 
     useEffect(() => {
         const handleTourFlowChange = (event) => {
@@ -319,7 +325,7 @@ function App() {
                         const flow = readFeatureTourFlow(userId);
                         if (flow?.campaignId === COST_QUOTE_RECEIPT_TOUR.id) clearFeatureTourFlow(userId);
                     }
-                    navigate(key ? `/${key}` : '/');
+                    navigate(getRememberedListUrl(key ? `/${key}` : '/', getListNavigationUser()));
                     if (isMobile) setDrawerVisible(false);
                 }}
                 style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}

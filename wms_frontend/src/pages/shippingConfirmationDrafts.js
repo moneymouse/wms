@@ -1,7 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Alert, Button, Card, Empty, Input, Modal, Popconfirm, Space, Table, Tag, Typography, message } from 'antd';
 import { ArrowLeftOutlined, DeleteOutlined, DownOutlined, PlusOutlined, PrinterOutlined, ReloadOutlined, RightOutlined, SaveOutlined } from '@ant-design/icons';
-import { useBlocker, useNavigate, useParams } from 'react-router-dom';
+import { useBlocker, useNavigate, useParams, useLocation } from 'react-router-dom';
+import useUrlState from '../common/useUrlState';
 import styles from './shippingConfirmationDrafts.module.css';
 import { fetchShippingConfirmationPdf, shippingConfirmationRequest } from '../common/shippingConfirmationApi';
 import { isCargoOutboundOrLater } from '../common/cargoStatus';
@@ -43,6 +44,13 @@ const packingListExpandable = {
 export default function ShippingConfirmationDrafts() {
     const { uid } = useParams();
     const navigate = useNavigate();
+    const location = useLocation();
+    const locationRef = useRef(location);
+    locationRef.current = location;
+    const navigateDraft = (pathname, options) => {
+        const current = locationRef.current;
+        navigate({ pathname, search: current.search, hash: current.hash }, { state: current.state, ...options });
+    };
     const [messageApi, contextHolder] = message.useMessage();
     const [draft, setDraft] = useState(blankDraft);
     const [drafts, setDrafts] = useState([]);
@@ -53,16 +61,18 @@ export default function ShippingConfirmationDrafts() {
     const [draftReloadTick, setDraftReloadTick] = useState(0);
     const [listLoading, setListLoading] = useState(false);
     const [listError, setListError] = useState('');
-    const [draftSearch, setDraftSearch] = useState('');
+    const [draftSearch, setDraftSearch] = useUrlState('shipping_draft_search', '');
     const busy = actionBusy || draftLoading;
     const [error, setError] = useState('');
     const [conflict, setConflict] = useState(false);
     const [catalog, setCatalog] = useState({ items: [], total: 0 });
     const [catalogLoading, setCatalogLoading] = useState(false);
     const [catalogError, setCatalogError] = useState('');
-    const [keyword, setKeyword] = useState('');
-    const [query, setQuery] = useState('');
-    const [page, setPage] = useState(1);
+    const [query, setQuery] = useUrlState('shipping_search', '');
+    const [keyword, setKeyword] = useState(query);
+    useEffect(() => { setKeyword(query); }, [query]);
+    const [page, setPage] = useUrlState('shipping_page', 1, { validate: value => Number.isInteger(value) && value > 0 });
+    const [draftPage, setDraftPage] = useUrlState('shipping_draft_page', 1, { validate: value => Number.isInteger(value) && value > 0 });
     const [lookupTick, setLookupTick] = useState(0);
     const [selectedBoxUids, setSelectedBoxUids] = useState([]);
     const [pendingBoxUids, setPendingBoxUids] = useState([]);
@@ -78,7 +88,7 @@ export default function ShippingConfirmationDrafts() {
     const printLock = useRef(false);
     currentDraft.current = { draft, dirty };
 
-    const blocker = useBlocker(() => currentDraft.current.dirty);
+    const blocker = useBlocker(({ currentLocation, nextLocation }) => currentDraft.current.dirty && currentLocation.pathname !== nextLocation.pathname);
 
     const setCurrentDraft = (next, isDirty = false) => {
         currentDraft.current = { draft: next, dirty: isDirty };
@@ -189,7 +199,7 @@ export default function ShippingConfirmationDrafts() {
         setCurrentDraft(normalized);
         setConflict(false);
         setDrafts(previous => [{ ...normalized, box_count: normalized.entries.length }, ...previous.filter(item => item.uid !== normalized.uid)]);
-        if (updateUrl && uid !== normalized.uid) navigate(`/shipping-confirmation-drafts/${encodeURIComponent(normalized.uid)}`, { replace: true });
+        if (updateUrl && uid !== normalized.uid) navigateDraft(`/shipping-confirmation-drafts/${encodeURIComponent(normalized.uid)}`, { replace: true });
         return normalized;
     };
 
@@ -209,14 +219,14 @@ export default function ShippingConfirmationDrafts() {
         if (selectedUid === currentDraft.current.draft.uid && selectedUid === uid && !draftLoadError) return;
         if (currentDraft.current.dirty) await saveDraft({ updateUrl: false });
         if (selectedUid === uid) setDraftReloadTick(value => value + 1);
-        else navigate(`/shipping-confirmation-drafts/${encodeURIComponent(selectedUid)}`);
+        else navigateDraft(`/shipping-confirmation-drafts/${encodeURIComponent(selectedUid)}`);
     });
 
     const handleNewDraft = () => runAction(async () => {
         if (currentDraft.current.dirty) await saveDraft({ updateUrl: false });
         setCurrentDraft(blankDraft());
         setError(''); setConflict(false); setDraftLoadError(''); setSelectedDraftBoxUids([]);
-        navigate('/shipping-confirmation-drafts');
+        navigateDraft('/shipping-confirmation-drafts');
     });
 
     const handleDeleteDraft = () => runAction(async () => {
@@ -225,7 +235,7 @@ export default function ShippingConfirmationDrafts() {
         });
         setCurrentDraft(blankDraft());
         setConflict(false); setSelectedDraftBoxUids([]);
-        navigate('/shipping-confirmation-drafts', { replace: true });
+        navigateDraft('/shipping-confirmation-drafts', { replace: true });
         await loadDrafts();
         messageApi.success('出货单草稿已删除');
     });
@@ -357,7 +367,7 @@ export default function ShippingConfirmationDrafts() {
             }));
             setCurrentDraft(saved); setConflict(false);
             setDrafts(previous => [{ ...saved, box_count: saved.entries.length }, ...previous.filter(item => item.uid !== saved.uid)]);
-            navigate(`/shipping-confirmation-drafts/${encodeURIComponent(saved.uid)}`, { replace: true });
+            navigateDraft(`/shipping-confirmation-drafts/${encodeURIComponent(saved.uid)}`, { replace: true });
             messageApi.success('当前填写内容已另存为新草稿');
         })}>另存为新草稿</Button>} />}
         <div className={styles.workspace}>
@@ -395,7 +405,7 @@ export default function ShippingConfirmationDrafts() {
                             <Typography.Text type="secondary">{selectedDraftBoxUids.length ? `应用至所选 ${selectedDraftBoxUids.length} 箱` : '未勾选时应用至草稿全部箱子'}</Typography.Text>
                         </Space>
                         <Table aria-label="出货单草稿箱子" size="small" rowKey="row_key" dataSource={draftRows} expandable={packingListExpandable}
-                            pagination={{ pageSize: 20, hideOnSinglePage: true, showSizeChanger: false }} scroll={{ x: 1180 }}
+                            pagination={{ current: draftPage, onChange: setDraftPage, pageSize: 20, hideOnSinglePage: true, showSizeChanger: false }} scroll={{ x: 1180 }}
                             locale={{ emptyText: '从下方选择箱子，加入出货单草稿' }} rowSelection={{ selectedRowKeys: selectedDraftBoxUids, checkStrictly: false,
                                 onChange: keys => setSelectedDraftBoxUids(onlyBoxKeys(keys)), getCheckboxProps: () => ({ disabled: busy }) }}
                             columns={[...identityColumns,

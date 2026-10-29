@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useContext, useEffect, useRef, useState } from 'react';
 import {
     Alert, Button, Card, Checkbox, Col, DatePicker, Descriptions, Divider, Drawer, Empty, Form, Grid, Input, InputNumber,
     List, Modal, Row, Select, Space, Spin, Statistic, Switch, Table, Tabs, Typography, message,
@@ -9,7 +9,7 @@ import {
     PlusOutlined, PrinterOutlined, ReloadOutlined, SwapOutlined,
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
-import { Link } from 'react-router-dom';
+import { Link, UNSAFE_LocationContext } from 'react-router-dom';
 import FinanceHistoryDrawer from '../components/FinanceHistoryDrawer';
 import PaymentOrderPicker from '../components/PaymentOrderPicker';
 import PaymentPackingBoxPicker from '../components/PaymentPackingBoxPicker';
@@ -22,6 +22,7 @@ import {
 import styles from './financeWorkspace.module.css';
 import { getCurrentTourUser } from '../common/featureTourState';
 import { OrderAllocationDialog } from './financeOrderSettlements';
+import useUrlState from '../common/useUrlState';
 
 const { Title, Text } = Typography;
 const DOCUMENT_OPTIONS = Object.entries(FINANCE_DOCUMENT_TYPES).map(([value, item]) => ({ value, label: item.label }));
@@ -532,21 +533,31 @@ export function RecordDetail({ entity, recordId, business = false, onClose, onCh
 }
 
 export function FinanceDocuments({ initialFilter = {}, filterRevision = 0, onChanged }) {
-    const [filters, setFilters] = useState({ open_only: 1, ...initialFilter });
-    const [page, setPage] = useState(1);
+    const locationContext = useContext(UNSAFE_LocationContext);
+    const [filters, setFilters] = useUrlState('documentFilters', { open_only: 1 });
+    const [page, setPage] = useUrlState('documentPage', 1);
     const [revision, setRevision] = useState(0);
     const [creating, setCreating] = useState(false);
     const [detailId, setDetailId] = useState(null);
     const initialRef = useRef(initialFilter);
     initialRef.current = initialFilter;
-    useEffect(() => { if (filterRevision) { setFilters(initialRef.current); setPage(1); } }, [filterRevision]);
+    const previousFilterRevision = useRef(null);
+    useEffect(() => {
+        if (previousFilterRevision.current === null) {
+            previousFilterRevision.current = filterRevision;
+            if (filterRevision || (!new URLSearchParams(locationContext?.location.search).has('documentFilters') && Object.keys(initialRef.current).length)) setFilters(initialRef.current);
+        } else if (previousFilterRevision.current !== filterRevision) {
+            previousFilterRevision.current = filterRevision;
+            setFilters(initialRef.current); setPage(1);
+        }
+    }, [filterRevision, locationContext?.location.search, setFilters, setPage]);
     const result = useFinanceData('/documents', { ...filters, p: page, s: 20 }, revision);
     const data = result.data || emptyList;
     const change = patch => { setFilters(prev => ({ ...prev, ...patch })); setPage(1); };
     const refresh = () => { setRevision(value => value + 1); onChanged?.(); };
     return <>
         <div className={styles.toolbar}><div className={styles.toolbarFilters}>
-            <Input.Search key={filterRevision} className={styles.search} placeholder="账单号 / 往来单位 / 参考号" allowClear onSearch={q => change({ q })} />
+            <Input.Search key={filters.q || ''} defaultValue={filters.q} className={styles.search} placeholder="账单号 / 往来单位 / 参考号" allowClear onSearch={q => change({ q })} />
             <Select aria-label="账单类型筛选" value={filters.document_type} allowClear placeholder="全部账单类型" style={{ width: 160 }} options={DOCUMENT_OPTIONS} onChange={document_type => change({ document_type })} />
             <Select aria-label="账单范围" style={{ width: 145 }} value={filters.overdue ? 'overdue' : filters.open_only ? 'open' : filters.status || 'all'} onChange={value => change({ open_only: value === 'open' ? 1 : undefined, overdue: value === 'overdue' ? 1 : undefined, status: ['draft', 'posted', 'cancelled'].includes(value) ? value : undefined })} options={[{ value: 'open', label: '全部未结' }, { value: 'overdue', label: '已逾期未结' }, { value: 'all', label: '全部账单' }, ...STATUS_OPTIONS]} />
             {filters.partner_id && <Space size={4}><Text type="secondary">{data.items?.[0]?.partner_name || '指定往来单位'}</Text><Button type="link" size="small" onClick={() => change({ partner_id: undefined, partner_type: undefined })}>清除</Button></Space>}
@@ -574,14 +585,25 @@ export function FinanceDocuments({ initialFilter = {}, filterRevision = 0, onCha
 }
 
 export function FinancePayments({ onChanged, initialFilter = {}, filterRevision = 0, business = false, initialContext, navigationToken, initialPaymentId, onDetailClose }) {
-    const [filters, setFilters] = useState(initialFilter);
-    const [page, setPage] = useState(1);
+    const locationContext = useContext(UNSAFE_LocationContext);
+    const [filters, setFilters] = useUrlState(business ? 'receiptPaymentFilters' : 'paymentFilters', {});
+    const [page, setPage] = useUrlState(business ? 'receiptPaymentPage' : 'paymentPage', 1);
     const [revision, setRevision] = useState(0);
     const [creating, setCreating] = useState(null);
     const [detailId, setDetailId] = useState(null);
     const initialRef = useRef(initialFilter);
     initialRef.current = initialFilter;
-    useEffect(() => { if (filterRevision) { setFilters(initialRef.current); setPage(1); } }, [filterRevision]);
+    const previousFilterRevision = useRef(null);
+    useEffect(() => {
+        if (previousFilterRevision.current === null) {
+            previousFilterRevision.current = filterRevision;
+            if (!business && (filterRevision || (!new URLSearchParams(locationContext?.location.search).has('paymentFilters') && Object.keys(initialRef.current).length))) setFilters(initialRef.current);
+        } else if (previousFilterRevision.current !== filterRevision) {
+            previousFilterRevision.current = filterRevision;
+            if (!business) setFilters(initialRef.current);
+            setPage(1);
+        }
+    }, [filterRevision, business, locationContext?.location.search, setFilters, setPage]);
     const contextRef = useRef(initialContext);
     contextRef.current = initialContext;
     const previousPaymentLink = useRef(null);
@@ -600,7 +622,7 @@ export function FinancePayments({ onChanged, initialFilter = {}, filterRevision 
         if (closingPaymentLink.current) { closingPaymentLink.current = false; return; }
         if (business && contextRef.current) setCreating('incoming');
     }, [business, navigationToken, initialPaymentId]);
-    const result = useFinanceData('/payments', { ...filters, ...(business ? { partner_type: 'customer' } : {}), p: page, s: 20 }, revision);
+    const result = useFinanceData('/payments', { ...filters, ...(business ? { ...initialFilter, partner_type: 'customer' } : {}), p: page, s: 20 }, revision);
     const data = result.data || emptyList;
     const refresh = () => { setRevision(value => value + 1); onChanged?.(); };
     const change = patch => { setFilters(prev => ({ ...prev, ...patch })); setPage(1); };
@@ -613,7 +635,7 @@ export function FinancePayments({ onChanged, initialFilter = {}, filterRevision 
     };
     return <>
         <div className={styles.toolbar}><div className={styles.toolbarFilters}>
-            <Input.Search key={filterRevision} className={styles.search} placeholder="收付款单号 / 往来单位" allowClear onSearch={q => change({ q })} />
+            <Input.Search key={filters.q || ''} defaultValue={filters.q} className={styles.search} placeholder="收付款单号 / 往来单位" allowClear onSearch={q => change({ q })} />
             <Select aria-label="资金方向筛选" allowClear placeholder="全部方向" style={{ width: 120 }} value={filters.direction} options={[{ value: 'incoming', label: '收款' }, { value: 'outgoing', label: '付款' }]} onChange={direction => change({ direction })} />
             <Select aria-label="收付款状态筛选" allowClear placeholder="全部状态" style={{ width: 125 }} value={filters.open_only ? 'open' : filters.status} options={[{ value: 'open', label: '有未分配余额' }, ...STATUS_OPTIONS, { value: 'pending', label: '待财务确认' }, { value: 'reversed', label: '已冲销' }]} onChange={status => change({ status: status === 'open' ? undefined : status, open_only: status === 'open' ? 1 : undefined })} />
             <Button icon={<ReloadOutlined />} aria-label="刷新收付款" onClick={refresh} />
@@ -681,9 +703,9 @@ function MasterEditor({ kind, record, open, onClose, onSaved }) {
 }
 
 export function FinanceSettings() {
-    const [kind, setKind] = useState('accounts');
-    const [page, setPage] = useState(1);
-    const [query, setQuery] = useState('');
+    const [kind, setKind] = useUrlState('financeSettingsKind', 'accounts', { validate: value => ['accounts', 'vendors'].includes(value) });
+    const [page, setPage] = useUrlState('financeSettingsPage', 1);
+    const [query, setQuery] = useUrlState('financeSettingsQuery', '');
     const [revision, setRevision] = useState(0);
     const [editing, setEditing] = useState(undefined);
     const [history, setHistory] = useState(null);
@@ -692,7 +714,7 @@ export function FinanceSettings() {
     return <>
         <div className={styles.toolbar}><div className={styles.toolbarFilters}>
             <Select aria-label="基础资料类型" value={kind} style={{ width: 150 }} onChange={value => { setKind(value); setPage(1); setQuery(''); }} options={[{ value: 'accounts', label: '资金账户' }, { value: 'vendors', label: '供应商' }]} />
-            <Input.Search key={kind} allowClear placeholder={vendor ? '搜索供应商' : '搜索账户'} className={styles.search} onSearch={value => { setQuery(value); setPage(1); }} />
+            <Input.Search key={`${kind}:${query}`} defaultValue={query} allowClear placeholder={vendor ? '搜索供应商' : '搜索账户'} className={styles.search} onSearch={value => { setQuery(value); setPage(1); }} />
         </div><Button type="primary" icon={<PlusOutlined />} onClick={() => setEditing(null)}>{vendor ? '新增供应商' : '新增资金账户'}</Button></div>
         <ErrorNotice error={result.error} retry={result.reload} />
         <Panel><Table size="small" rowKey="id" className={styles.table} loading={result.loading} dataSource={result.data?.items || []} scroll={{ x: 750 }}
@@ -717,8 +739,8 @@ export function FinanceSettings() {
 }
 
 function AgingPanel({ revision }) {
-    const [partnerType, setPartnerType] = useState('customer');
-    const [asOf, setAsOf] = useState(dayjs());
+    const [partnerType, setPartnerType] = useUrlState('agingPartnerType', 'customer', { validate: value => ['customer', 'vendor'].includes(value) });
+    const [asOf, setAsOf] = useUrlState('agingAsOf', () => dayjs(), { encode: value => value.format('YYYY-MM-DD'), decode: raw => dayjs(raw), validate: value => value.isValid() });
     const result = useFinanceData('/aging', { partner_type: partnerType, as_of: asOf.format('YYYY-MM-DD') }, revision);
     const columns = [
         { title: '往来单位', dataIndex: 'partner_name', width: 160 },
@@ -793,15 +815,15 @@ function FinanceOverview({ revision, onDocuments, onPayments, onCreate, onOpenLe
 }
 
 export default function FinanceWorkspace({ extraTabs = [], activeTab: selectedTab, onTabChange }) {
-    const [localTab, setLocalTab] = useState('overview');
+    const [localTab, setLocalTab] = useUrlState('financeTab', 'overview');
     const activeTab = selectedTab ?? localTab;
     const setActiveTab = key => { setLocalTab(key); onTabChange?.(key); };
     const [accountingTab, setAccountingTab] = useState('periods');
     const [accountingSectionToken, setAccountingSectionToken] = useState(0);
     const [revision, setRevision] = useState(0);
     const [filterRevision, setFilterRevision] = useState(0);
-    const [documentFilter, setDocumentFilter] = useState({ open_only: 1 });
-    const [paymentFilter, setPaymentFilter] = useState({});
+    const [documentFilter, setDocumentFilter] = useUrlState('documentFilters', { open_only: 1 });
+    const [paymentFilter, setPaymentFilter] = useUrlState('paymentFilters', {});
     const [paymentFilterRevision, setPaymentFilterRevision] = useState(0);
     const [creating, setCreating] = useState(false);
     const [overviewRecordId, setOverviewRecordId] = useState(null);

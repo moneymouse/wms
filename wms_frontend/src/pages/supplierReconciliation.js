@@ -8,6 +8,7 @@ import { getUserRoles, hasPermission, routePermissions } from '../common/roleCon
 import { money } from '../common/financeApi';
 import { downloadReconciliationTemplate, reconcileBatch, reconciliationRequest, uploadReconciliation } from '../common/supplierReconciliationApi';
 import styles from './supplierReconciliation.module.css';
+import useUrlState from '../common/useUrlState';
 
 const { Text } = Typography;
 const emptyList = { items: [], total: 0 };
@@ -40,11 +41,11 @@ export default function SupplierReconciliation({ readOnly = false }) {
     const [downloading, setDownloading] = useState(false);
     const [downloadError, setDownloadError] = useState('');
     const [batches, setBatches] = useState(emptyList);
-    const [batchPage, setBatchPage] = useState(1);
+    const [batchPage, setBatchPage] = useUrlState('reconciliationPage', 1);
     const [listLoading, setListLoading] = useState(false);
     const [listError, setListError] = useState('');
     const [revision, setRevision] = useState(0);
-    const [selectedId, setSelectedId] = useState(null);
+    const [selectedId, setSelectedId] = useUrlState('reconciliationBatch', null);
     const [detail, setDetail] = useState(null);
     const [detailLoading, setDetailLoading] = useState(false);
     const [detailError, setDetailError] = useState('');
@@ -54,8 +55,8 @@ export default function SupplierReconciliation({ readOnly = false }) {
     currentSelectedId.current = selectedId;
     const [actionError, setActionError] = useState('');
     const [actionNotice, setActionNotice] = useState('');
-    const [rowStatus, setRowStatus] = useState('all');
-    const [rowPage, setRowPage] = useState(1);
+    const [rowStatus, setRowStatus] = useUrlState('reconciliationRowStatus', 'all');
+    const [rowPage, setRowPage] = useUrlState('reconciliationRowPage', 1);
 
     useEffect(() => {
         if (readOnly) return undefined;

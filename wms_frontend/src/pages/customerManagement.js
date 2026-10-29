@@ -3,12 +3,16 @@ import { Button, Form, Input, message, Modal, Popconfirm, Space, Table, Typograp
 import { DeleteOutlined, EditOutlined, PlusOutlined, SearchOutlined } from '@ant-design/icons';
 import { endpoint } from '../config';
 import getSafeHeader from '../common/safeHeader';
+import useUrlState from '../common/useUrlState';
 
 export default function CustomerManagement() {
     const [messageX, messageComponent] = message.useMessage();
     const [loading, setLoading] = useState(false);
     const [customers, setCustomers] = useState([]);
-    const [searchText, setSearchText] = useState('');
+    const [searchText, setSearchText] = useUrlState('customer_search', '');
+    const [pagination, setPagination] = useUrlState('customer_page', { current: 1, pageSize: 20 }, {
+        validate: value => value && Number.isInteger(value.current) && value.current > 0 && Number.isInteger(value.pageSize) && value.pageSize > 0,
+    });
 
     // 编辑模态框
     const [editVisible, setEditVisible] = useState(false);
@@ -238,7 +242,7 @@ export default function CustomerManagement() {
                     placeholder="搜索客户姓名/手机号/微信"
                     prefix={<SearchOutlined />}
                     value={searchText}
-                    onChange={(e) => setSearchText(e.target.value)}
+                    onChange={(e) => { setSearchText(e.target.value); setPagination(previous => ({ ...previous, current: 1 })); }}
                     style={{ width: 300 }}
                     allowClear
                 />
@@ -254,7 +258,9 @@ export default function CustomerManagement() {
                 rowKey="id"
                 loading={loading}
                 pagination={{
-                    defaultPageSize: 20,
+                    current: pagination.current,
+                    pageSize: pagination.pageSize,
+                    onChange: (current, pageSize) => setPagination({ current, pageSize }),
                     showSizeChanger: true,
                     showTotal: (total) => `共 ${total} 条`,
                 }}

@@ -692,3 +692,45 @@ test('switching to another saved draft resets printing selection and returning d
     expect(screen.getByLabelText('当前打印范围')).toHaveTextContent('草稿全部 3 箱（未勾选）');
     expect(fetchShippingConfirmationPdf).not.toHaveBeenCalled();
 });
+
+test('restores catalog filters from URL and allows searching while a draft has unsaved edits', async () => {
+    saved = { uid: 'draft-1', title: '已有草稿', version: 1, entries: [entries[0]] };
+    const router = renderPage('/shipping-confirmation-drafts/draft-1?shipping_search=客户乙&shipping_page=2&source=bookmark#boxes');
+    await waitFor(() => expect(screen.getByLabelText('出货单草稿名称')).toHaveValue('已有草稿'));
+    expect(screen.getByLabelText('搜索出货装箱单')).toHaveValue('客户乙');
+    expect(shippingConfirmationRequest.mock.calls.some(([path]) => {
+        if (!path.startsWith('/packing-lists?')) return false;
+        const params = new URLSearchParams(path.split('?')[1]);
+        return params.get('q') === '客户乙' && params.get('p') === '2';
+    })).toBe(true);
+    fireEvent.change(screen.getByLabelText('出货单草稿名称'), { target: { value: '未保存修改' } });
+    const search = screen.getByLabelText('搜索出货装箱单');
+    fireEvent.change(search, { target: { value: '客户甲' } });
+    fireEvent.keyDown(search, { key: 'Enter', code: 'Enter', keyCode: 13 });
+    await waitFor(() => expect(new URLSearchParams(router.state.location.search).get('shipping_search')).toBe('客户甲'));
+    expect(new URLSearchParams(router.state.location.search).get('source')).toBe('bookmark');
+    expect(router.state.location.hash).toBe('#boxes');
+    expect(screen.getByLabelText('出货单草稿名称')).toHaveValue('未保存修改');
+    expect(screen.queryByRole('dialog', { name: '有未保存的出货单内容' })).not.toBeInTheDocument();
+    await act(async () => { await router.navigate('/packing-lists'); });
+    expect(await screen.findByRole('dialog', { name: '有未保存的出货单内容' })).toBeInTheDocument();
+});
+
+test('saving a new draft keeps search changes made while the save request is pending', async () => {
+    let resolveSave;
+    shippingConfirmationRequest.mockImplementation((path, options = {}) => path === '/shipping-confirmation-drafts' && options.method === 'POST'
+        ? new Promise(resolve => { resolveSave = resolve; }) : defaultRequest(path, options));
+    const router = renderPage('/shipping-confirmation-drafts?source=bookmark#boxes');
+    await ready();
+    fireEvent.change(screen.getByLabelText('出货单草稿名称'), { target: { value: '待保存新草稿' } });
+    fireEvent.click(screen.getByRole('button', { name: /保存草稿/ }));
+    await waitFor(() => expect(resolveSave).toBeDefined());
+    fireEvent.change(screen.getByLabelText('搜索出货单草稿'), { target: { value: '保存期间搜索' } });
+    await waitFor(() => expect(new URLSearchParams(router.state.location.search).get('shipping_draft_search')).toBe('保存期间搜索'));
+    saved = { uid: 'draft-1', title: '待保存新草稿', version: 1, entries: [] };
+    await act(async () => { resolveSave(saved); });
+    await waitFor(() => expect(router.state.location.pathname).toBe('/shipping-confirmation-drafts/draft-1'));
+    expect(new URLSearchParams(router.state.location.search).get('shipping_draft_search')).toBe('保存期间搜索');
+    expect(new URLSearchParams(router.state.location.search).get('source')).toBe('bookmark');
+    expect(router.state.location.hash).toBe('#boxes');
+});

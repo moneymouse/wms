@@ -34,6 +34,7 @@ import {
 } from '@ant-design/icons';
 import { endpoint } from '../config';
 import getSafeHeader from '../common/safeHeader';
+import { getListNavigationUser, getRememberedListUrl } from '../common/listNavigation';
 import { getUserRoles, hasPermission } from '../common/roleConfig';
 import { getBoxEditPolicy, normalizeOrderEditPolicy } from '../common/orderEditPolicy';
 import { isBoxIdentityEditable, isBoxOriginalNumberEditable, isCargoOutboundOrLater } from '../common/cargoStatus';
@@ -536,7 +537,7 @@ export default function PackingListDetail() {
 
                     if (data.code === 200) {
                         messageApi.success('装箱单已归档');
-                        navigate('/packing-lists');
+                        navigate(getRememberedListUrl('/packing-lists', getListNavigationUser()));
                     } else {
                         messageApi.error(data.msg || '归档失败');
                     }
@@ -574,7 +575,7 @@ export default function PackingListDetail() {
 
                     if (data.code === 200) {
                         messageApi.success('装箱单已删除');
-                        navigate('/packing-lists');
+                        navigate(getRememberedListUrl('/packing-lists', getListNavigationUser()));
                     } else {
                         messageApi.error(data.msg || '删除失败');
                     }
@@ -1110,7 +1111,7 @@ export default function PackingListDetail() {
             <div style={{ padding: '24px' }}>
                 <Card>
                     <Text type="danger">未能获取到装箱单详情</Text>
-                    <Button type="link" onClick={() => navigate('/packing-lists')}>返回列表</Button>
+                    <Button type="link" onClick={() => navigate(getRememberedListUrl('/packing-lists', getListNavigationUser()))}>返回列表</Button>
                 </Card>
             </div>
         );

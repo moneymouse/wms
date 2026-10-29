@@ -1,4 +1,5 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import useUrlState from '../common/useUrlState';
 import {
     Button,
     Card,
@@ -52,8 +53,10 @@ export default function FinanceCenter() {
     const [editForm] = Form.useForm();
 
     const [payload, setPayload] = useState({});
-    const [month, setMonth] = useState(getCurrentMonth());
-    const [markSearch, setMarkSearch] = useState('');
+    const [month, setMonth] = useUrlState('bonusMonth', getCurrentMonth);
+    const [markSearch, setMarkSearch] = useUrlState('bonusSearch', '');
+    const [markSearchInput, setMarkSearchInput] = useState(markSearch);
+    useEffect(() => { setMarkSearchInput(markSearch); }, [markSearch]);
 
     const [workers, setWorkers] = useState([]);
 
@@ -68,11 +71,14 @@ export default function FinanceCenter() {
 
     const [pendingData, setPendingData] = useState({ items: [], total: 0 });
     const [loadingPending, setLoadingPending] = useState(false);
+    const pendingRequest = useRef(0);
+    useEffect(() => () => { pendingRequest.current += 1; }, []);
     const [allocatingPackingUid, setAllocatingPackingUid] = useState('');
     const [allocationModalVisible, setAllocationModalVisible] = useState(false);
     const [selectedPackingList, setSelectedPackingList] = useState(null);
-    const [showOnlyIncompletePacking, setShowOnlyIncompletePacking] = useState(false);
-    const [showOnlyIncompleteBoxes, setShowOnlyIncompleteBoxes] = useState(false);
+    const [showOnlyIncompletePacking, setShowOnlyIncompletePacking] = useUrlState('bonusIncompletePacking', false);
+    const [listPagination, setListPagination] = useUrlState('bonusPage', { current: 1, pageSize: 10 });
+    const [showOnlyIncompleteBoxes, setShowOnlyIncompleteBoxes] = useUrlState('bonusIncompleteBoxes', false);
 
     const [drafts, setDrafts] = useState({});
 
@@ -124,6 +130,7 @@ export default function FinanceCenter() {
     };
 
     const fetchPendingPackingLists = async () => {
+        const requestId = ++pendingRequest.current;
         setLoadingPending(true);
         try {
             const params = new URLSearchParams({ month });
@@ -134,6 +141,7 @@ export default function FinanceCenter() {
                 headers: getSafeHeader()
             });
             const data = await res.json();
+            if (requestId !== pendingRequest.current) return;
             if (data.code === 200) {
                 const result = data.data || { items: [], total: 0 };
                 setPendingData(result);
@@ -152,11 +160,14 @@ export default function FinanceCenter() {
                 messageApi.error(data.msg || '获取待分配装箱单失败');
             }
         } catch (error) {
-            messageApi.error('获取待分配装箱单失败');
-            console.error(error);
+            if (requestId === pendingRequest.current) messageApi.error('获取待分配装箱单失败');
         } finally {
-            setLoadingPending(false);
+            if (requestId === pendingRequest.current) setLoadingPending(false);
         }
+    };
+    const applyMarkSearch = () => {
+        if (markSearchInput === markSearch) fetchPendingPackingLists();
+        else { setMarkSearch(markSearchInput); setListPagination(previous => ({ ...previous, current: 1 })); }
     };
 
     useEffect(() => {
@@ -170,7 +181,7 @@ export default function FinanceCenter() {
         if (!canAccess) return;
         fetchPendingPackingLists();
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [canAccess, month]);
+    }, [canAccess, month, markSearch]);
 
     const validateItem = (item) => {
         if (!item.label || !String(item.label).trim()) {
@@ -676,20 +687,20 @@ export default function FinanceCenter() {
                     <Input
                         type="month"
                         value={month}
-                        onChange={(e) => setMonth(e.target.value || getCurrentMonth())}
+                        onChange={e => { setMonth(e.target.value || getCurrentMonth()); setListPagination(previous => ({ ...previous, current: 1 })); }}
                         style={{ width: 160 }}
                     />
                     <Input
                         placeholder="按唛头搜索"
-                        value={markSearch}
-                        onChange={(e) => setMarkSearch(e.target.value)}
-                        onPressEnter={fetchPendingPackingLists}
+                        value={markSearchInput}
+                        onChange={e => setMarkSearchInput(e.target.value)}
+                        onPressEnter={applyMarkSearch}
                         style={{ width: 220 }}
                     />
-                    <Button icon={<ReloadOutlined />} onClick={fetchPendingPackingLists} loading={loadingPending}>刷新</Button>
+                    <Button icon={<ReloadOutlined />} onClick={applyMarkSearch} loading={loadingPending}>刷新</Button>
                     <Space>
                         <Text>仅显示未完成填写</Text>
-                        <Switch checked={showOnlyIncompletePacking} onChange={setShowOnlyIncompletePacking} />
+                        <Switch checked={showOnlyIncompletePacking} onChange={value => { setShowOnlyIncompletePacking(value); setListPagination(previous => ({ ...previous, current: 1 })); }} />
                     </Space>
                 </Space>
 
@@ -698,7 +709,7 @@ export default function FinanceCenter() {
                     loading={loadingPending}
                     dataSource={filteredPendingItems}
                     columns={pendingListColumns}
-                    pagination={{ pageSize: 10, showSizeChanger: true }}
+                    pagination={{ ...listPagination, showSizeChanger: true, onChange: (current, pageSize) => setListPagination({ current, pageSize }) }}
                     scroll={{ x: 'max-content' }}
                     size="small"
                 />

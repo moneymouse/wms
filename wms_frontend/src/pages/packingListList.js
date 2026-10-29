@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import {
     Table,
     Card,
@@ -23,6 +23,7 @@ import {
 } from '@ant-design/icons';
 import { endpoint } from '../config';
 import getSafeHeader from '../common/safeHeader';
+import useUrlState from '../common/useUrlState';
 import { getIntakeRoles } from '../common/intakeApi';
 import MyPackingLists from '../components/MyPackingLists';
 import entryStyles from './packingListEntry.module.css';
@@ -98,7 +99,6 @@ export default function PackingListList() {
 function PackingListWorkspace() {
     const [messageApi, contextHolder] = message.useMessage();
     const navigate = useNavigate();
-    const [searchParams, setSearchParams] = useSearchParams();
     const screens = Grid.useBreakpoint();
 
     // 数据状态
@@ -107,37 +107,25 @@ function PackingListWorkspace() {
     const [loading, setLoading] = useState(false);
 
     // 筛选状态
-    const [page, setPage] = useState(parseInt(searchParams.get('page')) || 1);
-    const [pageSize, setPageSize] = useState(parseInt(searchParams.get('pageSize')) || 20);
-    const [search, setSearch] = useState(searchParams.get('search') || '');
-    const [searchInput, setSearchInput] = useState(searchParams.get('search') || '');
+    const [page, setPage] = useUrlState('page', 1, { validate: value => Number.isSafeInteger(value) && value > 0 });
+    const [pageSize, setPageSize] = useUrlState('pageSize', 20, { validate: value => Number.isSafeInteger(value) && value > 0 });
+    const [search, setSearch] = useUrlState('search', '');
+    const [searchInput, setSearchInput] = useState(search);
     const [reloadTick, setReloadTick] = useState(0);
     const [batchPrintVisible, setBatchPrintVisible] = useState(false);
     const [checkedPrintKeys, setCheckedPrintKeys] = useState([]);
     const [batchPrintLoading, setBatchPrintLoading] = useState(false);
     const [batchPrintSearch, setBatchPrintSearch] = useState('');
     const canManageShippingDrafts = getIntakeRoles().some(role => ['admin', 'store_manager', 'salesperson', 'clerk'].includes(role));
-    const [status, setStatus] = useState(() => {
-        const urlStatus = searchParams.get('status');
-        if (urlStatus) return urlStatus.split(',');
-        return typeof window !== 'undefined' && window.innerWidth < 768 ? ['待出库'] : ['草稿'];
+    const [status, setStatus] = useUrlState('status', () => window.innerWidth < 768 ? ['待出库'] : ['草稿'], {
+        encode: value => value.join(','),
+        decode: value => value ? value.split(',') : [],
+        validate: value => Array.isArray(value) && value.every(item => Object.prototype.hasOwnProperty.call(STATUS_TEXT_TO_CODE, item)),
     });
-    const [excludeStatus, setExcludeStatus] = useState(() => {
-        const urlExclude = searchParams.get('excludeStatus');
-        if (urlExclude !== null) return urlExclude === 'true';
-        return typeof window !== 'undefined' && window.innerWidth < 768 ? false : true;
-    });
+    const [excludeStatus, setExcludeStatus] = useUrlState('excludeStatus', () => window.innerWidth >= 768);
 
-    // 同步状态到 URL
-    useEffect(() => {
-        const params = new URLSearchParams();
-        if (page !== 1) params.set('page', page);
-        if (pageSize !== 20) params.set('pageSize', pageSize);
-        if (search) params.set('search', search);
-        if (status && status.length > 0) params.set('status', status.join(','));
-        params.set('excludeStatus', excludeStatus);
-        setSearchParams(params, { replace: true });
-    }, [page, pageSize, search, status, excludeStatus, setSearchParams]);
+    // A restored URL also restores the input without applying the previous input to the new filters.
+    useEffect(() => { setSearchInput(search); }, [search]);
 
     // 防抖同步输入到搜索状态
     useEffect(() => {
@@ -148,14 +136,18 @@ function PackingListWorkspace() {
             }
         }, 500);
         return () => clearTimeout(timer);
-    }, [searchInput, search]);
+        // Only typing schedules a search; changing the URL restores the input above.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [searchInput]);
 
     useEffect(() => {
-        fetchPackingLists();
+        const controller = new AbortController();
+        fetchPackingLists(controller.signal);
+        return () => controller.abort();
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [page, pageSize, search, status, excludeStatus, reloadTick]);
 
-    const fetchPackingLists = async () => {
+    const fetchPackingLists = async signal => {
         setLoading(true);
         try {
             const params = new URLSearchParams({
@@ -176,9 +168,10 @@ function PackingListWorkspace() {
             }
 
             const res = await fetch(`${endpoint}/packing-lists?${params}`, {
-                headers: getSafeHeader()
+                headers: getSafeHeader(), signal,
             });
             const data = await res.json();
+            if (signal.aborted) return;
 
             if (data.code === 200) {
                 setPackingLists(data.data.items || []);
@@ -187,10 +180,12 @@ function PackingListWorkspace() {
                 messageApi.error(data.msg || '获取数据失败');
             }
         } catch (error) {
-            messageApi.error('获取装箱单列表失败');
-            console.error(error);
+            if (!signal.aborted) {
+                messageApi.error('获取装箱单列表失败');
+                console.error(error);
+            }
         } finally {
-            setLoading(false);
+            if (!signal.aborted) setLoading(false);
         }
     };
 
@@ -403,7 +398,7 @@ function PackingListWorkspace() {
                         placeholder="状态"
                         allowClear
                         value={status}
-                        onChange={setStatus}
+                        onChange={value => { setStatus(value); setPage(1); }}
                         maxTagCount={3}
                         style={{ minWidth: 150, maxWidth: 250 }}
                     >
@@ -414,7 +409,7 @@ function PackingListWorkspace() {
                     </Select>
                     <Checkbox
                         checked={excludeStatus}
-                        onChange={(e) => setExcludeStatus(e.target.checked)}
+                        onChange={event => { setExcludeStatus(event.target.checked); setPage(1); }}
                     >
                         排除所选状态
                     </Checkbox>

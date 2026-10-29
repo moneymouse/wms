@@ -1,4 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import React, { useContext, useEffect, useRef, useState } from 'react';
+import useUrlState from '../common/useUrlState';
+import { UNSAFE_LocationContext } from 'react-router-dom';
 import { Alert, Badge, Button, Card, Checkbox, Collapse, Descriptions, Drawer, Empty, Form, Input, Modal, Select, Space, Spin, Steps, Table, Tabs, Typography, message } from 'antd';
 import { CheckCircleOutlined, HistoryOutlined, ReloadOutlined, SwapOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
@@ -55,10 +57,10 @@ export default function FinanceLegacyMigration({ settings: providedSettings, onC
     const [messageApi, contextHolder] = message.useMessage();
     const [form] = Form.useForm();
     const [reconcileForm] = Form.useForm();
-    const [tab, setTab] = useState(initialTab);
+    const [tab, setTab] = useUrlState('legacyTab', 'orders');
     const [revision, setRevision] = useState(0);
-    const [ordersQuery, setOrdersQuery] = useState({ p: 1, s: 10, q: '' });
-    const [linksQuery, setLinksQuery] = useState({ p: 1, s: 10, q: '', status: '' });
+    const [ordersQuery, setOrdersQuery] = useUrlState('legacyOrders', { p: 1, s: 10, q: '' });
+    const [linksQuery, setLinksQuery] = useUrlState('legacyLinks', { p: 1, s: 10, q: '', status: '' });
     const [previewUid, setPreviewUid] = useState(null);
     const [previewRevision, setPreviewRevision] = useState(0);
     const [selectedLinkId, setSelectedLinkId] = useState(null);
@@ -76,14 +78,19 @@ export default function FinanceLegacyMigration({ settings: providedSettings, onC
     const [revokeReason, setRevokeReason] = useState('');
     const [revokeKey, setRevokeKey] = useState('');
     const [revokeError, setRevokeError] = useState('');
+    const locationContext = useContext(UNSAFE_LocationContext);
+    const hadInitialTab = useRef(new URLSearchParams(locationContext?.location.search).has('legacyTab'));
+    const previousSection = useRef({ initialTab, sectionToken });
     useEffect(() => {
+        const previous = previousSection.current;
+        previousSection.current = { initialTab, sectionToken };
         if (sectionToken) {
             setTab('links');
             setLinksQuery(previous => ({ ...previous, p: 1, status: 'drift' }));
-        } else {
+        } else if (!hadInitialTab.current || previous.initialTab !== initialTab || previous.sectionToken !== sectionToken) {
             setTab(initialTab);
         }
-    }, [initialTab, sectionToken]);
+    }, [initialTab, sectionToken, setTab, setLinksQuery]);
     const fetchedSettings = useLegacyData('/accounting/settings', {}, !providedSettings, revision);
     const settings = providedSettings || fetchedSettings.data;
     const cutoff = settings?.opening_date || dayjs().format('YYYY-MM-DD');
@@ -162,7 +169,7 @@ export default function FinanceLegacyMigration({ settings: providedSettings, onC
         <Card size="small">
             <Tabs activeKey={tab} onChange={setTab} items={[
                 { key: 'orders', label: '选择旧订单', children: <>
-                    <div className={styles.toolbar}><Input.Search aria-label="搜索旧订单" placeholder="订单号或客户" allowClear onSearch={q => setOrdersQuery(prev => ({ ...prev, q, p: 1 }))} className={styles.search} /><Text type="secondary">切换日期 {cutoff}</Text></div>
+                    <div className={styles.toolbar}><Input.Search value={ordersQuery.q} onChange={event => setOrdersQuery(prev => ({ ...prev, q: event.target.value, p: 1 }))} aria-label="搜索旧订单" placeholder="订单号或客户" allowClear onSearch={q => setOrdersQuery(prev => ({ ...prev, q, p: 1 }))} className={styles.search} /><Text type="secondary">切换日期 {cutoff}</Text></div>
                     {resultTable(orders, ordersQuery, setOrdersQuery, [
                         { title: '旧订单', dataIndex: 'order_number', render: value => <Text strong>{value}</Text> },
                         { title: '客户', dataIndex: 'customer_name' },
@@ -170,7 +177,7 @@ export default function FinanceLegacyMigration({ settings: providedSettings, onC
                     ])}
                 </> },
                 { key: 'links', label: '已接入与差异', children: <>
-                    <div className={styles.toolbar}><Space wrap><Input.Search aria-label="搜索接入记录" placeholder="订单号或客户" allowClear onSearch={q => setLinksQuery(prev => ({ ...prev, q, p: 1 }))} /><Select aria-label="差异状态" value={linksQuery.status} onChange={status => setLinksQuery(prev => ({ ...prev, status, p: 1 }))} options={[{ value: '', label: '全部记录' }, { value: 'drift', label: '需要核对' }, { value: 'current', label: '来源一致' }]} /></Space></div>
+                    <div className={styles.toolbar}><Space wrap><Input.Search value={linksQuery.q} onChange={event => setLinksQuery(prev => ({ ...prev, q: event.target.value, p: 1 }))} aria-label="搜索接入记录" placeholder="订单号或客户" allowClear onSearch={q => setLinksQuery(prev => ({ ...prev, q, p: 1 }))} /><Select aria-label="差异状态" value={linksQuery.status} onChange={status => setLinksQuery(prev => ({ ...prev, status, p: 1 }))} options={[{ value: '', label: '全部记录' }, { value: 'drift', label: '需要核对' }, { value: 'current', label: '来源一致' }]} /></Space></div>
                     {resultTable(links, linksQuery, setLinksQuery, [
                         { title: '原订单 / 客户', key: 'source', render: (_, row) => <div><Text strong>{row.order_number}</Text><div className={styles.muted}>{row.customer_name}</div></div> },
                         { title: '接入类型', dataIndex: 'import_kind', render: value => KIND[value] || value },

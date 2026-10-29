@@ -140,3 +140,23 @@ test('a later linked case aborts the old load and ignores its eventual response'
     await act(async () => resolveFirst(record));
     expect(screen.queryByRole('dialog', { name: '异常跟进 · ORDER-1' })).not.toBeInTheDocument();
 });
+
+test('URL restores exception filters and changing status preserves the owner, detail link and hash', async () => {
+    setRoles(['admin']);
+    showPage('/order-exceptions?exception_status=resolved&exception_salesman=8&exception_page=3&exception_uid=exception-1&source=message#history');
+    await screen.findByRole('dialog', { name: '异常跟进 · ORDER-1' });
+    expect(fetchOrderExceptions).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'resolved', salesmanId: 8, page: 3 }));
+    expect(screen.getByLabelText('异常状态', { selector: 'input' }).closest('.ant-select')).toHaveTextContent('已解决');
+    expect(screen.getByLabelText('查看业务员', { selector: 'input' }).closest('.ant-select')).toHaveTextContent('业务员乙');
+    fireEvent.mouseDown(screen.getByLabelText('异常状态', { selector: 'input' }));
+    fireEvent.click(await screen.findByText('全部', { selector: '.ant-select-item-option-content' }));
+    await waitFor(() => expect(fetchOrderExceptions).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'all', salesmanId: 8, page: 1 })));
+    await waitFor(() => expect(new URL(screen.getByTestId('location').textContent, 'http://localhost').searchParams.get('exception_status')).toBe('all'));
+    const url = new URL(screen.getByTestId('location').textContent, 'http://localhost');
+    expect(url.searchParams.get('exception_status')).toBe('all');
+    expect(url.searchParams.get('exception_salesman')).toBe('8');
+    expect(url.searchParams.get('exception_uid')).toBe('exception-1');
+    expect(url.searchParams.get('source')).toBe('message');
+    expect(url.hash).toBe('#history');
+    expect(fetchOrderException).toHaveBeenCalledTimes(1);
+});

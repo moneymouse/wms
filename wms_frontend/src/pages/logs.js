@@ -5,6 +5,7 @@ import { endpoint } from "../config";
 import getSafeHeader from "../common/safeHeader"
 import { hasPermission } from "../common/roleConfig";
 import { useNavigate } from "react-router-dom";
+import useUrlState from '../common/useUrlState';
 
 const { Panel } = Collapse;
 const { Title, Text } = Typography;
@@ -12,13 +13,13 @@ const { Title, Text } = Typography;
 export default function () {
     const [tableLoading, setTableLoading] = useState(false);
     const [logs, setLogs] = useState([]);
-    const [pagination, setPagination] = useState({
+    const [pagination, setPagination] = useUrlState('logsPagination', {
         current: 1,
         pageSize: 10,
-        total: 0,
     });
-    const [sortField, setSortField] = useState('log_date');
-    const [sortOrder, setSortOrder] = useState('descend');
+    const [total, setTotal] = useState(0);
+    const [sortField, setSortField] = useUrlState('logsSortField', 'log_date');
+    const [sortOrder, setSortOrder] = useUrlState('logsSortOrder', 'descend');
     const [isAdmin, setIsAdmin] = useState(false);
     const navigate = useNavigate();
 
@@ -51,13 +52,7 @@ export default function () {
                 key: v.id ?? `${requestPagination.current}-${i}`,
             }));
             setLogs(data);
-            setPagination(prev => ({
-                ...prev,
-                ...requestPagination,
-                current: response.page || requestPagination.current,
-                pageSize: response.page_size || requestPagination.pageSize,
-                total: response.total || 0,
-            }));
+            setTotal(response.total || 0);
         } catch (error) {
             console.error('获取日志失败:', error);
             message.error('获取日志失败');
@@ -85,8 +80,6 @@ export default function () {
                         setTimeout(() => {
                             navigate('/');
                         }, 2000);
-                    } else {
-                        fetchLogs();
                     }
                 }
             } catch (e) {
@@ -105,12 +98,17 @@ export default function () {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [navigate]);
 
+    useEffect(() => {
+        if (isAdmin) fetchLogs();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [isAdmin, pagination, sortField, sortOrder]);
+
     const handleTableChange = (newPagination, filters, sorter) => {
         const nextSortField = sorter.field || 'log_date';
         const nextSortOrder = sorter.order || 'descend';
         setSortField(nextSortField);
         setSortOrder(nextSortOrder);
-        fetchLogs(newPagination, nextSortField, nextSortOrder);
+        setPagination({ current: newPagination.current, pageSize: newPagination.pageSize });
     };
 
     const columns = [
@@ -219,7 +217,7 @@ export default function () {
                 columns={columns}
                 dataSource={logs}
                 rowKey={(record) => record.id ?? record.key}
-                pagination={pagination}
+                pagination={{ ...pagination, total }}
                 loading={tableLoading}
                 onChange={handleTableChange}
                 expandable={{

@@ -1020,3 +1020,22 @@ test('bulk names change only the chosen item row and preserve mixed goods and pe
     expect(record.draft.boxes[0]).toMatchObject({ item_name: '运动鞋、围巾', count: 5, item_details: [{ item_name: '运动鞋', piece_count: 2 }, { item_name: '围巾', piece_count: 3 }] });
     expect(record.draft.boxes[1]).toMatchObject(threeBoxes[1]);
 });
+
+test('unfinished-upload page restores from URL and pagination keeps unsaved photo metadata', async () => {
+    const implementation = global.fetch.getMockImplementation();
+    global.fetch.mockImplementation((url, options) => String(url).includes('/my-packing-lists?')
+        ? Promise.resolve(response({ items: [{ uid: 'intake-1', mark: 'MY-UPLOAD', box_count: 2 }], total: 21 }))
+        : implementation(url, options));
+    const router = renderPage('/upload?intake_page=2&keep=1#uploads');
+    const section = await screen.findByRole('region', { name: '我的未完成上传' });
+    await within(section).findByText('MY-UPLOAD');
+    expect(global.fetch.mock.calls.some(([url]) => String(url).includes('status=uploading&page=2&page_size=20'))).toBe(true);
+    fireEvent.change(screen.getByLabelText('唛头提示'), { target: { value: '尚未上传的唛头' } });
+    fireEvent.click(within(section).getByTitle('1'));
+    await waitFor(() => expect(global.fetch.mock.calls.some(([url]) => String(url).includes('status=uploading&page=1&page_size=20'))).toBe(true));
+    expect(screen.getByLabelText('唛头提示')).toHaveValue('尚未上传的唛头');
+    expect(screen.queryByRole('dialog', { name: '有未保存的内容' })).not.toBeInTheDocument();
+    await waitFor(() => expect(new URLSearchParams(router.state.location.search).get('intake_page') || '1').toBe('1'));
+    expect(new URLSearchParams(router.state.location.search).get('keep')).toBe('1');
+    expect(router.state.location.hash).toBe('#uploads');
+});

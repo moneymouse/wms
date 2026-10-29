@@ -2,9 +2,10 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Button, Input, message, Modal, Row, Space, Table, Typography } from "antd";
 import { DeleteOutlined, HistoryOutlined, SearchOutlined } from "@ant-design/icons";
 import { buildOrderColumns } from '../common/orderColumns';
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { endpoint } from "../config.js";
 import getSafeHeader from '../common/safeHeader';
+import useUrlState from '../common/useUrlState';
 import ExportButton from '../components/ExportButton';
 import FeatureTour from '../components/FeatureTour';
 import OrderHistoryDrawer from '../components/OrderHistoryDrawer';
@@ -21,7 +22,7 @@ const selectQuoteOrderTourChapter = getCostQuoteReceiptChapter('selectQuoteOrder
 
 export default function OrderList() {
     const [orderData, setOrderData] = useState([]);
-    const [cargo, setCargo] = useState({});
+    const [cargo] = useState({});
     const [deletedHistoryOpen, setDeletedHistoryOpen] = useState(false);
     const [deletedHistoryRefreshKey, setDeletedHistoryRefreshKey] = useState(0);
     const navigate = useNavigate();
@@ -43,67 +44,37 @@ export default function OrderList() {
         ...step,
         target: () => document.querySelector('[data-tour="workflow-order-list"]'),
     }));
-    const [searchParams, setSearchParams] = useSearchParams();
-    const [pagination, setPagination] = useState({
-        pageSize: 20,
-        showSizeChanger: false,
-        showTotal: (total) => `共${total}单`,
-        current: Number(searchParams.get('p') || 1),
-        total: 0
-    });
-
-    let flag = false;
-
-    async function fetchOrderData(_pagination = {}, sorter = {}, query = searchParams.get('q') || '') {
-        const newPagination = { ...pagination, ..._pagination };
-        // p=${newPagination.current}&s=${newPagination.pageSize}${sorter.order?`&sf=${sorter.column.dataIndex}&so=${Number(sorter.order==='descend')}`:""}${query&&`&q=${query}`}
-        const { data, total } = await (await fetch(`${endpoint}/orders?` +
-            new URLSearchParams({
-                q: query,
-                p: newPagination.current,
-                s: newPagination.pageSize,
-                ...(sorter.order && {
-                    sf: sorter.column.dataIndex,
-                    so: Number(sorter.order === 'descend')
-                })
-            }).toString(), {
-            headers: getSafeHeader()
-        })).json();
-
-        // setOrderData((_data) => [..._data, ...sortedData.map((v) => ({...v, key: v.uid})), ]);
-        setOrderData(data.map((v) => ({ ...v, key: v.uid })));
-
-        // 分页
-        setPagination({
-            ...newPagination,
-            total
-        });
-    }
-
-    //请求并初始化数据
+    const [page, setPage] = useUrlState('p', 1, { validate: value => Number.isSafeInteger(value) && value > 0 });
+    const [pageSize, setPageSize] = useUrlState('s', 20, { validate: value => Number.isSafeInteger(value) && value > 0 });
+    const [keyword, setKeyword] = useUrlState('q', '');
+    const [sortField, setSortField] = useUrlState('sf', '');
+    const [sortDirection, setSortDirection] = useUrlState('so', 1, { validate: value => value === 0 || value === 1 });
+    const [total, setTotal] = useState(0);
     const [tableLoading, setTableLoading] = useState(false);
+    const pagination = { current: page, pageSize, total, showSizeChanger: false, showTotal: count => `共${count}单` };
+
     useEffect(() => {
-        (async () => {
-            if (flag) return;
-            setTableLoading(true);
-            await fetchOrderData();
+        let active = true;
+        const controller = new AbortController();
+        const params = new URLSearchParams({ q: keyword, p: page, s: pageSize,
+            ...(sortField && { sf: sortField, so: sortDirection }) });
+        setTableLoading(true);
+        fetch(`${endpoint}/orders?${params}`, { headers: getSafeHeader(), signal: controller.signal })
+            .then(response => response.json())
+            .then(result => {
+                if (!active) return;
+                setOrderData((result.data || []).map(row => ({ ...row, key: row.uid })));
+                setTotal(result.total || 0);
+            })
+            .catch(error => { if (active && error.name !== 'AbortError') message.error('读取订单列表失败'); })
+            .finally(() => { if (active) setTableLoading(false); });
+        return () => { active = false; controller.abort(); };
+    }, [keyword, page, pageSize, sortField, sortDirection]);
 
-            searchParams.set('p', pagination.current.toString());
-            // setSearchParams(searchParams);
-
-            // const res = await fetch(`${endpoint}/cargo`, {
-            //     headers: getSafeHeader()
-            // });
-            const p = { data: {} };
-            setCargo(p.data);
-
-            setTableLoading(false);
-            flag = true;
-        })()
-    }, []);
-
-    // 配置字段名以及类型
-    const columns = buildOrderColumns({ onOpenOrder: uid => openOrder(uid) });
+    const columns = buildOrderColumns({ onOpenOrder: uid => openOrder(uid) }).map(column => ({
+        ...column,
+        sortOrder: column.dataIndex === sortField ? (sortDirection === 1 ? 'descend' : 'ascend') : null,
+    }));
 
     columns.push({
         title: '操作',
@@ -120,41 +91,10 @@ export default function OrderList() {
         ),
     });
 
-    //查找逻辑
-    const keyword = searchParams.get('q') || '';
-
-    const handleSearch = async (e) => {
-        const value = e.target.value;
-        if (value) {
-            setSearchParams({ ...searchParams, q: value });
-        } else {
-            // 如果搜索框为空，清除查询参数
-            searchParams.delete('q');
-            setSearchParams(searchParams);
-        }
-        setTableLoading(true);
-        await fetchOrderData({ current: 1 }, {}, value);
-        setTableLoading(false);
-        setTableLoading(false);
-    }
-
-    const filteredData = useMemo(() => {
-        const _keyword = keyword.split("\n").map(value => value.trim());
-        return orderData.filter((v) => {
-
-            for (let i in v) {
-                if (v[i] === null) continue;
-                if (v[i].toString().toLowerCase().includes(keyword.toString().split('-')[0].toLowerCase())) return true
-            }
-            for (let c of cargo[v['uid']] || []) {
-                for (let k of _keyword) {
-                    if (c['transfer_id'] && c['transfer_id'].toString().toLowerCase().includes(k.toString().toLowerCase())) return true
-                    if (c['waybill_id'] && c['waybill_id'].toString().toLowerCase().includes(k.toString().toLowerCase())) return true
-                }
-            }
-            return false;
-        })
-    }, [keyword, orderData, cargo])
+    const handleSearch = event => {
+        setKeyword(event.target.value);
+        setPage(1);
+    };
 
     //选择与导出逻辑
     const [selectedKeys, setSelectedKeys] = useState([]);
@@ -286,16 +226,12 @@ export default function OrderList() {
             }
         });
     };
-    const handleTableChange = async (pagination, filters, sorter) => {
-        setTableLoading(true)
-        searchParams.set('p', pagination.current);
-        setSearchParams(searchParams);
-        await fetchOrderData(pagination, Array.isArray(sorter) ? sorter[-1] : sorter);
-        // `dataSource` is useless since `pageSize` changed
-        if (pagination.pageSize !== pagination.pageSize) {
-            setOrderData([]);
-        }
-        setTableLoading(false);
+    const handleTableChange = (nextPagination, filters, sorter) => {
+        const currentSorter = Array.isArray(sorter) ? sorter[sorter.length - 1] : sorter;
+        setPage(nextPagination.current);
+        setPageSize(nextPagination.pageSize);
+        setSortField(currentSorter?.order ? currentSorter.field || currentSorter.column?.dataIndex || '' : '');
+        setSortDirection(currentSorter?.order === 'ascend' ? 0 : 1);
     };
 
     function openOrder(orderUid) {
@@ -319,7 +255,7 @@ export default function OrderList() {
                             rows={1}
                             onChange={handleSearch}
                             placeholder={"订单号/客户名/收件人名/业务员/国家"}
-                            defaultValue={keyword}
+                            value={keyword}
                             style={{ width: '20rem' }}
                         />
                         <Button type="primary" icon={<SearchOutlined />}>查找</Button>

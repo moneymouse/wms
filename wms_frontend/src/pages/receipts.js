@@ -1,7 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Alert, Button, Descriptions, Drawer, Input, Select, Space, Spin, Table, Tabs, Typography, message } from 'antd';
 import { HistoryOutlined, PrinterOutlined, ReloadOutlined } from '@ant-design/icons';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate, useNavigationType } from 'react-router-dom';
 import { endpoint } from '../config';
 import getSafeHeader from '../common/safeHeader';
 import { PAYMENT_METHODS, printReceipt } from '../common/receiptApi';
@@ -12,13 +12,15 @@ import FinanceHistoryDrawer from '../components/FinanceHistoryDrawer';
 import { getUserRoles } from '../common/roleConfig';
 import { COST_QUOTE_RECEIPT_TOUR } from '../common/featureTourConfig';
 import { FinancePayments } from './financeWorkspace';
+import BusinessReceivables from './businessReceivables';
+import useUrlState from '../common/useUrlState';
 import styles from './receipts.module.css';
 
 const LEGACY_STATUS = { pending: '待审核', approved: '已生效', rejected: '已驳回' };
 export function LegacyReceiptHistory() {
     const [messageApi, contextHolder] = message.useMessage();
-    const [filters, setFilters] = useState({});
-    const [page, setPage] = useState(1);
+    const [filters, setFilters] = useUrlState('legacyReceiptFilters', {});
+    const [page, setPage] = useUrlState('legacyReceiptPage', 1);
     const [revision, setRevision] = useState(0);
     const [state, setState] = useState({ items: [], total: 0, loading: true, error: '' });
     const [detailId, setDetailId] = useState(null);
@@ -51,8 +53,8 @@ export function LegacyReceiptHistory() {
         {contextHolder}
         <Alert type="info" showIcon message="历史收款仅供查询和打印。原待审核记录由财务在「历史收款清理」处理；新收付款请在收付款记录中登记。" style={{ marginBottom: 16 }} />
         <Space wrap style={{ marginBottom: 16 }}>
-            <Input.Search placeholder="历史收款单号 / 客户" allowClear onSearch={q => change({ q })} />
-            <Select aria-label="历史收款状态" placeholder="全部状态" allowClear style={{ width: 150 }} onChange={status => change({ status })} options={Object.entries(LEGACY_STATUS).map(([value, label]) => ({ value, label }))} />
+            <Input.Search key={filters.q || ''} defaultValue={filters.q} placeholder="历史收款单号 / 客户" allowClear onSearch={q => change({ q })} />
+            <Select aria-label="历史收款状态" value={filters.status} placeholder="全部状态" allowClear style={{ width: 150 }} onChange={status => change({ status })} options={Object.entries(LEGACY_STATUS).map(([value, label]) => ({ value, label }))} />
             <Button icon={<ReloadOutlined />} onClick={() => setRevision(value => value + 1)}>刷新</Button>
         </Space>
         {state.error && <Alert type="error" message={state.error} action={<Button size="small" onClick={() => setRevision(value => value + 1)}>重试</Button>} style={{ marginBottom: 12 }} />}
@@ -99,6 +101,7 @@ export function LegacyReceiptHistory() {
 export default function Receipts() {
     const location = useLocation();
     const navigate = useNavigate();
+    const navigationType = useNavigationType();
     const searchParams = new URLSearchParams(location.search);
     const paymentParam = searchParams.get('payment_id');
     const parsedPaymentId = Number(paymentParam);
@@ -106,13 +109,22 @@ export default function Receipts() {
     const hasPaymentLink = searchParams.has('payment_id');
     const { userId } = getCurrentTourUser();
     const roles = getUserRoles(decodeJwtPayload(window.localStorage.getItem('jwt')) || {});
-    const [scope, setScope] = useState('mine');
-    const [tab, setTab] = useState('entry');
+    const [scope, setScope] = useUrlState('receiptScope', 'mine', { validate: value => ['mine', 'all'].includes(value) });
+    const [tab, setTab] = useUrlState('receiptTab', 'entry', { validate: value => ['entry', 'receivable', 'list'].includes(value) });
     const canViewAll = roles.some(role => ['admin', 'finance'].includes(role));
     useEffect(() => { if (readFeatureTourFlow(userId)?.campaignId === COST_QUOTE_RECEIPT_TOUR.id) clearFeatureTourFlow(userId); }, [userId]);
+    // Filter replacements keep the same navigation context. A message or order
+    // navigation may intentionally reopen the same payment or creation drawer.
+    const contextNavigation = useRef(null);
+    if (!contextNavigation.current || navigationType !== 'REPLACE'
+        || contextNavigation.current.paymentId !== paymentId
+        || contextNavigation.current.state !== location.state) {
+        contextNavigation.current = { token: location.key, paymentId, state: location.state };
+    }
+    const navigationToken = contextNavigation.current.token;
     useEffect(() => {
         if (paymentId || (!hasPaymentLink && location.state?.paymentContext)) setTab('entry');
-    }, [paymentId, hasPaymentLink, location.key, location.state]);
+    }, [navigationToken, paymentId, hasPaymentLink, location.state, setTab]);
     const closePaymentLink = () => {
         const params = new URLSearchParams(location.search);
         params.delete('payment_id');
@@ -128,10 +140,11 @@ export default function Receipts() {
                 <Space wrap style={{ marginBottom: 16 }}><Typography.Text type="secondary">登记客户实际收付款，提交财务确认后独立核销。</Typography.Text>
                     {canViewAll && <Select aria-label="登记人范围" value={scope} onChange={setScope} options={[{ value: 'mine', label: '我登记的收付款' }, { value: 'all', label: '全部收付款' }]} />}
                 </Space>
-                <FinancePayments business initialFilter={scope === 'mine' && userId ? { created_by_id: userId } : {}} filterRevision={scope === 'mine' ? 1 : 2}
-                    initialContext={hasPaymentLink ? undefined : location.state?.paymentContext} navigationToken={location.key}
+                <FinancePayments business initialFilter={(!canViewAll || scope === 'mine') && userId ? { created_by_id: userId } : {}} filterRevision={scope === 'mine' ? 1 : 2}
+                    initialContext={hasPaymentLink ? undefined : location.state?.paymentContext} navigationToken={navigationToken}
                     initialPaymentId={paymentId} onDetailClose={closePaymentLink} />
             </> },
+            { key: 'receivable', label: '应收款', children: <BusinessReceivables active={tab === 'receivable'} /> },
             { key: 'list', label: '历史收款（只读）', children: <LegacyReceiptHistory /> },
         ]} />
     </div>;

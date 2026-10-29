@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import useUrlState from '../common/useUrlState';
 import { Button, Card, Drawer, Form, Input, InputNumber, Modal, Space, Table, Tabs, Tag, Typography, message } from 'antd';
 import { EditOutlined, HistoryOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import { endpoint } from '../config';
@@ -7,6 +8,9 @@ import getSafeHeader from '../common/safeHeader';
 const EMPTY_FORM = { name: '', channel_group: '', cost: 0, min_price: 0, remark: '' };
 
 export default function CostManagement() {
+    const [tab, setTab] = useUrlState('costTab', 'cost');
+    const [costPagination, setCostPagination] = useUrlState('costPagination', { current: 1, pageSize: 10 });
+    const [approvalPagination, setApprovalPagination] = useUrlState('costApprovalPagination', { current: 1, pageSize: 10 });
     const [messageApi, contextHolder] = message.useMessage();
     const [form] = Form.useForm();
     const [modes, setModes] = useState([]);
@@ -166,20 +170,20 @@ export default function CostManagement() {
         <div style={{ padding: 24 }}>
             {contextHolder}
             <Typography.Title level={3}>成本管理</Typography.Title>
-            <Tabs items={[
+            <Tabs activeKey={tab} onChange={setTab} items={[
                 {
                     key: 'cost', label: '渠道成本', children: <Card>
                         <Space style={{ marginBottom: 12 }}>
                             <Button type="primary" icon={<PlusOutlined />} onClick={() => openModal(null)}>新增渠道</Button>
                             <Button icon={<ReloadOutlined />} onClick={fetchModes}>刷新</Button>
                         </Space>
-                        <Table rowKey="id" loading={loading} columns={columns} dataSource={modes} scroll={{ x: 1000 }} />
+                        <Table rowKey="id" loading={loading} columns={columns} dataSource={modes} scroll={{ x: 1000 }} pagination={{ ...costPagination, onChange: (current, pageSize) => setCostPagination({ current, pageSize }) }} />
                     </Card>
                 },
                 ...(isAdmin ? [{
                     key: 'quote-approval', label: `低价报价审核${quoteApprovals.length ? ` (${quoteApprovals.length})` : ''}`, children: <Card>
                         <Button icon={<ReloadOutlined />} onClick={fetchQuoteApprovals} style={{ marginBottom: 12 }}>刷新</Button>
-                        <Table rowKey="id" loading={quoteApprovalsLoading} dataSource={quoteApprovals} scroll={{ x: 'max-content' }} columns={[
+                        <Table rowKey="id" loading={quoteApprovalsLoading} dataSource={quoteApprovals} pagination={{ ...approvalPagination, onChange: (current, pageSize) => setApprovalPagination({ current, pageSize }) }} scroll={{ x: 'max-content' }} columns={[
                             { title: '订单号', dataIndex: 'order_id', width: 190 },
                             { title: '客户', dataIndex: 'customer_name', width: 150 },
                             { title: '渠道', dataIndex: 'transportation_name', width: 150 },

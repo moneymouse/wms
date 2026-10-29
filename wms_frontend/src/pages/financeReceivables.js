@@ -1,4 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
+import useUrlState from '../common/useUrlState';
+import dayjs from 'dayjs';
 import {
     Alert, Button, Card, Col, DatePicker, Input, Modal, Row, Select, Space, Statistic, Table,
     Typography, message
@@ -17,6 +19,16 @@ import {
     readFeatureTourFlow,
     saveFeatureTourFlow,
 } from '../common/featureTourState';
+
+const dateRangeUrl = {
+    encode: value => JSON.stringify(value?.map(date => date.format('YYYY-MM-DD')) ?? null),
+    decode: raw => {
+        const values = JSON.parse(raw);
+        if (values === null) return null;
+        if (!Array.isArray(values) || values.length !== 2 || values.some(value => typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value) || !dayjs(value).isValid() || dayjs(value).format('YYYY-MM-DD') !== value)) throw new Error('Invalid date range');
+        return values.map(value => dayjs(value));
+    },
+};
 
 const { Text } = Typography;
 const STATUS = {
@@ -91,15 +103,18 @@ function ReceiptItems({ receipt, loading = false }) {
 
 export function ReceivableLedger() {
     const [messageApi, contextHolder] = message.useMessage();
-    const [dateRange, setDateRange] = useState(defaultDateRange);
-    const [query, setQuery] = useState('');
-    const [status, setStatus] = useState(undefined);
-    const [customerId, setCustomerId] = useState(undefined);
-    const [ownerId, setOwnerId] = useState(undefined);
+    const [dateRange, setDateRange] = useUrlState('legacyLedgerDates', defaultDateRange, dateRangeUrl);
+    const [ledgerPagination, setLedgerPagination] = useUrlState('legacyLedgerPage', { current: 1, pageSize: 20 });
+    const [query, setQuery] = useUrlState('legacyLedgerSearch', '');
+    const [status, setStatus] = useUrlState('legacyLedgerStatus', undefined);
+    const [customerId, setCustomerId] = useUrlState('legacyLedgerCustomer', undefined);
+    const [ownerId, setOwnerId] = useUrlState('legacyLedgerOwner', undefined);
     const [customers, setCustomers] = useState([]);
     const [owners, setOwners] = useState([]);
     const [data, setData] = useState({ items: [], totals: {}, total: 0, page: 1, page_size: 20 });
     const [loading, setLoading] = useState(false);
+    const ledgerRequest = useRef(0);
+    const changeLedgerFilter = setter => value => { setter(value); setLedgerPagination(previous => ({ ...previous, current: 1 })); };
     const { userId: tourUserId } = getCurrentTourUser();
     const tourFlow = readFeatureTourFlow(tourUserId);
     const continuingLedgerFlow = tourFlow?.campaignId === COST_QUOTE_RECEIPT_TOUR.id
@@ -119,7 +134,8 @@ export function ReceivableLedger() {
         }).catch(() => {});
     }, []);
 
-    const fetchLedger = async (page = 1, pageSize = data.page_size || 20) => {
+    const fetchLedger = async (page = ledgerPagination.current, pageSize = ledgerPagination.pageSize) => {
+        const requestId = ++ledgerRequest.current;
         setLoading(true);
         try {
             const params = new URLSearchParams({ p: page, s: pageSize });
@@ -133,18 +149,19 @@ export function ReceivableLedger() {
             if (ownerId) params.set('owner_id', ownerId);
             const response = await fetch(`${endpoint}/finance/accounts-receivable?${params}`, { headers: getSafeHeader() });
             const result = await response.json();
+            if (requestId !== ledgerRequest.current) return;
             if (!response.ok || result.code !== 200) throw new Error(result.msg || '查询失败');
             setData(result.data || { items: [], totals: {} });
         } catch (error) {
-            messageApi.error(error.message || '查询应收账款失败');
+            if (requestId === ledgerRequest.current) messageApi.error(error.message || '查询应收账款失败');
         } finally {
-            setLoading(false);
+            if (requestId === ledgerRequest.current) setLoading(false);
         }
     };
 
     // Include opening arrears; a month filter would hide older unpaid orders.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    useEffect(() => { fetchLedger(); }, []);
+    useEffect(() => { fetchLedger(); }, [dateRange, query, status, customerId, ownerId, ledgerPagination]);
 
     const columns = [
         { title: '订单号', dataIndex: 'order_id', key: 'order_id', width: 200 },
@@ -189,15 +206,15 @@ export function ReceivableLedger() {
                 <Space wrap>
                     <DatePicker.RangePicker
                         value={dateRange}
-                        onChange={setDateRange}
+                        onChange={changeLedgerFilter(setDateRange)}
                         allowClear
                         format="YYYY-MM-DD"
                         placeholder={['开始日期', '结束日期']}
                     />
-                    <Input value={query} onChange={e => setQuery(e.target.value)} placeholder="订单号/客户" style={{ width: 190 }} onPressEnter={() => fetchLedger()} />
-                    <Select allowClear value={customerId} onChange={setCustomerId} placeholder="客户" style={{ width: 160 }} showSearch optionFilterProp="label" options={customers.map(row => ({ value: row.id, label: row.name }))} />
-                    <Select allowClear value={ownerId} onChange={setOwnerId} placeholder="报价负责人" style={{ width: 160 }} options={owners.map(row => ({ value: row.id, label: row.name }))} />
-                    <Select allowClear value={status} onChange={setStatus} placeholder="结清状态" style={{ width: 140 }} options={Object.entries(STATUS).map(([value, item]) => ({ value, label: item.label }))} />
+                    <Input value={query} onChange={e => changeLedgerFilter(setQuery)(e.target.value)} placeholder="订单号/客户" style={{ width: 190 }} onPressEnter={() => fetchLedger()} />
+                    <Select allowClear value={customerId} onChange={changeLedgerFilter(setCustomerId)} placeholder="客户" style={{ width: 160 }} showSearch optionFilterProp="label" options={customers.map(row => ({ value: row.id, label: row.name }))} />
+                    <Select allowClear value={ownerId} onChange={changeLedgerFilter(setOwnerId)} placeholder="报价负责人" style={{ width: 160 }} options={owners.map(row => ({ value: row.id, label: row.name }))} />
+                    <Select allowClear value={status} onChange={changeLedgerFilter(setStatus)} placeholder="结清状态" style={{ width: 140 }} options={Object.entries(STATUS).map(([value, item]) => ({ value, label: item.label }))} />
                     <Button type="primary" icon={<ReloadOutlined />} onClick={() => fetchLedger()}>查询</Button>
                 </Space>
             </Card>
@@ -217,8 +234,8 @@ export function ReceivableLedger() {
                     loading={loading}
                     dataSource={data.items || []}
                     columns={columns}
-                    pagination={{ current: data.page || 1, pageSize: data.page_size || 20, total: data.total || 0 }}
-                    onChange={next => fetchLedger(next.current, next.pageSize)}
+                    pagination={{ ...ledgerPagination, total: data.total || 0 }}
+                    onChange={next => setLedgerPagination({ current: next.current, pageSize: next.pageSize })}
                     scroll={{ x: 'max-content' }}
                     size="small"
                 />
@@ -229,8 +246,9 @@ export function ReceivableLedger() {
 
 export function ReceiptAudit() {
     const [messageApi, contextHolder] = message.useMessage();
-    const [status, setStatus] = useState('pending');
-    const [receiptNoSearch, setReceiptNoSearch] = useState('');
+    const [status, setStatus] = useUrlState('legacyAuditStatus', 'pending');
+    const [receiptNoSearch, setReceiptNoSearch] = useUrlState('legacyAuditSearch', '');
+    const [auditPagination, setAuditPagination] = useUrlState('legacyAuditPage', { current: 1, pageSize: 20 });
     const [receipts, setReceipts] = useState([]);
     const [pagination, setPagination] = useState({ current: 1, pageSize: 20, total: 0 });
     const listRequest = useRef(0);
@@ -254,7 +272,7 @@ export function ReceiptAudit() {
             || document.querySelector('[data-tour="audit-table"]'),
     }));
 
-    const fetchReceipts = async (page = 1, pageSize = pagination.pageSize) => {
+    const fetchReceipts = async (page = auditPagination.current, pageSize = auditPagination.pageSize) => {
         const requestId = ++listRequest.current;
         setLoading(true);
         try {
@@ -274,9 +292,9 @@ export function ReceiptAudit() {
             if (requestId === listRequest.current) setLoading(false);
         }
     };
-    // Status is the only input that should automatically refresh this list.
+    // URL changes, including browser navigation, restore the same result set.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    useEffect(() => { fetchReceipts(); }, [status]);
+    useEffect(() => { fetchReceipts(); }, [status, receiptNoSearch, auditPagination]);
 
     const fetchReceiptDetail = async (receiptId) => {
         const response = await fetch(`${endpoint}/receipts/${receiptId}`, { headers: getSafeHeader() });
@@ -438,13 +456,13 @@ export function ReceiptAudit() {
                         <Input.Search
                             allowClear
                             value={receiptNoSearch}
-                            onChange={event => setReceiptNoSearch(event.target.value)}
+                            onChange={event => { setReceiptNoSearch(event.target.value); setAuditPagination(previous => ({ ...previous, current: 1 })); }}
                             onSearch={() => fetchReceipts()}
                             placeholder="收款单号"
                             enterButton="搜索"
                             style={{ width: 260 }}
                         />
-                        <Select value={status} onChange={setStatus} style={{ width: 130 }} options={[{ value: 'pending', label: '待审核' }, { value: 'approved', label: '已生效' }, { value: 'rejected', label: '已驳回' }, { value: '', label: '全部' }]} />
+                        <Select value={status} onChange={value => { setStatus(value); setAuditPagination(previous => ({ ...previous, current: 1 })); }} style={{ width: 130 }} options={[{ value: 'pending', label: '待审核' }, { value: 'approved', label: '已生效' }, { value: 'rejected', label: '已驳回' }, { value: '', label: '全部' }]} />
                         <Button icon={<ReloadOutlined />} onClick={() => fetchReceipts(pagination.current)}>刷新</Button>
                     </Space>
                 </div>
@@ -453,8 +471,8 @@ export function ReceiptAudit() {
                     loading={loading}
                     dataSource={receipts}
                     columns={columns}
-                    pagination={{ ...pagination, showSizeChanger: true, showTotal: total => `共 ${total} 张收款单` }}
-                    onChange={next => fetchReceipts(next.current, next.pageSize)}
+                    pagination={{ ...pagination, ...auditPagination, showSizeChanger: true, showTotal: total => `共 ${total} 张收款单` }}
+                    onChange={next => setAuditPagination({ current: next.current, pageSize: next.pageSize })}
                     scroll={{ x: 'max-content' }}
                     expandable={{
                         onExpand: (expanded, record) => {

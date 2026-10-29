@@ -1,6 +1,7 @@
 import React from 'react';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import dayjs from 'dayjs';
+import { MemoryRouter, useLocation } from 'react-router-dom';
 import FinanceLegacyMigration from './financeLegacyMigration';
 import { financeRequest } from '../common/financeApi';
 
@@ -165,4 +166,29 @@ test('opening the new ledger closes the migration drawer before leaving the tab'
     fireEvent.click(await screen.findByRole('button', { name: '前往新账处理' }));
     expect(onOpenLedger).toHaveBeenCalledWith({ documentId: 77, paymentId: undefined, partnerId: 3 });
     await waitFor(() => expect(screen.queryByRole('dialog', { name: '接入记录与来源核对' })).not.toBeInTheDocument());
+});
+
+test('saved migration URL tab and query survive the initial section defaults', async () => {
+    const params = new URLSearchParams({ legacyTab: 'links', legacyLinks: JSON.stringify({ p: 3, s: 10, q: '旧账客户', status: 'current' }) });
+    render(<MemoryRouter initialEntries={[`/finance?${params}`]}><FinanceLegacyMigration settings={settings} initialTab="orders" /></MemoryRouter>);
+    expect(screen.getByRole('tab', { name: '已接入与差异' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByLabelText('搜索接入记录')).toHaveValue('旧账客户');
+    await waitFor(() => expect(financeRequest).toHaveBeenCalledWith('/legacy/links', expect.objectContaining({ params: { p: 3, s: 10, q: '旧账客户', status: 'current' } })));
+});
+
+function LegacyUrlProbe() { return <output data-testid="legacy-url">{useLocation().search}</output>; }
+
+test('opening the drift shortcut persists its tab and filter for a later refresh', async () => {
+    const first = render(<MemoryRouter initialEntries={['/finance']}><FinanceLegacyMigration settings={settings} initialTab="links" sectionToken={1} /><LegacyUrlProbe /></MemoryRouter>);
+    await waitFor(() => {
+        const params = new URLSearchParams(screen.getByTestId('legacy-url').textContent);
+        expect(params.get('legacyTab')).toBe('links');
+        expect(JSON.parse(params.get('legacyLinks'))).toMatchObject({ status: 'drift', p: 1 });
+    });
+    const savedSearch = screen.getByTestId('legacy-url').textContent;
+    first.unmount();
+    financeRequest.mockClear();
+    render(<MemoryRouter initialEntries={[`/finance${savedSearch}`]}><FinanceLegacyMigration settings={settings} /></MemoryRouter>);
+    expect(screen.getByRole('tab', { name: '已接入与差异' })).toHaveAttribute('aria-selected', 'true');
+    await waitFor(() => expect(financeRequest).toHaveBeenCalledWith('/legacy/links', expect.objectContaining({ params: expect.objectContaining({ status: 'drift', p: 1 }) })));
 });

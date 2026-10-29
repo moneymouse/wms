@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import useUrlState from '../common/useUrlState';
 import { Alert, Button, Card, DatePicker, Descriptions, Empty, Select, Space, Spin, Table, Typography, message } from 'antd';
 import { DownloadOutlined, PrinterOutlined, SearchOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
@@ -6,6 +7,16 @@ import { endpoint } from '../config';
 import getSafeHeader from '../common/safeHeader';
 import { financeRequest, money, queryString } from '../common/financeApi';
 import statementStyles from './financePartnerStatement.module.css';
+
+const dateRangeUrl = {
+    encode: value => JSON.stringify(value?.map(date => date.format('YYYY-MM-DD')) ?? null),
+    decode: raw => {
+        const values = JSON.parse(raw);
+        if (values === null) return null;
+        if (!Array.isArray(values) || values.length !== 2 || values.some(value => typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value) || !dayjs(value).isValid() || dayjs(value).format('YYYY-MM-DD') !== value)) throw new Error('Invalid date range');
+        return values.map(value => dayjs(value));
+    },
+};
 
 const { Text } = Typography;
 const statementPath = '/accounting/partner-statement';
@@ -59,9 +70,10 @@ function StatementPartnerSelect({ partnerType, value, onChange }) {
 }
 
 export default function FinancePartnerStatement() {
-    const [partnerType, setPartnerType] = useState('customer');
-    const [partnerId, setPartnerId] = useState(undefined);
-    const [dates, setDates] = useState(initialDates);
+    const [partnerType, setPartnerType] = useUrlState('statementPartnerType', 'customer', { validate: value => ['customer', 'vendor'].includes(value) });
+    const [partnerId, setPartnerId] = useUrlState('statementPartner', undefined);
+    const [dates, setDates] = useUrlState('statementDates', initialDates, { ...dateRangeUrl, validate: value => Array.isArray(value) && value.length === 2 });
+    const [page, setPage] = useUrlState('statementPage', 1, { validate: value => Number.isSafeInteger(value) && value > 0 });
     const [statement, setStatement] = useState(null);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
@@ -130,9 +142,9 @@ export default function FinancePartnerStatement() {
         {contextHolder}
         <div className={statementStyles.toolbar}>
             <Space wrap className={statementStyles.filters}>
-                <Select aria-label="对账往来类型" value={partnerType} style={{ width: 140 }} options={[{ value: 'customer', label: '客户对账' }, { value: 'vendor', label: '供应商对账' }]} onChange={value => { setPartnerType(value); setPartnerId(undefined); }} />
-                <StatementPartnerSelect key={partnerType} partnerType={partnerType} value={partnerId} onChange={setPartnerId} />
-                <DatePicker.RangePicker aria-label="对账期间" value={dates} onChange={setDates} allowClear={false} />
+                <Select aria-label="对账往来类型" value={partnerType} style={{ width: 140 }} options={[{ value: 'customer', label: '客户对账' }, { value: 'vendor', label: '供应商对账' }]} onChange={value => { setPartnerType(value); setPartnerId(undefined); setPage(1); }} />
+                <StatementPartnerSelect key={partnerType} partnerType={partnerType} value={partnerId} onChange={value => { setPartnerId(value); setPage(1); }} />
+                <DatePicker.RangePicker aria-label="对账期间" value={dates} onChange={value => { setDates(value); setPage(1); }} allowClear={false} />
                 <Button type="primary" icon={<SearchOutlined />} onClick={load} loading={loading}>生成对账单</Button>
             </Space>
             <Space><Button icon={<DownloadOutlined />} disabled={!statement || loading} loading={downloading} onClick={download}>下载 CSV</Button><Button icon={<PrinterOutlined />} disabled={!statement || loading} onClick={print}>打印</Button></Space>
@@ -153,7 +165,7 @@ export default function FinancePartnerStatement() {
                         }))
                     } />
                     <Table className={statementStyles.table} rowKey="__key" dataSource={(statement.items || []).map((item, index) => ({ ...item, __key: `${item.entry_id}-${index}` }))} columns={columns} scroll={{ x: 1030 }}
-                        pagination={{ pageSize: 20, showSizeChanger: false, showTotal: total => `共 ${total} 条明细 · 打印和下载包含全部明细` }} locale={{ emptyText: '本期无往来发生额，余额按期初结转' }} />
+                        pagination={{ current: page, onChange: setPage, pageSize: 20, showSizeChanger: false, showTotal: total => `共 ${total} 条明细 · 打印和下载包含全部明细` }} locale={{ emptyText: '本期无往来发生额，余额按期初结转' }} />
                     <div className={statementStyles.statementNote}><Text>{balanceMeaning(statement)}</Text><Text type="secondary">期末余额 = 期初余额 + 本期增加 − 本期减少。金额单位：人民币元。</Text></div>
                 </Card>
             </section> : <Card size="small" className={statementStyles.empty}><Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={loading ? '正在整理往来明细…' : '选择客户或供应商及日期，生成可下载、可打印的对账单'} /></Card>}

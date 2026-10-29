@@ -388,3 +388,15 @@ test('a partially failed deletion reports pending files and exposes cleanup retr
     expect(await screen.findByRole('button', { name: '重试清理待清理文件' })).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: packing.list_number })).not.toBeInTheDocument();
 });
+
+test('restores submitted storage search and page directly from the URL', async () => {
+    const filters = { page: 2, page_size: 20, q: '恢复唛头' };
+    const implementation = storageRequest.getMockImplementation();
+    storageRequest.mockImplementation((path, options) => path === '/packing-lists'
+        ? Promise.resolve({ items, total: 41, page: options.params.page, page_size: 20 })
+        : implementation(path, options));
+    render(<MemoryRouter initialEntries={[`/storage-management?storage_filters=${encodeURIComponent(JSON.stringify(filters))}`]}><StorageManagement /></MemoryRouter>);
+    await screen.findByRole('link', { name: packing.list_number });
+    expect(screen.getByLabelText('搜索装箱单唛头')).toHaveValue('恢复唛头');
+    expect(storageRequest).toHaveBeenCalledWith('/packing-lists', expect.objectContaining({ params: filters }));
+});

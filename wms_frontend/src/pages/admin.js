@@ -8,6 +8,7 @@ import * as XLSX from 'xlsx';
 import { useNavigate } from 'react-router-dom';
 import GoodsNameManagement from '../components/GoodsNameManagement';
 import CustomsCodeManagement from '../components/CustomsCodeManagement';
+import useUrlState from '../common/useUrlState';
 
 const ROLE_OPTIONS = [
     { value: 'admin', label: '管理员' },
@@ -38,6 +39,8 @@ const AdminSection = ({ id, title, description, children }) => (
 );
 
 const AdminPage = () => {
+    const [quoteApprovalPagination, setQuoteApprovalPagination] = useUrlState('adminQuotePagination', { current: 1, pageSize: 10 });
+    const [passwordRequestPagination, setPasswordRequestPagination] = useUrlState('adminPasswordPagination', { current: 1, pageSize: 10 });
     const [loading, setLoading] = useState(false);
     const [data, setData] = useState([]);
     const [approveModalVisible, setApproveModalVisible] = useState(false);
@@ -1156,7 +1159,7 @@ const AdminPage = () => {
                         dataSource={quoteApprovals}
                         rowKey="id"
                         loading={quoteApprovalsLoading}
-                        pagination={{ pageSize: 10 }}
+                        pagination={{ ...quoteApprovalPagination, onChange: (current, pageSize) => setQuoteApprovalPagination({ current, pageSize }) }}
                         scroll={{ x: 1300 }}
                         locale={{ emptyText: '暂无待审批报价' }}
                     />
@@ -1431,7 +1434,7 @@ const AdminPage = () => {
                         dataSource={passwordRequests}
                         rowKey="id"
                         loading={passwordRequestsLoading}
-                        pagination={{ pageSize: 10 }}
+                        pagination={{ ...passwordRequestPagination, onChange: (current, pageSize) => setPasswordRequestPagination({ current, pageSize }) }}
                         locale={{ emptyText: '暂无密码重置申请' }}
                     />
                 </Card>

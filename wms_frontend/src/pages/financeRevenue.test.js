@@ -1,6 +1,7 @@
 import React from 'react';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import FinanceRevenue from './financeRevenue';
+import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom';
 
 jest.mock('../config', () => ({ endpoint: '/api' }));
 jest.mock('../common/safeHeader', () => () => ({ 'x-token': 'test' }));
@@ -56,4 +57,34 @@ test('network retry preserves the idempotency key', async () => {
     await waitFor(() => expect(attempts).toBe(2));
     const bodies = global.fetch.mock.calls.filter(([, options]) => options?.method === 'POST').map(([, options]) => JSON.parse(options.body));
     expect(bodies[0].idempotency_key).toBe(bodies[1].idempotency_key);
+});
+
+function RevenueNavigation() {
+    const location = useLocation();
+    const navigate = useNavigate();
+    return <><output data-testid="revenue-url">{location.search}{location.hash}</output><button onClick={() => navigate(-1)}>返回旧筛选</button></>;
+}
+
+test('revenue restores filters and pagination from URLs and follows browser back navigation', async () => {
+    const previous = new URLSearchParams({ revenueFilters: JSON.stringify({ p: 2, s: 15, open_only: 'false', q: '旧客户' }), keep: 'yes' });
+    const current = new URLSearchParams({ revenueFilters: JSON.stringify({ p: 4, s: 15, open_only: 'true', q: '新客户' }), keep: 'yes' });
+    render(<MemoryRouter initialEntries={[`/finance?${previous}#ledger`, `/finance?${current}#ledger`]} initialIndex={1}><FinanceRevenue /><RevenueNavigation /></MemoryRouter>);
+    expect(screen.getByLabelText('搜索待履约账单')).toHaveValue('新客户');
+    await waitFor(() => expect(global.fetch.mock.calls.some(([url]) => {
+        const params = new URL(url, 'http://localhost').searchParams;
+        return params.get('p') === '4' && params.get('q') === '新客户' && params.get('open_only') === 'true';
+    })).toBe(true));
+    fireEvent.change(screen.getByLabelText('搜索待履约账单'), { target: { value: '更新客户' } });
+    await waitFor(() => {
+        const url = new URL(`http://localhost/${screen.getByTestId('revenue-url').textContent}`);
+        expect(JSON.parse(url.searchParams.get('revenueFilters'))).toMatchObject({ q: '更新客户', p: 1 });
+        expect(url.searchParams.get('keep')).toBe('yes');
+        expect(url.hash).toBe('#ledger');
+    });
+    fireEvent.click(screen.getByText('返回旧筛选'));
+    await waitFor(() => expect(screen.getByLabelText('搜索待履约账单')).toHaveValue('旧客户'));
+    await waitFor(() => expect(global.fetch.mock.calls.some(([url]) => {
+        const params = new URL(url, 'http://localhost').searchParams;
+        return params.get('p') === '2' && params.get('q') === '旧客户' && params.get('open_only') === 'false';
+    })).toBe(true));
 });

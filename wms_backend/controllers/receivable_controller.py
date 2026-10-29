@@ -25,6 +25,28 @@ def _error_response(exc):
     return jsonify({"code": 400, "msg": str(exc)}), 400
 
 
+@receivable_bp.get("/receivables/unregistered-orders")
+@verify
+@allow(role=RECEIPT_VIEW_ROLES)
+def get_unregistered_receivable_orders():
+    """A personal follow-up list, including finance/admin's own quotes only."""
+    try:
+        result = receivable_service.list_unregistered_receivable_orders(
+            get_token_payload() or {},
+            customer_id=request.args.get("customer_id", type=int),
+            query_text=request.args.get("q", ""),
+            page=max(request.args.get("p", 1, type=int) or 1, 1),
+            page_size=min(max(request.args.get("s", 20, type=int) or 20, 1), 100),
+            date_from=request.args.get("date_from") or None,
+            date_to=request.args.get("date_to") or None,
+            order_uid=request.args.get("order_uid"),
+        )
+        return jsonify({"code": 200, "data": result["items"],
+                        **{key: result[key] for key in ("total", "page", "page_size")}})
+    except (ValueError, PermissionError) as exc:
+        return _error_response(exc)
+
+
 @receivable_bp.get("/receivables/orders")
 @verify
 @allow(role=RECEIPT_ROLES)

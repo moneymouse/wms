@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { Alert, Button, Card, Empty, Grid, Input, Pagination, Spin, Table, Tag, Typography } from 'antd';
 import { PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import { intakeRequest } from '../common/intakeApi';
+import useUrlState from '../common/useUrlState';
 import styles from './MyPackingLists.module.css';
 
 const PAGE_SIZE = 20;
@@ -20,9 +21,10 @@ export default function MyPackingLists({ refreshKey = 0 }) {
     const compactView = screens.xs === true || (screens.sm === true && screens.md !== true);
     const [records, setRecords] = useState([]);
     const [total, setTotal] = useState(0);
-    const [page, setPage] = useState(1);
-    const [searchInput, setSearchInput] = useState('');
-    const [markQuery, setMarkQuery] = useState('');
+    const [page, setPage] = useUrlState('my_packing_page', 1, { validate: value => Number.isInteger(value) && value > 0 });
+    const [markQuery, setMarkQuery] = useUrlState('my_packing_search', '');
+    const [searchInput, setSearchInput] = useState(markQuery);
+    useEffect(() => { setSearchInput(markQuery); }, [markQuery]);
     const [reloadKey, setReloadKey] = useState(0);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');

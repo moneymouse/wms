@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import useUrlState from '../common/useUrlState';
 import { Alert, Button, DatePicker, Descriptions, Form, Input, InputNumber, Modal, Select, Space, Table, Typography } from 'antd';
 import { ReloadOutlined } from '@ant-design/icons';
 import { Link } from 'react-router-dom';
@@ -34,10 +35,10 @@ function OrderReferences({ row }) {
 
 export function OrderAllocationDialog({ payment, onClose, onSuccess }) {
     const [form] = Form.useForm();
-    const [query, setQuery] = useState('');
-    const [page, setPage] = useState(1);
+    const [query, setQuery] = useUrlState(`allocationSearch-${payment.id}`, '');
+    const [page, setPage] = useUrlState(`allocationPage-${payment.id}`, 1, { validate: value => Number.isSafeInteger(value) && value > 0 });
     const [revision, setRevision] = useState(0);
-    const [packingOnly, setPackingOnly] = useState(Boolean(payment.reference_packing_boxes?.length));
+    const [packingOnly, setPackingOnly] = useUrlState(`allocationPacking-${payment.id}`, Boolean(payment.reference_packing_boxes?.length));
     const [selected, setSelected] = useState({});
     const [error, setError] = useState('');
     const [saving, setSaving] = useState(false);
@@ -74,7 +75,7 @@ export function OrderAllocationDialog({ payment, onClose, onSuccess }) {
         {(error || result.error) && <Alert type="error" showIcon message={error || result.error} action={<Button size="small" disabled={saving} onClick={refresh}>刷新订单</Button>} style={{ marginBottom: 12 }} />}
         {packingOnly && result.data?.unresolved_packing_boxes?.length > 0 && <Alert type="warning" showIcon style={{ marginBottom: 12 }} message="以下箱子尚不能核销，可先处理已分配的订单"
             description={result.data.unresolved_packing_boxes.map(row => `${row.list_number} / 箱 ${row.box_number ?? row.box_uid}：${row.reason}`).join('；')} />}
-        <Space wrap style={{ marginBottom: 12 }}><Input.Search aria-label="核销订单搜索" placeholder="搜索订单号" onSearch={value => { setQuery(value); setPage(1); setSelected({}); }} disabled={saving} /><Button icon={<ReloadOutlined />} disabled={saving} onClick={refresh}>刷新</Button><Text>已选 {Object.keys(selected).length} 单 / {money(total / 100)} CNY</Text></Space>
+        <Space wrap style={{ marginBottom: 12 }}><Input.Search value={query} onChange={event => { setQuery(event.target.value); setPage(1); setSelected({}); }} aria-label="核销订单搜索" placeholder="搜索订单号" onSearch={value => { setQuery(value); setPage(1); setSelected({}); }} disabled={saving} /><Button icon={<ReloadOutlined />} disabled={saving} onClick={refresh}>刷新</Button><Text>已选 {Object.keys(selected).length} 单 / {money(total / 100)} CNY</Text></Space>
         {payment.reference_packing_boxes?.length > 0 && <Select aria-label="核销订单范围" value={packingOnly ? 'packing' : 'all'} disabled={saving} style={{ width: 220, marginBottom: 12 }}
             options={[{ value: 'packing', label: '备注箱子当前所属订单' }, { value: 'all', label: '此客户的全部订单' }]}
             onChange={value => { setPackingOnly(value === 'packing'); setPage(1); setSelected({}); }} />}
@@ -96,12 +97,12 @@ export function OrderAllocationDialog({ payment, onClose, onSuccess }) {
 }
 
 export default function FinanceOrderSettlements() {
-    const [query, setQuery] = useState('');
-    const [partnerId, setPartnerId] = useState();
+    const [query, setQuery] = useUrlState('orderSettlementSearch', '');
+    const [partnerId, setPartnerId] = useUrlState('orderSettlementCustomer', undefined);
     const [partnerQuery, setPartnerQuery] = useState('');
     const [partners, setPartners] = useState([]);
     const [partnerError, setPartnerError] = useState('');
-    const [page, setPage] = useState(1);
+    const [page, setPage] = useUrlState('orderSettlementPage', 1, { validate: value => Number.isSafeInteger(value) && value > 0 });
     const [revision, setRevision] = useState(0);
     const [syncing, setSyncing] = useState(null);
     const [saving, setSaving] = useState(false);
@@ -132,7 +133,7 @@ export default function FinanceOrderSettlements() {
     return <>
         <Typography.Paragraph type="secondary">按订单当前有效报价核对应收与应退。收付款独立登记；财务确认报价或核销时，生成对应账单并保留快照。历史订单净余额请在「会计与月结 → 旧订单接入」核对。</Typography.Paragraph>
         <Space wrap style={{ marginBottom: 16 }}>
-            <Input.Search placeholder="搜索订单号 / 客户" allowClear onSearch={value => { setQuery(value); setPage(1); }} />
+            <Input.Search value={query} onChange={event => { setQuery(event.target.value); setPage(1); }} placeholder="搜索订单号 / 客户" allowClear onSearch={value => { setQuery(value); setPage(1); }} />
             <Select aria-label="订单应收客户" placeholder="全部客户" showSearch filterOption={false} allowClear style={{ width: 220 }} value={partnerId} onSearch={setPartnerQuery} onChange={value => { setPartnerId(value); setPage(1); }} options={partners.map(row => ({ value: row.id, label: row.name }))} />
             <Button icon={<ReloadOutlined />} onClick={() => setRevision(value => value + 1)}>刷新</Button>
         </Space>

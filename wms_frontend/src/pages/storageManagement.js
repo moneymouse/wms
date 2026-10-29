@@ -6,6 +6,7 @@ import dayjs from 'dayjs';
 import { getIntakeRoles } from '../common/intakeApi';
 import { hasPermission, routePermissions } from '../common/roleConfig';
 import { formatStorageBytes, storagePhotoRequest, storageRequest } from '../common/storageApi';
+import useUrlState from '../common/useUrlState';
 import styles from './storageManagement.module.css';
 
 const RETENTION_DAYS = 90;
@@ -14,8 +15,11 @@ const PAGE_SIZE = 20;
 export default function StorageManagement() {
     const screens = Grid.useBreakpoint();
     const canManage = hasPermission(getIntakeRoles(), routePermissions['/storage-management']);
-    const [filters, setFilters] = useState({ page: 1, page_size: PAGE_SIZE, q: '' });
-    const [search, setSearch] = useState('');
+    const [filters, setFilters] = useUrlState('storage_filters', { page: 1, page_size: PAGE_SIZE, q: '' }, {
+        validate: value => value && Number.isInteger(value.page) && value.page > 0 && value.page_size === PAGE_SIZE && typeof value.q === 'string',
+    });
+    const [search, setSearch] = useState(filters.q);
+    useEffect(() => { setSearch(filters.q); }, [filters.q]);
     const [summary, setSummary] = useState(null);
     const [items, setItems] = useState([]);
     const [total, setTotal] = useState(0);
@@ -69,7 +73,7 @@ export default function StorageManagement() {
         } else errors.list = results[1].reason.message || '照片列表加载失败';
         setLoadErrors(errors);
         setLoading(false);
-    }, []);
+    }, [setFilters]);
 
     useEffect(() => {
         if (!canManage) return undefined;

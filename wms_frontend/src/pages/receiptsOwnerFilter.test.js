@@ -9,9 +9,9 @@ const payment = { id: 1, number: 'PAY-MINE', partner_type: 'customer', partner_n
 const response = (items, page = 1) => ({ ok: true, json: async () => ({ code: 200, data: { items, page, page_size: 20, total: 41 } }) });
 function queries() { return global.fetch.mock.calls.map(([url]) => new URL(url, 'http://localhost')).filter(url => url.pathname === '/api/finance/v2/payments').map(url => url.searchParams); }
 function latest() { const rows = queries(); return rows[rows.length - 1]; }
-function renderPage(roles = ['admin']) {
+function renderPage(roles = ['admin'], entry = '/receipts') {
     window.localStorage.setItem('jwt', `h.${window.btoa(JSON.stringify({ user_id: 7, name: 'Admin', roles }))}.s`);
-    return render(<MemoryRouter><Receipts /></MemoryRouter>);
+    return render(<MemoryRouter initialEntries={[entry]}><Receipts /></MemoryRouter>);
 }
 async function selectScope(label) {
     fireEvent.mouseDown(screen.getByRole('combobox', { name: '登记人范围' }));
@@ -62,4 +62,35 @@ test('a delayed mine response cannot replace the newly selected all scope', asyn
     await act(async () => finishMine(response([payment])));
     expect(screen.queryByRole('button', { name: 'PAY-MINE' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'PAY-ALL' })).toBeInTheDocument();
+});
+
+test('a bookmarked scope, search, direction, status and page restore without resetting on mount', async () => {
+    const filters = encodeURIComponent(JSON.stringify({ q: '客户A', direction: 'incoming', status: 'pending' }));
+    renderPage(['admin'], `/receipts?receiptScope=all&receiptPaymentFilters=${filters}&receiptPaymentPage=2`);
+    await screen.findByRole('button', { name: 'PAY-ALL' });
+    expect(screen.getByPlaceholderText('收付款单号 / 往来单位')).toHaveValue('客户A');
+    expect(latest().get('q')).toBe('客户A'); expect(latest().get('p')).toBe('2');
+    expect(latest().get('status')).toBe('pending'); expect(latest().get('direction')).toBe('incoming');
+    expect(latest().has('created_by_id')).toBe(false);
+});
+
+test('a salesperson cannot use a bookmarked all scope to remove the current-user filter', async () => {
+    renderPage(['salesperson'], '/receipts?receiptScope=all');
+    await screen.findByRole('button', { name: 'PAY-MINE' });
+    expect(latest().get('created_by_id')).toBe('7');
+});
+
+test('the receivable tab restores from a bookmark and refreshes when returning after registration', async () => {
+    const payments = global.fetch.getMockImplementation();
+    global.fetch.mockImplementation(async url => String(url).includes('/receivables/unregistered-orders')
+        ? { ok: true, json: async () => ({ code: 200, data: [{ uid: 'o-1', order_id: '待登记订单', customer_name: '客户A', receivable_amount: 100 }], total: 1 }) }
+        : payments(url));
+    renderPage(['salesperson'], '/receipts?receiptTab=receivable');
+    expect(await screen.findByRole('link', { name: '待登记订单' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: '应收款' })).toHaveAttribute('aria-selected', 'true');
+    expect(queries()).toHaveLength(0);
+    fireEvent.click(screen.getByRole('tab', { name: '收付款记录' }));
+    await screen.findByRole('button', { name: 'PAY-MINE' });
+    fireEvent.click(screen.getByRole('tab', { name: '应收款' }));
+    await waitFor(() => expect(global.fetch.mock.calls.filter(([url]) => String(url).includes('/receivables/unregistered-orders'))).toHaveLength(2));
 });

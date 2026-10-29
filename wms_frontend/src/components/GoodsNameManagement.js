@@ -5,10 +5,13 @@ import { UploadOutlined } from '@ant-design/icons';
 import { endpoint } from '../config';
 import getSafeHeader from '../common/safeHeader';
 import { GoodsNameTxtParseError, readGoodsNameTxtFile } from '../common/goodsNameTxt';
+import useUrlState from '../common/useUrlState';
 
 const EMPTY_EDITING = { id: null, name: '', category: '' };
 
 export default function GoodsNameManagement() {
+    const [tab, setTab] = useUrlState('goodsNameTab', 'cn');
+    const [pagination, setPagination] = useUrlState('goodsNamePagination', { cn: { current: 1, pageSize: 10 }, en: { current: 1, pageSize: 10 } });
     const [goodsNames, setGoodsNames] = useState([]);
     const [loading, setLoading] = useState(false);
     const [submitting, setSubmitting] = useState(false);
@@ -233,7 +236,7 @@ export default function GoodsNameManagement() {
             dataSource={goodsNames.filter(item => item.lang === lang)}
             rowKey="id"
             loading={loading}
-            pagination={{ pageSize: 10 }}
+            pagination={{ ...pagination[lang], onChange: (current, pageSize) => setPagination(previous => ({ ...previous, [lang]: { current, pageSize } })) }}
             scroll={{ y: 400 }}
             columns={columns}
         />
@@ -242,7 +245,7 @@ export default function GoodsNameManagement() {
     return (
         <>
             <Card title="品名管理">
-                <Tabs items={[
+                <Tabs activeKey={tab} onChange={setTab} items={[
                     {
                         key: 'cn',
                         label: '中文品名',

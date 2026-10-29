@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import useUrlState from '../common/useUrlState';
 import { Alert, Badge, Button, Card, DatePicker, Descriptions, Drawer, Empty, Form, Input, InputNumber, Modal, Pagination, Select, Space, Spin, Table, Typography, message } from 'antd';
 import { CheckCircleOutlined, HistoryOutlined, ReloadOutlined, RollbackOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
@@ -20,7 +21,7 @@ async function api(path, options = {}) {
 export default function FinanceRevenue() {
     const [messageApi, contextHolder] = message.useMessage();
     const [form] = Form.useForm();
-    const [filters, setFilters] = useState({ p: 1, s: 15, open_only: 'true', q: '' });
+    const [filters, setFilters] = useUrlState('revenueFilters', { p: 1, s: 15, open_only: 'true', q: '' });
     const [data, setData] = useState({ items: [], total: 0 });
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
@@ -76,7 +77,7 @@ export default function FinanceRevenue() {
         <div className={styles.header}><Space direction="vertical" size={4}><Title level={4} style={{ margin: 0 }}>履约收入确认</Title><Text type="secondary">按已完成服务确认收入，并关联账单、履约依据和会计凭证。</Text></Space><Button icon={<ReloadOutlined />} onClick={reload}>刷新</Button></div>
         {data.revenue_policy === 'invoice' ? <Alert showIcon type="info" className={styles.notice} message="当前账簿按账单确认收入" description="客户账单生效时已确认收入，此处无需再次确认。" /> : <Alert showIcon type="info" className={styles.notice} message="按履约事实确认未税收入" description="可分次确认。客户收款、账单核销与收入确认分别记录；贷项会先冲减待履约金额，再冲减已确认收入。" />}
         <Card size="small">
-            <Space wrap className={styles.filters}><Input.Search aria-label="搜索待履约账单" placeholder="账单号或客户" allowClear onSearch={q => setFilters(prev => ({ ...prev, p: 1, q }))} style={{ width: 280, maxWidth: '100%' }} /><Select aria-label="履约筛选" value={filters.open_only} onChange={value => setFilters(prev => ({ ...prev, p: 1, open_only: value }))} options={[{ value: 'true', label: '待履约账单' }, { value: 'false', label: '全部客户账单' }]} /><Text type="secondary">共 {data.total} 张 · 人民币</Text></Space>
+            <Space wrap className={styles.filters}><Input.Search value={filters.q} onChange={event => setFilters(prev => ({ ...prev, p: 1, q: event.target.value }))} aria-label="搜索待履约账单" placeholder="账单号或客户" allowClear onSearch={q => setFilters(prev => ({ ...prev, p: 1, q }))} style={{ width: 280, maxWidth: '100%' }} /><Select aria-label="履约筛选" value={filters.open_only} onChange={value => setFilters(prev => ({ ...prev, p: 1, open_only: value }))} options={[{ value: 'true', label: '待履约账单' }, { value: 'false', label: '全部客户账单' }]} /><Text type="secondary">共 {data.total} 张 · 人民币</Text></Space>
             {error && <Alert showIcon type="error" message={error} action={<Button onClick={reload}>重试</Button>} />}
             <Table rowKey="id" dataSource={data.items || []} loading={loading} pagination={false} scroll={{ x: 830 }} locale={{ emptyText: <Empty description="当前筛选下没有待处理账单" /> }} columns={[
                 { title: '账单 / 客户', key: 'invoice', width: 250, render: (_, row) => <div><Button type="link" className={styles.link} onClick={() => setDetailId(row.id)}>{row.number}</Button><div><Text type="secondary">{row.partner_name}</Text></div></div> },

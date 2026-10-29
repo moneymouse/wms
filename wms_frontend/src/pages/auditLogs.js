@@ -5,6 +5,8 @@ import { endpoint } from '../config';
 import getSafeHeader from '../common/safeHeader';
 import { hasPermission, ROLE_LABEL_MAP } from '../common/roleConfig';
 import { AuditChanges, AUDIT_EVENT_LABELS, AUDIT_ACTION_LABELS } from '../components/FinanceHistoryDrawer';
+import dayjs from 'dayjs';
+import useUrlState from '../common/useUrlState';
 
 const { Title, Text } = Typography;
 const adminAccess = () => {
@@ -18,11 +20,15 @@ const adminAccess = () => {
 export default function AuditLogs() {
     const [form] = Form.useForm();
     const [allowed] = useState(adminAccess);
-    const [query, setQuery] = useState({ p: 1, s: 20, sf: 'create_date', so: 1 });
+    const [query, setQuery] = useUrlState('auditFilters', { p: 1, s: 20, sf: 'create_date', so: 1 });
     const [state, setState] = useState({ items: [], total: 0 });
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
     const [retry, setRetry] = useState(0);
+    useEffect(() => {
+        form.setFieldsValue({ event_type: query.event_type, q: query.q || '',
+            dates: query.date_from && query.date_to ? [dayjs(query.date_from), dayjs(query.date_to)] : undefined });
+    }, [form, query]);
     useEffect(() => {
         if (!allowed) return undefined;
         const controller = new AbortController();

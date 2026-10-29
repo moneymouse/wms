@@ -4,6 +4,7 @@ import { UploadOutlined } from '@ant-design/icons';
 
 import { endpoint } from '../config';
 import getSafeHeader from '../common/safeHeader';
+import useUrlState from '../common/useUrlState';
 import {
     CustomsCodeExcelError,
     readCustomsCodeExcelFile,
@@ -12,6 +13,7 @@ import {
 const EMPTY_EDITING = { id: null, name: '', code: '' };
 
 export default function CustomsCodeManagement() {
+    const [pagination, setPagination] = useUrlState('customsPagination', { current: 1, pageSize: 10 });
     const [records, setRecords] = useState([]);
     const [loading, setLoading] = useState(false);
     const [submitting, setSubmitting] = useState(false);
@@ -183,7 +185,7 @@ export default function CustomsCodeManagement() {
                         loading={loading}
                         dataSource={records}
                         columns={columns}
-                        pagination={{ pageSize: 10 }}
+                        pagination={{ ...pagination, onChange: (current, pageSize) => setPagination({ current, pageSize }) }}
                         scroll={{ y: 400 }}
                     />
                 </Space>

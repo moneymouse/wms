@@ -1,4 +1,6 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useContext, useEffect, useRef, useState } from 'react';
+import useUrlState from '../common/useUrlState';
+import { UNSAFE_LocationContext } from 'react-router-dom';
 import { Alert, Button, Checkbox, DatePicker, Descriptions, Drawer, Form, Input, InputNumber, Modal, Select, Space, Spin, Table, Tabs, Typography, Upload, message } from 'antd';
 import { DownloadOutlined, HistoryOutlined, PlusOutlined, ReloadOutlined, UploadOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
@@ -11,6 +13,16 @@ import FinanceHistoryDrawer from '../components/FinanceHistoryDrawer';
 import FinanceRevenue from './financeRevenue';
 import FinanceLegacyMigration from './financeLegacyMigration';
 import styles from './financeAccounting.module.css';
+
+const dateRangeUrl = {
+    encode: value => JSON.stringify(value?.map(date => date.format('YYYY-MM-DD')) ?? null),
+    decode: raw => {
+        const values = JSON.parse(raw);
+        if (values === null) return null;
+        if (!Array.isArray(values) || values.length !== 2 || values.some(value => typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value) || !dayjs(value).isValid() || dayjs(value).format('YYYY-MM-DD') !== value)) throw new Error('Invalid date range');
+        return values.map(value => dayjs(value));
+    },
+};
 
 const { Text, Title } = Typography;
 const api = (path, options) => financeRequest(`/accounting${path}`, options);
@@ -194,9 +206,9 @@ export function JournalEditor({ open, onClose, onSaved }) {
 }
 
 export function AccountingJournals({ revision, onChanged }) {
-    const [page, setPage] = useState(1);
-    const [query, setQuery] = useState('');
-    const [status, setStatus] = useState('');
+    const [page, setPage] = useUrlState('journalPage', 1, { validate: value => Number.isSafeInteger(value) && value > 0 });
+    const [query, setQuery] = useUrlState('journalSearch', '');
+    const [status, setStatus] = useUrlState('journalStatus', '');
     const [selected, setSelected] = useState(null);
     const [creating, setCreating] = useState(false);
     const [history, setHistory] = useState(false);
@@ -212,7 +224,7 @@ export function AccountingJournals({ revision, onChanged }) {
         { title: '状态', dataIndex: 'status', width: 90, render: value => <Text type={value === 'cancelled' || value === 'reversed' ? 'secondary' : undefined}>{STATUS[value] || value}</Text> },
     ];
     return <Panel title="记账凭证" extra={<Button type="primary" icon={<PlusOutlined />} onClick={() => setCreating(true)}>录入凭证</Button>}>
-        {action.contextHolder}<Space wrap style={{ marginBottom: 16 }}><Input.Search placeholder="凭证号 / 摘要" allowClear onSearch={value => { setQuery(value); setPage(1); }} />
+        {action.contextHolder}<Space wrap style={{ marginBottom: 16 }}><Input.Search value={query} onChange={event => { setQuery(event.target.value); setPage(1); }} placeholder="凭证号 / 摘要" allowClear onSearch={value => { setQuery(value); setPage(1); }} />
             <Select aria-label="凭证状态" value={status} onChange={value => { setStatus(value); setPage(1); }} style={{ width: 140 }} options={[{ value: '', label: '全部状态' }, ...Object.entries(STATUS).map(([value, label]) => ({ value, label }))]} /></Space>
         <Failure result={result} /><Table rowKey="id" loading={result.loading} columns={columns} dataSource={result.data?.items || []} scroll={{ x: 900 }} pagination={{ current: page, pageSize: 20, total: result.data?.total || 0, onChange: setPage, showSizeChanger: false }} />
         {creating && <JournalEditor open onClose={() => setCreating(false)} onSaved={() => { setCreating(false); result.reload(); onChanged(); }} />}
@@ -245,9 +257,10 @@ const REPORT_VIEWS = [
 ];
 
 export function AccountingReports({ revision }) {
-    const [range, setRange] = useState([dayjs().startOf('month'), dayjs()]);
-    const [account, setAccount] = useState(undefined);
-    const [reportTab, setReportTab] = useState('trial');
+    const [range, setRange] = useUrlState('reportDates', () => [dayjs().startOf('month'), dayjs()], { ...dateRangeUrl, validate: value => Array.isArray(value) && value.length === 2 });
+    const [ledgerPage, setLedgerPage] = useUrlState('reportLedgerPage', 1, { validate: value => Number.isSafeInteger(value) && value > 0 });
+    const [account, setAccount] = useUrlState('reportAccount', undefined, { decode: raw => raw });
+    const [reportTab, setReportTab] = useUrlState('reportView', 'trial', { validate: value => REPORT_VIEWS.some(view => view.value === value) });
     const params = { date_from: range[0].format('YYYY-MM-DD'), date_to: range[1].format('YYYY-MM-DD'), account_code: account };
     const result = useData('/reports', params, revision);
     const action = useAction();
@@ -269,9 +282,9 @@ export function AccountingReports({ revision }) {
         {action.contextHolder}
         <div className={styles.toolbar}>
             <Space wrap>
-                <Select aria-label="报表类型" value={reportTab} onChange={setReportTab} options={REPORT_VIEWS} style={{ width: 160 }} />
-                <DatePicker.RangePicker aria-label="报表期间" value={range} allowClear={false} onChange={setRange} />
-                {reportTab === 'ledger' && <Select aria-label="报表科目筛选" allowClear showSearch optionFilterProp="label" style={{ width: 240, maxWidth: '100%' }} placeholder="全部科目" value={account} onChange={setAccount} options={(report?.trial_balance || []).map(row => ({ value: row.code, label: `${row.code} ${row.name}` }))} />}
+                <Select aria-label="报表类型" value={reportTab} onChange={value => { setReportTab(value); setLedgerPage(1); }} options={REPORT_VIEWS} style={{ width: 160 }} />
+                <DatePicker.RangePicker aria-label="报表期间" value={range} allowClear={false} onChange={value => { setRange(value); setLedgerPage(1); }} />
+                {reportTab === 'ledger' && <Select aria-label="报表科目筛选" allowClear showSearch optionFilterProp="label" style={{ width: 240, maxWidth: '100%' }} placeholder="全部科目" value={account} onChange={value => { setAccount(value); setLedgerPage(1); }} options={(report?.trial_balance || []).map(row => ({ value: row.code, label: `${row.code} ${row.name}` }))} />}
             </Space>
             <Button icon={<DownloadOutlined />} disabled={!report || result.loading || !!result.error} loading={action.pending} onClick={download}>导出试算表</Button>
         </div>
@@ -293,7 +306,7 @@ export function AccountingReports({ revision }) {
                 summary={() => summary([['资产合计', report.balance_sheet.assets], ['负债合计', report.balance_sheet.liabilities], ['权益账面余额', report.balance_sheet.equity], ['尚未结转损益', report.balance_sheet.unclosed_profit], ['资产负债校验差', report.balance_sheet.difference]], 4)} />}
             {reportTab === 'cash' && <><Table rowKey="activity" size="small" pagination={false} dataSource={Object.entries(report.cashflow).map(([activity, amount]) => ({ activity, amount }))} columns={[{ title: '类别', dataIndex: 'activity', render: value => ({ ...ACTIONS, opening: '期初余额录入' })[value] || value }, amountColumn('净流入 / CNY', 'amount')]} />
                 <Typography.Paragraph type="secondary" className={styles.footnote}>按凭证资金流类别归集；期初和内部调拨单列。</Typography.Paragraph></>}
-            {reportTab === 'ledger' && <Table rowKey="line_id" dataSource={report.ledger} size="small" scroll={{ x: 900 }} columns={[{ title: '日期', dataIndex: 'entry_date', width: 110 }, { title: '凭证号', dataIndex: 'entry_number', width: 170 }, { title: '科目', dataIndex: 'account_name' }, { title: '摘要', dataIndex: 'description' }, amountColumn('借方', 'debit'), amountColumn('贷方', 'credit')]} pagination={{ pageSize: 20 }} />}
+            {reportTab === 'ledger' && <Table rowKey="line_id" dataSource={report.ledger} size="small" scroll={{ x: 900 }} columns={[{ title: '日期', dataIndex: 'entry_date', width: 110 }, { title: '凭证号', dataIndex: 'entry_number', width: 170 }, { title: '科目', dataIndex: 'account_name' }, { title: '摘要', dataIndex: 'description' }, amountColumn('借方', 'debit'), amountColumn('贷方', 'credit')]} pagination={{ current: ledgerPage, pageSize: 20, onChange: setLedgerPage, showSizeChanger: false }} />}
         </>}</Spin>
     </section>;
 }
@@ -316,8 +329,8 @@ export async function readBankImportFile(file) {
 export function BankReconciliation({ revision, onChanged }) {
     const [historyTransaction, setHistoryTransaction] = useState(null);
     const [funds, setFunds] = useState([]);
-    const [account, setAccount] = useState(undefined);
-    const [page, setPage] = useState(1);
+    const [account, setAccount] = useUrlState('bankAccount', undefined);
+    const [page, setPage] = useUrlState('bankPage', 1, { validate: value => Number.isSafeInteger(value) && value > 0 });
     const [preview, setPreview] = useState(null);
     const [selected, setSelected] = useState(null);
     const [paymentId, setPaymentId] = useState(undefined);
@@ -435,8 +448,12 @@ function ChartOfAccounts({ revision }) {
 
 export default function FinanceAccounting({ onOpenLedger, initialTab = 'periods', sectionToken = 0 }) {
     const [revision, setRevision] = useState(0);
-    const [tab, setTab] = useState(initialTab);
-    useEffect(() => { if (sectionToken) setTab(initialTab); }, [initialTab, sectionToken]);
+    const [tab, setTab] = useUrlState('accountingTab', 'periods');
+    const locationContext = useContext(UNSAFE_LocationContext);
+    const hadInitialTab = useRef(new URLSearchParams(locationContext?.location.search).has('accountingTab'));
+    useEffect(() => {
+        if (sectionToken || (!hadInitialTab.current && initialTab !== 'periods')) setTab(initialTab);
+    }, [initialTab, sectionToken, setTab]);
     const settings = useData('/settings', {}, revision);
     const changed = useCallback(() => setRevision(value => value + 1), []);
     if (settings.loading && !settings.data) return <Spin tip="加载账簿设置…"><div style={{ minHeight: 120 }} /></Spin>;

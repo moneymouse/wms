@@ -4,6 +4,7 @@ import { Alert, Button, Card, Checkbox, DatePicker, Empty, Input, InputNumber, M
 import { CameraOutlined, CheckOutlined, DownOutlined, DeleteOutlined, PlusOutlined, ReloadOutlined, UploadOutlined, UpOutlined } from '@ant-design/icons';
 import { endpoint } from '../config';
 import getSafeHeader from '../common/safeHeader';
+import useUrlState from '../common/useUrlState';
 import { downloadPaperIntakeTemplate, emptyBox, hasCompleteIntakeItemCounts, intakeRequest, MAX_INTAKE_REMARK_LENGTH, MAX_INTAKE_WORKERS, normalizeIntakeBox, normalizeIntakeDraft, validateIntakeDraft } from '../common/intakeApi';
 import { chineseGoodsNameOptions } from '../common/chineseGoodsNames';
 import { captureEditorPosition, restoreEditorPosition } from '../common/editorPosition';
@@ -45,7 +46,7 @@ function SelectedPhoto({ file, index, disabled, onRemove }) {
 }
 
 function useLeaveWarning(dirty) {
-    const blocker = useBlocker(dirty);
+    const blocker = useBlocker(({ currentLocation, nextLocation }) => dirty && currentLocation.pathname !== nextLocation.pathname);
     useEffect(() => {
         const handler = event => {
             if (!dirty) return;
@@ -70,7 +71,7 @@ export function PaperIntakeUpload({ onSubmitted } = {}) {
 function ContinuePaperUploads() {
     const [records, setRecords] = useState([]);
     const [total, setTotal] = useState(0);
-    const [page, setPage] = useState(1);
+    const [page, setPage] = useUrlState('intake_page', 1, { validate: value => Number.isInteger(value) && value > 0 });
     const [reloadKey, setReloadKey] = useState(0);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
@@ -98,7 +99,7 @@ function ContinuePaperUploads() {
             setRecords(data.items); setTotal(data.total);
         }).catch(e => { if (active) setError(e.message); }).finally(() => { if (active) setLoading(false); });
         return () => { active = false; controller.abort(); };
-    }, [page, reloadKey]);
+    }, [page, reloadKey, setPage]);
 
     const closeDeletion = () => {
         if (mutationLock.current) return;

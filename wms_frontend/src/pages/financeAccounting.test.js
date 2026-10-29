@@ -1,5 +1,6 @@
 import React from 'react';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import FinanceAccounting, { AccountingSetup, AccountingPeriods, AccountingJournals, AccountingReports } from './financeAccounting';
 
 jest.mock('../components/FinanceHistoryDrawer', () => () => null);
@@ -59,4 +60,18 @@ test('report request failure does not render a statement or allow export', async
     await screen.findByText('账簿暂不可用');
     expect(screen.queryByRole('table')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /导出试算表/ })).toBeDisabled();
+});
+
+test('report URL restores date ranges, report view, and account filters', async () => {
+    global.fetch = jest.fn(() => Promise.resolve({ ok: false, json: async () => ({ code: 500, msg: '报表数据暂不可用' }) }));
+    const params = new URLSearchParams({ reportDates: JSON.stringify(['2026-09-01', '2026-09-30']), reportView: 'ledger', reportAccount: '1122' });
+    render(<MemoryRouter initialEntries={[`/finance?${params}`]}><AccountingReports revision={0} /></MemoryRouter>);
+    await screen.findByText('报表数据暂不可用');
+    expect(screen.getByPlaceholderText('Start date')).toHaveValue('2026-09-01');
+    expect(screen.getByPlaceholderText('End date')).toHaveValue('2026-09-30');
+    await waitFor(() => expect(global.fetch.mock.calls.some(([url]) => {
+        const search = new URL(url, 'http://localhost').searchParams;
+        return search.get('date_from') === '2026-09-01' && search.get('date_to') === '2026-09-30' && search.get('account_code') === '1122';
+    })).toBe(true));
+    expect(screen.getByRole('combobox', { name: '报表科目筛选' })).toBeInTheDocument();
 });

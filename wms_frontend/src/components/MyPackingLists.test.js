@@ -182,3 +182,12 @@ test('the real xs breakpoint renders compact cards with no duplicate desktop tab
     expect(within(formal).getByText('箱数：3')).toBeInTheDocument();
     expect(within(formal).getByRole('link', { name: '查看装箱单' })).toHaveAttribute('href', '/packing-lists/packing-paper-1');
 });
+
+test('restores personal packing-list search and pagination from a copied URL', async () => {
+    render(<MemoryRouter initialEntries={['/packing-lists?my_packing_search=已保存唛头&my_packing_page=3']}><MyPackingLists /></MemoryRouter>);
+    await screen.findByText('PAPER-1');
+    expect(screen.getByLabelText('按唛头查找我的装箱单')).toHaveValue('已保存唛头');
+    const params = new URLSearchParams(intakeRequest.mock.calls[0][0].split('?')[1]);
+    expect(params.get('mark')).toBe('已保存唛头');
+    expect(params.get('page')).toBe('3');
+});

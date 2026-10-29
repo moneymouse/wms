@@ -2,6 +2,7 @@
 
 from datetime import datetime
 from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_HALF_UP
+import json
 import time
 from typing import Iterable, Optional
 
@@ -23,6 +24,7 @@ from data.DB import (
     order_has_receipt_history,
 )
 from data.customer.Customer import CustomerTable
+from data.finance.ledger import FinanceAllocation, FinanceDocumentLine, FinancePayment
 from utils.audit import record_audit
 
 
@@ -814,6 +816,75 @@ def get_price_adjustment_detail(adjustment_id: int, operator_payload: dict) -> d
     )["items"][0]
 
 
+def _payment_reference_rows(snapshot):
+    """Malformed legacy notes must not break the entire follow-up list."""
+    try:
+        rows = json.loads(snapshot or "[]")
+    except (ValueError, TypeError):
+        return []
+    return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+
+
+def _registered_order_uids(session):
+    """Cash notes identify registered orders without treating notes as allocation.
+
+    Notes live in JSON snapshots rather than relational rows. Resolve their UIDs
+    before pagination so totals and page boundaries use the same exclusion set.
+    Any existing live registration counts, including drafts returned for editing.
+    """
+    registered = {
+        uid for uid, in session.query(PaymentReceiptItemTable.order_uid)
+        .join(PaymentReceiptTable, PaymentReceiptTable.id == PaymentReceiptItemTable.receipt_id)
+        .filter(PaymentReceiptItemTable.archive.is_(False),
+                PaymentReceiptTable.status.in_(["pending", "approved"]))
+        .distinct().all()
+    }
+    payments = session.query(
+        FinancePayment.partner_id, FinancePayment.partner_name,
+        FinancePayment.reference_orders_json, FinancePayment.reference_packing_boxes_json,
+    ).filter(
+        FinancePayment.partner_type == "customer",
+        FinancePayment.status.in_(["draft", "pending", "posted"]),
+    ).all()
+    box_payments = {}
+    for payment in payments:
+        references = _payment_reference_rows(payment.reference_orders_json)
+        registered.update(row["order_uid"] for row in references if isinstance(row.get("order_uid"), str))
+        for reference in _payment_reference_rows(payment.reference_packing_boxes_json):
+            if isinstance(reference.get("box_uid"), str):
+                box_payments.setdefault(reference["box_uid"], []).append(payment)
+    if box_payments:
+        boxes = session.query(CargoTable, OrderTable).join(
+            OrderTable, OrderTable.uid == CargoTable.target_order_uid,
+        ).options(selectinload(OrderTable.customers)).filter(
+            CargoTable.uid.in_(box_payments), CargoTable.archive.is_(False),
+            OrderTable.archive.is_(False),
+        ).all()
+        for box, order in boxes:
+            customer_ids = {customer.id for customer in order.customers}
+            if any(payment.partner_id in customer_ids if customer_ids else
+                   payment.partner_name == order.customer_name
+                   for payment in box_payments[box.uid]):
+                registered.add(order.uid)
+    # A finance-confirmed payment can be allocated without optional order notes.
+    allocated = session.query(FinanceDocumentLine.order_uid).join(
+        FinanceAllocation, FinanceAllocation.document_id == FinanceDocumentLine.document_id,
+    ).join(FinancePayment, FinancePayment.id == FinanceAllocation.payment_id).filter(
+        FinanceAllocation.status == "active", FinancePayment.status == "posted",
+        FinancePayment.partner_type == "customer", FinanceDocumentLine.order_uid.isnot(None),
+    ).distinct().all()
+    registered.update(uid for uid, in allocated)
+    return registered
+
+
+def list_unregistered_receivable_orders(operator_payload, **filters):
+    """Current effective quote owner's orders with no live cash registration."""
+    return list_receivable_orders(
+        operator_payload=operator_payload, customer_id=filters.pop("customer_id", None),
+        unregistered_only=True, **filters,
+    )
+
+
 def list_receivable_orders(
     customer_id: Optional[int],
     operator_payload: dict,
@@ -824,8 +895,11 @@ def list_receivable_orders(
     date_to=None,
     owner_id=None,
     order_uid=None,
+    unregistered_only=False,
 ) -> dict:
     operator = _operator(operator_payload)
+    if unregistered_only and not operator["id"]:
+        raise PermissionError("无法识别当前用户")
     for name, value in (("date_from", date_from), ("date_to", date_to)):
         if value is not None:
             try:
@@ -937,7 +1011,7 @@ def list_receivable_orders(
                 OrderTable.archive == False,  # noqa: E712
             )
         )
-        if "admin" not in operator["roles"]:
+        if unregistered_only or "admin" not in operator["roles"]:
             query = query.filter(OrderQuoteVersionTable.quoter_id == operator["id"])
         elif owner_id is not None:
             query = query.filter(OrderQuoteVersionTable.quoter_id == owner_id)
@@ -959,6 +1033,10 @@ def list_receivable_orders(
         if query_text:
             like = f"%{query_text.strip()}%"
             query = query.filter(or_(OrderTable.order_id.ilike(like), OrderTable.customer_name.ilike(like)))
+        if unregistered_only:
+            registered = _registered_order_uids(session)
+            if registered:
+                query = query.filter(OrderTable.uid.notin_(registered))
         query = query.filter(
             live_receivable_expr
             > approved_expr + settlement_difference_expr + pending_expr

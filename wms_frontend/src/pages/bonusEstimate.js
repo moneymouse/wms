@@ -4,6 +4,7 @@ import { ReloadOutlined, DownloadOutlined } from '@ant-design/icons';
 import { endpoint } from '../config';
 import getSafeHeader from '../common/safeHeader';
 import { hasPermission } from '../common/roleConfig';
+import useUrlState from '../common/useUrlState';
 
 const { Title } = Typography;
 
@@ -29,10 +30,11 @@ export default function BonusEstimate() {
     const [messageApi, contextHolder] = message.useMessage();
 
     const [payload, setPayload] = useState({});
-    const [month, setMonth] = useState(getCurrentMonth());
+    const [month, setMonth] = useUrlState('month', getCurrentMonth(), { validate: value => /^\d{4}-(0[1-9]|1[0-2])$/.test(value) });
 
     const [workers, setWorkers] = useState([]);
-    const [selectedWorkerId, setSelectedWorkerId] = useState(undefined);
+    const [selectedWorkerId, setSelectedWorkerId] = useUrlState('worker_id', undefined, { validate: value => Number.isSafeInteger(value) && value > 0 });
+    const [pagination, setPagination] = useUrlState('bonusPagination', { current: 1, pageSize: 20 });
 
     const [loading, setLoading] = useState(false);
     const [bonusData, setBonusData] = useState(null);
@@ -273,7 +275,7 @@ export default function BonusEstimate() {
                     <Input
                         type="month"
                         value={month}
-                        onChange={(e) => setMonth(e.target.value || getCurrentMonth())}
+                        onChange={(e) => { setMonth(e.target.value || getCurrentMonth()); setPagination(prev => ({ ...prev, current: 1 })); }}
                         style={{ width: 140 }}
                     />
                     {canSelectWorker && (
@@ -282,7 +284,7 @@ export default function BonusEstimate() {
                             placeholder="选择操作人员"
                             options={selectedWorkerOptions}
                             value={selectedWorkerId}
-                            onChange={setSelectedWorkerId}
+                            onChange={value => { setSelectedWorkerId(value); setPagination(prev => ({ ...prev, current: 1 })); }}
                             showSearch
                             optionFilterProp="label"
                         />
@@ -339,7 +341,7 @@ export default function BonusEstimate() {
                     loading={loading}
                     dataSource={rows}
                     columns={columns}
-                    pagination={{ pageSize: 20, showSizeChanger: true }}
+                    pagination={{ ...pagination, showSizeChanger: true, onChange: (current, pageSize) => setPagination({ current, pageSize }) }}
                     scroll={{ x: 'max-content' }}
                     size="small"
                 />

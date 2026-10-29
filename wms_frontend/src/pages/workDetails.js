@@ -13,10 +13,11 @@ import {
     Statistic
 } from 'antd';
 import { ReloadOutlined } from '@ant-design/icons';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import { endpoint } from '../config';
 import getSafeHeader from '../common/safeHeader';
 import { hasPermission } from '../common/roleConfig';
+import useUrlState from '../common/useUrlState';
 
 const { Title } = Typography;
 
@@ -39,14 +40,15 @@ function getJwtPayload() {
 }
 
 export default function WorkDetails() {
-    const [searchParams] = useSearchParams();
     const [messageApi, contextHolder] = message.useMessage();
 
     const [payload, setPayload] = useState({});
-    const [month, setMonth] = useState(() => searchParams.get('month') || getCurrentMonth());
+    const [month, setMonth] = useUrlState('month', getCurrentMonth(), { validate: value => /^\d{4}-(0[1-9]|1[0-2])$/.test(value) });
 
     const [workers, setWorkers] = useState([]);
-    const [selectedWorkerId, setSelectedWorkerId] = useState(undefined);
+    const [selectedWorkerId, setSelectedWorkerId] = useUrlState('worker_id', undefined, { validate: value => Number.isSafeInteger(value) && value > 0 });
+    const [groupPagination, setGroupPagination] = useUrlState('workGroupsPagination', { current: 1, pageSize: 20 });
+    const [orderPagination, setOrderPagination] = useUrlState('workOrdersPagination', { current: 1, pageSize: 20 });
 
     const [loading, setLoading] = useState(false);
     const [detailData, setDetailData] = useState(null);
@@ -70,21 +72,6 @@ export default function WorkDetails() {
     }, []);
 
     useEffect(() => {
-        const queryMonth = searchParams.get('month');
-        if (queryMonth) {
-            setMonth(queryMonth);
-        }
-
-        const queryWorkerId = searchParams.get('worker_id');
-        if (queryWorkerId) {
-            const parsed = Number(queryWorkerId);
-            if (!Number.isNaN(parsed) && parsed > 0) {
-                setSelectedWorkerId(parsed);
-            }
-        }
-    }, [searchParams]);
-
-    useEffect(() => {
         if (!canSelectWorker) return;
 
         (async () => {
@@ -94,12 +81,7 @@ export default function WorkDetails() {
                 if (data.code === 200) {
                     const list = data.data || [];
                     setWorkers(list);
-                    const queryWorkerId = Number(searchParams.get('worker_id'));
-                    const hasQueryWorker = !Number.isNaN(queryWorkerId) && queryWorkerId > 0;
-
-                    if (hasQueryWorker && list.some(worker => worker.id === queryWorkerId)) {
-                        setSelectedWorkerId(queryWorkerId);
-                    } else if (!selectedWorkerId && list.length > 0) {
+                    if (!selectedWorkerId && list.length > 0) {
                         setSelectedWorkerId(list[0].id);
                     }
                 }
@@ -108,7 +90,7 @@ export default function WorkDetails() {
             }
         })();
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [canSelectWorker, searchParams]);
+    }, [canSelectWorker]);
 
     const fetchDetails = async () => {
         if (!userRoles.length) return;
@@ -270,7 +252,7 @@ export default function WorkDetails() {
                     <Input
                         type="month"
                         value={month}
-                        onChange={(e) => setMonth(e.target.value || getCurrentMonth())}
+                        onChange={(e) => { setMonth(e.target.value || getCurrentMonth()); setGroupPagination(prev => ({ ...prev, current: 1 })); setOrderPagination(prev => ({ ...prev, current: 1 })); }}
                         style={{ width: 140 }}
                     />
                     {canSelectWorker && (
@@ -279,7 +261,7 @@ export default function WorkDetails() {
                             placeholder="选择操作人员"
                             options={selectedWorkerOptions}
                             value={selectedWorkerId}
-                            onChange={setSelectedWorkerId}
+                            onChange={value => { setSelectedWorkerId(value); setGroupPagination(prev => ({ ...prev, current: 1 })); setOrderPagination(prev => ({ ...prev, current: 1 })); }}
                             showSearch
                             optionFilterProp="label"
                         />
@@ -314,7 +296,7 @@ export default function WorkDetails() {
                     loading={loading}
                     dataSource={groups}
                     columns={groupColumns}
-                    pagination={{ pageSize: 20, showSizeChanger: true }}
+                    pagination={{ ...groupPagination, showSizeChanger: true, onChange: (current, pageSize) => setGroupPagination({ current, pageSize }) }}
                     expandable={{
                         expandedRowRender: (record) => (
                             <Table
@@ -343,7 +325,7 @@ export default function WorkDetails() {
                         loading={loading}
                         dataSource={orders}
                         columns={orderColumns}
-                        pagination={{ pageSize: 20, showSizeChanger: true }}
+                        pagination={{ ...orderPagination, showSizeChanger: true, onChange: (current, pageSize) => setOrderPagination({ current, pageSize }) }}
                         scroll={{ x: 'max-content' }}
                         size="small"
                     />

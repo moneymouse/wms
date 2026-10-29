@@ -4,6 +4,7 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { getUserRoles, hasPermission } from '../common/roleConfig';
 import { addExceptionFollowup, exceptionSubmission, fetchExceptionSalespeople, fetchOrderException, fetchOrderExceptions, resolveOrderException } from '../common/orderExceptionApi';
 import OrderExceptionRegistration, { exceptionCargoLabel } from '../components/OrderExceptionRegistration';
+import useUrlState from '../common/useUrlState';
 import styles from './orderExceptions.module.css';
 
 const statusLabel = status => status === 'resolved' ? <Tag color="green">已解决</Tag> : <Tag color="red">待跟进</Tag>;
@@ -23,10 +24,10 @@ export default function OrderExceptions() {
     const navigate = useNavigate();
     const exceptionUid = new URLSearchParams(location.search).get('exception_uid');
     const [salespeople, setSalespeople] = useState([]);
-    const [salesmanId, setSalesmanId] = useState(actorId);
+    const [salesmanId, setSalesmanId] = useUrlState('exception_salesman', actorId, { validate: value => Number.isInteger(value) && value > 0 });
     const [salespeopleError, setSalespeopleError] = useState('');
-    const [status, setStatus] = useState('open');
-    const [page, setPage] = useState(1);
+    const [status, setStatus] = useUrlState('exception_status', 'open', { validate: value => ['open', 'resolved', 'all'].includes(value) });
+    const [page, setPage] = useUrlState('exception_page', 1, { validate: value => Number.isInteger(value) && value > 0 });
     const [items, setItems] = useState([]);
     const [total, setTotal] = useState(0);
     const [loading, setLoading] = useState(false);
@@ -80,7 +81,7 @@ export default function OrderExceptions() {
         }).catch(cause => { if (!controller.signal.aborted) setDetailError(cause.message); })
             .finally(() => { if (!controller.signal.aborted) setDetailLoading(false); });
         return () => controller.abort();
-    }, [exceptionUid, canList, location.key, detailRefresh]);
+    }, [exceptionUid, canList, detailRefresh]);
 
     const openDetail = uid => {
         const query = new URLSearchParams(location.search); query.set('exception_uid', uid);

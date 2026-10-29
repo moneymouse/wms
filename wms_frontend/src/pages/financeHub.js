@@ -1,4 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import React, { useContext, useEffect, useRef, useState } from 'react';
+import useUrlState from '../common/useUrlState';
+import { UNSAFE_LocationContext } from 'react-router-dom';
 import { Button, Card, Form, Input, InputNumber, Table, message } from 'antd';
 
 import FinanceCenter from './financeCenter';
@@ -79,23 +81,26 @@ function SalesBonusRates() {
 export default function FinanceHub({ extraTabs = [] }) {
     const { userId: tourUserId } = getCurrentTourUser();
     const initialTourFlow = readFeatureTourFlow(tourUserId);
-    const [activeTab, setActiveTab] = useState(
+    const [activeTab, setActiveTab] = useUrlState('financeTab', 'overview');
+    const locationContext = useContext(UNSAFE_LocationContext);
+    const initialTourTab = useRef(new URLSearchParams(locationContext?.location.search).has('financeTab') ? null :
         initialTourFlow?.campaignId === COST_QUOTE_RECEIPT_TOUR.id
             && initialTourFlow.stage === 'receipt-audit'
             ? 'audit'
             : initialTourFlow?.campaignId === COST_QUOTE_RECEIPT_TOUR.id && initialTourFlow.stage === 'receivable-ledger'
                 ? 'receivable'
-                : 'overview'
+                : null
     );
 
     useEffect(() => {
+        if (initialTourTab.current) setActiveTab(initialTourTab.current);
         const handleTourFlowChange = (event) => {
             if (event.detail?.stage === 'receipt-audit') setActiveTab('audit');
             if (event.detail?.stage === 'receivable-ledger') setActiveTab('receivable');
         };
         window.addEventListener(FEATURE_TOUR_FLOW_EVENT, handleTourFlowChange);
         return () => window.removeEventListener(FEATURE_TOUR_FLOW_EVENT, handleTourFlowChange);
-    }, []);
+    }, [setActiveTab]);
 
     return <div className={styles.hub}>
         <FinanceWorkspace activeTab={activeTab} onTabChange={setActiveTab} extraTabs={[
